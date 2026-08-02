@@ -8,6 +8,9 @@ description = "SIGILED v2 orchestrator — the control plane"
 # axum/tokio/serde*: the platform is an HTTP JSON service, same stack as vm-base.
 # toml: sigiled.toml is the manifest format inherited from v1.
 # tracing*: structured logs are the ops surface of a headless control plane.
+# jsonwebtoken: the OIDC leg (design §1) validates RS256 JWTs locally via JWKS.
+# reqwest (rustls, no default tls): JWKS fetch + device flow against the IdP —
+#   the only outbound HTTP the control plane performs.
 [dependencies]
 axum = "0.8.9"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
@@ -16,3 +19,5 @@ serde_json = "1.0.151"
 toml = "0.9.8"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

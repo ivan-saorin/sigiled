@@ -26,7 +26,7 @@ if [ ! -f "$TC/debs/filelist" ]; then
     cd "$TC/debs"
     curl -s "$MIRROR/dists/$DIST/main/binary-$ARCH/Packages.gz" -o Packages.gz
     # Resolve exact pool filenames for the packages we need.
-    PKGS="gcc-14 libgcc-s1 libc6 gcc-14-x86-64-linux-gnu libgcc-14-dev libc6-dev binutils libbinutils binutils-x86-64-linux-gnu binutils-common libctf0 libsframe1 libjansson4 libgmp10 libmpfr6 libmpc3 libisl23 libzstd1"
+    PKGS="gcc-14 cpp-14 cpp-14-x86-64-linux-gnu libgcc-s1 libc6 gcc-14-x86-64-linux-gnu libgcc-14-dev libc6-dev binutils libbinutils binutils-x86-64-linux-gnu binutils-common libctf0 libsframe1 libjansson4 libgmp10 libmpfr6 libmpc3 libisl23 libzstd1"
     zcat Packages.gz | awk -v pkgs="$PKGS" '
         BEGIN { n = split(pkgs, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
         /^Package: / { p = $2 }
@@ -63,6 +63,15 @@ chmod +x "$TC/gcc"
 # gcc looks for plain `ld` in the -B dirs; extracted binutils may name it either way.
 [ -e "$TC/usr/bin/ld" ] || ln -sf "$(cd "$TC/usr/bin" && ls *ld | head -1)" "$TC/usr/bin/ld"
 
+# ar needs the toolchain's libbfd at runtime — same wrapper trick as gcc.
+# Crates that compile C (ring, …) want CC/AR: export them per-build.
+cat > "$TC/ar" <<W
+#!/bin/sh
+export LD_LIBRARY_PATH="$TC/usr/lib/x86_64-linux-gnu\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec "$TC/usr/bin/ar" "\$@"
+W
+chmod +x "$TC/ar"
+
 mkdir -p "$HOME/.cargo"
 if ! grep -q "tc/gcc" "$HOME/.cargo/config.toml" 2>/dev/null; then
     echo "== pointing cargo at the wrapper"
@@ -75,3 +84,4 @@ fi
 echo "== smoke test"
 cd /tmp && rm -rf tc-smoke && cargo new tc-smoke -q && cd tc-smoke && cargo run -q
 echo "== toolchain ready"
+echo "   for crates that compile C (ring, ...): export CC=$TC/gcc AR=$TC/ar"

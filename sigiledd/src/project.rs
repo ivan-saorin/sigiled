@@ -84,7 +84,10 @@ impl Registry {
     }
 }
 
-pub async fn list(State(state): State<crate::AppState>) -> axum::Json<Vec<ProjectRecord>> {
+pub async fn list(
+    _actor: crate::auth::Actor,
+    State(state): State<crate::AppState>,
+) -> axum::Json<Vec<ProjectRecord>> {
     axum::Json(state.registry.snapshot())
 }
 

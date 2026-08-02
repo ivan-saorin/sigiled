@@ -1,20 +1,26 @@
 // sigiledd — SIGILED v2 orchestrator (control plane). Session 1 scope: healthz,
 // the canonical contract, and the project registry surface with
 // template_version (build plan §2). Session 2 adds the machine log
-// (GET /sigiled/projects/{p}/log) and template_behind. Grows across
-// sessions 3..4.
+// (GET /sigiled/projects/{p}/log) and template_behind. Session 3 adds the
+// two-legged auth (design §1): bootstrap bearer OR IdP JWT, capability map,
+// device-flow approvals. Session 4 brings the verbs that consume them.
+mod auth;
 mod contract;
 mod events;
 mod manifest;
 mod project;
 
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use std::net::SocketAddr;
 
 #[derive(Clone, Default)]
 pub struct AppState {
     pub registry: project::Registry,
     pub events: events::EventLog,
+    pub auth: auth::AuthState,
 }
 
 pub fn version() -> String {
@@ -30,11 +36,15 @@ async fn healthz() -> axum::Json<serde_json::Value> {
 }
 
 fn sigiled_router(state: AppState) -> Router {
+    // healthz and the contract are public by design (the contract is the
+    // product); everything else takes an Actor (auth.rs — dual-auth §1.7).
     Router::new()
         .route("/healthz", get(healthz))
         .route("/contract", get(contract::serve))
         .route("/projects", get(project::list))
         .route("/projects/{project}/log", get(events::project_log))
+        .route("/auth/elevate", post(auth::elevate))
+        .route("/auth/approvals", get(auth::approvals))
         .with_state(state)
 }
 
@@ -57,6 +67,10 @@ async fn main() {
     // build can bake it; a dev run can export it). Absent = never "behind".
     let registry =
         project::Registry::with_latest_template(std::env::var("SIGILED_TEMPLATE_LATEST").ok());
-    let state = AppState { registry, events: events::EventLog::default() };
+    let state = AppState {
+        registry,
+        events: events::EventLog::default(),
+        auth: auth::AuthState::default(),
+    };
     axum::serve(listener, app(state)).await.expect("serve");
 }
