@@ -31,10 +31,10 @@ async fn git(st: &AppState, args: &[&str]) -> Result<String, ApiError> {
         );
     }
     for (var, default) in [
-        ("GIT_AUTHOR_NAME", "mgr-session"),
-        ("GIT_AUTHOR_EMAIL", "mgr@016180.xyz"),
-        ("GIT_COMMITTER_NAME", "mgr-session"),
-        ("GIT_COMMITTER_EMAIL", "mgr@016180.xyz"),
+        ("GIT_AUTHOR_NAME", "sigiled-session"),
+        ("GIT_AUTHOR_EMAIL", "session@sigiled.dev"),
+        ("GIT_COMMITTER_NAME", "sigiled-session"),
+        ("GIT_COMMITTER_EMAIL", "session@sigiled.dev"),
     ] {
         if std::env::var(var).is_err() {
             cmd.env(var, default);
