@@ -218,7 +218,7 @@ moved master and takes the merge path.
 
 Base = `endpoint` from start/recycle. Both headers on every call. Every
 authorized call except `GET /health` counts as activity (rule 6). Paths
-are absolute, sigiled to `/workspace` + declared mounts.
+are absolute, confined to `/workspace` + declared mounts.
 
 | Endpoint | Contract |
 |---|---|
