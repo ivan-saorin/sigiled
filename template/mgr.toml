@@ -1,4 +1,4 @@
-# SEAL workload manifest. Schema: `seal` repo, docs/seal-contract.md §7-8.
+# SIGILED workload manifest. Schema: `sigiled` repo, docs/sigiled-contract.md §7-8.
 # class: session | job | app
 # source: repo | image
 
@@ -7,7 +7,7 @@ source = "repo"
 
 # Template pin (DEC-05): which vm-tmpl this repo was generated from. The
 # recepimento (tools/sync-template.sh) updates template-owned paths to a new
-# tag ON DEMAND, never automatically; SEAL exposes template_version and
+# tag ON DEMAND, never automatically; SIGILED exposes template_version and
 # template_behind on the project record. Keep in sync with the Dockerfile's
 # FROM vm-base tag.
 template = "vm-tmpl@0.1.0"
@@ -35,5 +35,5 @@ template = "vm-tmpl@0.1.0"
 # "volume-name" = "ro" | "rw"
 
 [secrets]
-# Secret refs resolved by SEAL at container creation; values never in git.
+# Secret refs resolved by SIGILED at container creation; values never in git.
 # ENV_NAME = "env-var-name-in-stack-env"

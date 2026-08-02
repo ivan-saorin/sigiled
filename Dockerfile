@@ -1,5 +1,5 @@
 # Two roles, one file:
-# 1. Session image of the seal repo itself under MGR v1 (which builds the
+# 1. Session image of the sigiled repo itself under MGR v1 (which builds the
 #    project image from the repo root Dockerfile) — v1 compat until cutover.
 # 2. Source of the published base image `vm-base:x.y.z` (DEC-17), built and
 #    tagged by images/build-vm-base.sh.

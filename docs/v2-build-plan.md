@@ -1,15 +1,15 @@
-# SEAL v2 — Piano di costruzione in 4 sessioni
+# SIGILED v2 — Piano di costruzione in 4 sessioni
 
 **Versione:** 0.1 · **Data:** 2026-08-02 · **Driver previsto:** Claude Code (vale per qualunque driver)
 **Fonte di verità:** `docs/mgr-v2.md` (design + DEC-01…18). Questo piano è esecuzione; in caso di conflitto vince il design doc.
 
-**Nota 2026-08-03:** la piattaforma si chiama **SIGILED** (DEC-12 emendata); le sessioni di costruzione si aprono sul progetto `sigiled` — la storia del repo `seal` viaggia là col push dell'operatore. DEC-19/20 (open source, ghcr) ratificate nel frattempo; la «sessione 1b» qui sotto è stata aggiunta da Claude Code.
+**Nota 2026-08-03:** la piattaforma si chiama **SIGILED** (DEC-12 emendata); le sessioni di costruzione si aprono sul progetto `sigiled` — la storia del repo `sigiled` viaggia là col push dell'operatore. DEC-19/20 (open source, ghcr) ratificate nel frattempo; la «sessione 1b» qui sotto è stata aggiunta da Claude Code.
 
 ---
 
 ## Come si usa questo piano
 
-- **Una sessione = una sezione (§2…§5).** Ogni sessione: open su `sigiled` (nato `seal`) → git log → leggi `docs/mgr-v2.md` + questo piano + `docs/log-operativo.md` → lavoro → commit intent-carrying a ogni passo coerente → voce nel log operativo → **close**. Mai lasciare sessioni aperte.
+- **Una sessione = una sezione (§2…§5).** Ogni sessione: open su `sigiled` (nato `sigiled`) → git log → leggi `docs/mgr-v2.md` + questo piano + `docs/log-operativo.md` → lavoro → commit intent-carrying a ogni passo coerente → voce nel log operativo → **close**. Mai lasciare sessioni aperte.
 - **Master chiude sempre verde**: build + test passano a fine sessione.
 - **Rust ovunque** (DEC-16). Dipendenze minime e motivate nel commit message.
 - **Il workspace non ha docker/ssh**: dentro la sessione build, unit test, mock. Deploy e smoke sul box sono dell'operatore — lascia istruzioni precise nel log.
@@ -21,10 +21,10 @@
 
 ## 1. Prerequisiti (operatore, prima della sessione 1)
 
-1. **Codice MGR attuale**: push su `ivan-saorin/seal` master, oppure decisione esplicita di greenfield. Se il codice attuale non è Rust, DEC-16 implica **rewrite guidata** — il contratto SEAL v1 (la skill) è la spec completa del comportamento v1.
+1. **Codice MGR attuale**: push su `ivan-saorin/sigiled` master, oppure decisione esplicita di greenfield. Se il codice attuale non è Rust, DEC-16 implica **rewrite guidata** — il contratto SIGILED v1 (la skill, ex SIGILED) è la spec completa del comportamento v1.
 2. **Token API Authentik** in stack env (serve alla sessione 3); in alternativa l'operatore crea i provider a mano con le istruzioni che la sessione 3 lascerà.
 3. **Registry immagini** per `vm-base:x.y.z` raggiungibile dal box (ghcr.io o registry di stack).
-4. Le sessioni su `seal` girano su MGR **v1** col bearer legacy finché la dual-auth non esiste: normale amministrazione, la v2 si costruisce da dentro la v1.
+4. Le sessioni su `sigiled` girano su MGR **v1** col bearer legacy finché la dual-auth non esiste: normale amministrazione, la v2 si costruisce da dentro la v1.
 
 ---
 
@@ -33,8 +33,8 @@
 **Deliverables:**
 
 - **Assessment iniziale** (prima cosa, nel log): evoluzione del codice importato vs greenfield. Motivata in cinque righe.
-- **Layout repo**: `seald/` (orchestratore), `vm-base/` (agent: port di vm-tmpl `server/`+`build-ext.sh`, convenzione `ext-rust/`), `template/` (vm-tmpl v2: Dockerfile `FROM vm-base` + `docs/` skeleton con log-operativo + `mgr.toml` commentato + `ext-rust/` vuota di esempio).
-- **`GET /healthz`** `{status, version}` e **`GET /mgr/contract`**: serve il contratto canonico dal repo allo sha deployato. Include **scrivere `docs/seal-contract.md`** — il contratto v2, generato da `mgr-v2.md` (regole nuove: concorrenza, merge debt, log operativo, auth a due gambe).
+- **Layout repo**: `sigiledd/` (orchestratore), `vm-base/` (agent: port di vm-tmpl `server/`+`build-ext.sh`, convenzione `ext-rust/`), `template/` (vm-tmpl v2: Dockerfile `FROM vm-base` + `docs/` skeleton con log-operativo + `mgr.toml` commentato + `ext-rust/` vuota di esempio).
+- **`GET /healthz`** `{status, version}` e **`GET /mgr/contract`**: serve il contratto canonico dal repo allo sha deployato. Include **scrivere `docs/sigiled-contract.md`** — il contratto v2, generato da `mgr-v2.md` (regole nuove: concorrenza, merge debt, log operativo, auth a due gambe).
 - **Parse di `template = "vm-tmpl@x.y.z"`** in `mgr.toml`: il project record guadagna `template_version`, esposto in `GET /mgr/projects`.
 - **Script immagine base** (`images/build-vm-base.sh`): build locale di `vm-base:0.1.0`; push = operatore se il registry non è raggiungibile dal workspace.
 
@@ -42,7 +42,7 @@
 
 ## 2b. Sessione 1b — open source al 100% (DEC-19/20)
 
-Il Re ha deciso (2026-08-02, in chat, ratifica diretta): SEAL v2 sarà **open
+Il Re ha deciso (2026-08-02, in chat, ratifica diretta): SIGILED v2 sarà **open
 source al 100%**, con una landing GitHub Pages che spiega il progetto. Il repo
 si scrive da subito come se fosse pubblico. Questa sessione rende il repo
 «flip-ready»: pubblicarlo deve ridursi a girare l'interruttore di visibilità.
@@ -52,10 +52,10 @@ si scrive da subito come se fosse pubblico. Questa sessione rende il repo
 - **LICENSE**: proposta **Apache-2.0** (patent grant, standard per
   infrastruttura); il Re ratifica la scelta in sessione — se preferisce MIT,
   è un file diverso, zero impatti.
-- **Verifica naming**: «SEAL» collide (metodo MIT di self-adapting LLMs,
-  Microsoft SEAL crypto, SEAL team…). Decidere il nome pubblico del repo/
-  progetto (candidati: tenere `seal` con tagline disambiguante,
-  `seal-orchestrator`, altro) e registrarlo in DEC. La landing e il README
+- **Verifica naming**: «SIGILED» collide (metodo MIT di self-adapting LLMs,
+  Microsoft SIGILED crypto, SIGILED team…). Decidere il nome pubblico del repo/
+  progetto (candidati: tenere `sigiled` con tagline disambiguante,
+  `sigiled-orchestrator`, altro) e registrarlo in DEC. La landing e il README
   usano il nome deciso.
 - **Audit igiene della storia git**: scan di tutta la storia (bearer, token,
   chiavi, path privati) — la storia è giovane, farlo ORA che riscriverla è
@@ -63,7 +63,7 @@ si scrive da subito come se fosse pubblico. Questa sessione rende il repo
   commit si scrive sapendo che sarà pubblico.
 - **Generalizzazione stack-specifics**: inventario dei punti dove lo stack
   di Ivan è cablato (api/auth/search.016180.xyz, `ghcr.io/ivan-saorin`,
-  nomi provider `mgr-*`, `automa`) → in seald diventano config/env con
+  nomi provider `mgr-*`, `automa`) → in sigiledd diventano config/env con
   default documentati; i docs di design restano liberi di citare lo stack
   di riferimento come istanza esemplare.
 - **ghcr pubblico (DEC-20)**: `template/Dockerfile` → `FROM
@@ -97,7 +97,7 @@ DEC; build+test verdi; close.
 **Deliverables:**
 
 - **Middleware dual-auth**: accetta legacy bearer (→ bootstrap admin) **o** JWT Authentik (JWKS RS256 con cache; introspezione come fallback).
-- **`actor` {driver, approval}** su sessioni e job; **capability map v1**: `stack:admins` / `stack:drivers`; approval richiesta per `projects new`, apps verbs, e **sessioni su `seal` e `seal-supervisor`** (DEC-15).
+- **`actor` {driver, approval}** su sessioni e job; **capability map v1**: `stack:admins` / `stack:drivers`; approval richiesta per `projects new`, apps verbs, e **sessioni su `sigiled` e `sigiled-supervisor`** (DEC-15).
 - **`POST /mgr/auth/elevate`**: device flow via provider `mgr-device`; token custodito nel DB, refresh serializzato; `GET /mgr/auth/approvals` per ispezione.
 - **Provisioning dei provider** `mgr-device` + `mgr-<driver>`: via API Authentik col token da stack env, oppure istruzioni passo-passo per l'operatore (script `docs/authentik-setup.md`).
 - **Nota di migrazione per le skill** (`docs/skill-migration.md`): come un driver passa da bearer legacy a `client_id`/`client_secret` — testo pronto da incollare nelle skill.
@@ -109,9 +109,9 @@ DEC; build+test verdi; close.
 **Deliverables:**
 
 - **Niente lock di sessione**: open sempre ammesso; **merge-lock** per progetto (sezione critica di secondi).
-- **Close**: FF → merge a tre vie → **merge debt** con pacchetto `{branch, conflicted_files, ours/theirs + commit messages, since}`; `open` espone `merge_debt` in cima; `status` mostra la coda. Aggiorna `docs/seal-contract.md` (regole 4/7 nuove, protocollo di risoluzione, compilazione di scrupolo DEC-10).
-- **`seal-supervisor`** (sessione sull'altro progetto): Rust ~100 righe — `GET /health`, `GET /seal/status`, `POST /seal/restart {sha?}` (sha = rollback), log append-only, bearer statico da env. Secondo i suoi `docs/requisiti.md`.
-- **`docs/runbook-deploy.md`** in seal: deploy via supervisor, rollback via sha, recovery a stack morto (SSH + passi manuali).
+- **Close**: FF → merge a tre vie → **merge debt** con pacchetto `{branch, conflicted_files, ours/theirs + commit messages, since}`; `open` espone `merge_debt` in cima; `status` mostra la coda. Aggiorna `docs/sigiled-contract.md` (regole 4/7 nuove, protocollo di risoluzione, compilazione di scrupolo DEC-10).
+- **`sigiled-supervisor`** (sessione sull'altro progetto): Rust ~100 righe — `GET /health`, `GET /sigiled/status`, `POST /sigiled/restart {sha?}` (sha = rollback), log append-only, bearer statico da env. Secondo i suoi `docs/requisiti.md`.
+- **`docs/runbook-deploy.md`** in sigiled: deploy via supervisor, rollback via sha, recovery a stack morto (SSH + passi manuali).
 - **Test di concorrenza su `mgr-smoke`**: due sessioni parallele; merge pulito nel caso disgiunto; conflitto indotto → debt → la sessione seguente risolve col protocollo.
 
 **Acceptance:** test di concorrenza passato e raccontato nel log; supervisor compila e risponde in run locale; runbook presente; close.

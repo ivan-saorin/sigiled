@@ -1,17 +1,19 @@
-# SEAL — Session Execution And Lifecycle
+# SIGILED — the driving contract for the stack
+
+*Session Execution And Lifecycle — the session is sigiled, with a sigil.*
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.0.0-draft · **Source:** `docs/seal-contract.md` in `ivan-saorin/seal`, served by `GET /mgr/contract` at the deployed sha.
+**Contract version:** 2.0.0-draft · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /mgr/contract` at the deployed sha.
 **Status:** draft until DEC-01…10 are ratified (see `docs/mgr-v2.md` §8); v2 behavior lands progressively across the four build sessions. The v1 contract (single bearer, session lock) remains authoritative for a running v1 until cutover.
 
-This is the complete operating contract for SEAL (v2 of MGR). It is
+This is the complete operating contract for SIGILED (v2 of MGR). It is
 vendor-neutral: any LLM that can issue HTTPS requests can drive the system
 with only this document. If you are reading this, you are the driver.
 
 ## 0. Mental model
 
-SEAL rents you a disposable Linux container (a "workspace") wired to exactly
+SIGILED rents you a disposable Linux container (a "workspace") wired to exactly
 one GitHub repo. You edit files, run commands and commit through a narrow
 HTTP API. The container is cattle: it can be destroyed at any moment and
 nothing is lost, because every commit is pushed to its branch immediately
@@ -61,7 +63,7 @@ POST /mgr/auth/elevate        → { verification_uri, user_code, expires }
 ```
 
 Relay the URL + code to the operator in chat; they approve in the browser
-once. SEAL polls, then keeps the approval tokens in its own DB (never in
+once. SIGILED polls, then keeps the approval tokens in its own DB (never in
 skills, never in transcripts) and auto-refreshes them. Inspect with
 `GET /mgr/auth/approvals`. An approval names a human and an expiry; it
 rides alongside your driver identity as `actor: {driver, approval}` on
@@ -78,8 +80,8 @@ Request and response bodies are JSON unless noted (`git/diff` and
 
 ## 2. Commands — the normal operations
 
-Invoked as `/seal <command>`, as skill args, or as bare words in an automa
-context ("status" alone means `/seal status`). Session commands keep
+Invoked as `/sigiled <command>`, as skill args, or as bare words in an automa
+context ("status" alone means `/sigiled status`). Session commands keep
 `session_id`, `token` and `endpoint` in conversation memory. Anything not
 covered here falls through to the full API (§4, §6).
 
@@ -120,7 +122,7 @@ dangling (rule 6).
 4. **One branch per workload; master is the arbiter at close.** Sessions
    never block each other. The only lock left is the per-project merge lock
    — a critical section of seconds inside `close`. Never retry-hammer it.
-5. **The seal is the container.** `exec` is full bash, but only the
+5. **The sigil is the container.** `exec` is full bash, but only the
    container filesystem + declared mounts exist. Host paths, other
    projects, docker, ssh: structurally out of reach. Do not try.
 6. **Do not idle.** ~1 h without API calls and the reaper auto-closes the
@@ -152,7 +154,7 @@ dangling (rule 6).
 Base `https://api.016180.xyz/mgr` — bearer only. Nothing exists beyond
 this table. Capability map: `stack:admins` do everything; `stack:drivers`
 need a live approval for `projects new`, app verbs, and any session on
-`seal` / `seal-supervisor` (the control plane demands a present operator).
+`sigiled` / `sigiled-supervisor` (the control plane demands a present operator).
 
 | Verb | Returns |
 |---|---|
@@ -216,7 +218,7 @@ moved master and takes the merge path.
 
 Base = `endpoint` from start/recycle. Both headers on every call. Every
 authorized call except `GET /health` counts as activity (rule 6). Paths
-are absolute, sealed to `/workspace` + declared mounts.
+are absolute, sigiled to `/workspace` + declared mounts.
 
 | Endpoint | Contract |
 |---|---|
@@ -248,7 +250,7 @@ command = "./jobs/x.sh"     # bash -lc in /workspace
 timeout_minutes = 30        # 1..60 — hard wall clock
 hc_ping = "MY_HC_URL"       # optional stack-env ref, pinged on finish
 [jobs.<name>.secrets]
-SOME_KEY = "STACK_ENV_VAR"  # container env <- SEAL env, resolved at creation
+SOME_KEY = "STACK_ENV_VAR"  # container env <- SIGILED env, resolved at creation
 ```
 
 Changing job definitions = editing `mgr.toml` in a session and closing it

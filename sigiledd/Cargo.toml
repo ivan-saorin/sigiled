@@ -1,8 +1,8 @@
 [package]
-name = "seald"
+name = "sigiledd"
 version = "2.0.0-alpha.1"
 edition = "2021"
-description = "SEAL v2 orchestrator — control plane of the automa stack"
+description = "SIGILED v2 orchestrator — control plane of the automa stack"
 
 # Dependency policy (DEC-16, build plan): minimal and motivated.
 # axum/tokio/serde*: the platform is an HTTP JSON service, same stack as vm-base.

@@ -4,7 +4,7 @@
 use axum::http::{header, HeaderValue};
 use axum::response::IntoResponse;
 
-pub const TEXT: &str = include_str!("../../docs/seal-contract.md");
+pub const TEXT: &str = include_str!("../../docs/sigiled-contract.md");
 
 pub async fn serve() -> impl IntoResponse {
     let version = HeaderValue::from_str(&crate::version())
@@ -12,7 +12,7 @@ pub async fn serve() -> impl IntoResponse {
     (
         [
             (header::CONTENT_TYPE, HeaderValue::from_static("text/markdown; charset=utf-8")),
-            (header::HeaderName::from_static("x-seal-version"), version),
+            (header::HeaderName::from_static("x-sigiled-version"), version),
         ],
         TEXT,
     )

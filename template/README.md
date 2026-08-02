@@ -1,6 +1,6 @@
 # vm-tmpl v2 — workspace template
 
-Template for SEAL-managed project repos. `POST /projects` generates a new
+Template for SIGILED-managed project repos. `POST /projects` generates a new
 private repo from this directory. Everything here becomes project-owned at
 creation **except** the template-owned paths listed below, which the
 recepimento (`tools/sync-template.sh`, arriving with build session 2) may
@@ -11,7 +11,7 @@ replace when the project re-pins to a newer tag.
 - `Dockerfile` — thin: `FROM vm-base:x.y.z` (DEC-17) + project toolchain
   layers. The agent (fs/git/exec/health API) lives in the base image; the
   project only adds what it needs.
-- `mgr.toml` — workload manifest, read by SEAL from master. Carries the
+- `mgr.toml` — workload manifest, read by SIGILED from master. Carries the
   `template = "vm-tmpl@x.y.z"` pin (DEC-05).
 - `docs/log-operativo.md` — narrative operating log. Born here, then
   project-owned forever (DEC-04): no sync ever touches it.

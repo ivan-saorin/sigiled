@@ -55,8 +55,8 @@ async fn drain(mut r: impl tokio::io::AsyncRead + Unpin) -> (Vec<u8>, bool) {
 }
 
 /// Arbitrary command, full power, container-sized blast radius (§5: "option A
-/// sealed in a disposable box"). Reaches exactly the container fs + declared
-/// mounts — the seal is structural (§3.11), not policy.
+/// sigiled in a disposable box"). Reaches exactly the container fs + declared
+/// mounts — the sigil is structural (§3.11), not policy.
 pub async fn exec(
     State(st): State<Arc<AppState>>,
     Json(r): Json<ExecReq>,

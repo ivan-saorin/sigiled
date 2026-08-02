@@ -1,5 +1,5 @@
 #!/bin/sh
-# Bootstrap a Rust dev toolchain INSIDE a SEAL workspace container (no root,
+# Bootstrap a Rust dev toolchain INSIDE a SIGILED workspace container (no root,
 # no docker). The v1 runtime image is debian-slim without cc: rustup alone
 # cannot link host binaries (build scripts, proc macros). This script:
 #   1. installs rustup (minimal, stable) if missing;

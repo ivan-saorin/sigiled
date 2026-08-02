@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build (and optionally push) the base workspace image vm-base:x.y.z (DEC-17).
-# Run on the box or any docker host — SEAL workspaces have no docker: when a
+# Run on the box or any docker host — SIGILED workspaces have no docker: when a
 # session bumps the agent, the OPERATOR runs this and pushes.
 #
 #   images/build-vm-base.sh              # build vm-base:<version> locally

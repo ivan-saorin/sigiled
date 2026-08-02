@@ -2,7 +2,7 @@
 # Fold ext-rust/* crates into the vm-base agent (DEC-18: ext-rust is
 # compiled-in). Runs inside the image build, next to an optional ext-rust/
 # directory one level up:
-# - seal repo: no ext-rust/ at root -> default empty registry;
+# - sigiled repo: no ext-rust/ at root -> default empty registry;
 # - project image v2: vm-base sources at the pinned tag laid side by side
 #   with the project's ext-rust/ (wiring lands with the recepimento).
 # Convention: ext-rust/<name>/ is a crate named <name> exposing

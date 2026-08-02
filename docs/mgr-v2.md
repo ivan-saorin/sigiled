@@ -1,6 +1,6 @@
 # SIGILED — Documento di design
 
-*(nato come «MGR v2», poi «SEAL» — rinominato 2026-08-03 con DEC-12 emendata; il contratto di guida resta SEAL)*
+*(nato come «MGR v2», poi «SIGILED» — rinominato 2026-08-03 con DEC-12 emendata; il contratto di guida resta SIGILED)*
 
 **Versione:** 0.3 · **Data:** 2026-08-03 · **Stato:** DEC-11…20 ratificate; DEC-12 **emendata** 2026-08-03 → piattaforma **SIGILED** (`ivan-saorin/sigiled`, domini `sigiled.dev`/`sigilled.dev`); DEC-01…10 restano da ratificare
 **Origine:** sessione di design del 2026-08-02 (driver: Kimi K3), partita dalla lettura degli aggiornamenti di `tomes-and-tales` (auth deployata con Authentik) e `torchio` (requisiti v0.3, DEC-17/18): i pattern nati nei progetti **salgano di un livello**, dentro la piattaforma.
@@ -42,7 +42,7 @@ Verificato con sonde anonime:
 - **Un provider OAuth2 per driver** (`mgr-kimi`, `mgr-claude`, …): ciascuno con la propria coppia `client_id`/`client_secret`, grant ristretto a `client_credentials`, firma RS256. In Authentik un provider = una coppia → per-driver significa revoca per-driver e audit per-driver.
 - **Il driver si auto-minta i token**: `POST /application/o/token/` → access token breve → `Authorization: Bearer` verso `api.016180.xyz`. Scaduto → se ne prende un altro. **Zero umani nel loop dopo il setup.**
 - **Concorrenza sicura per costruzione**: ogni token è indipendente, nessuno stato mutabile condiviso fra chat parallele — il problema di rotazione dei refresh token (§1.5) qui non esiste.
-- **Nella skill SEAL**: `client_id` + `client_secret` al posto del bearer monolitico. Stesse regole di handling (mai echo, mai commit), stessa storia di rotazione (401 → chiedi il nuovo valore). Un leak compra solo token brevi di *quel* driver, revocabile in un click.
+- **Nella skill SIGILED**: `client_id` + `client_secret` al posto del bearer monolitico. Stesse regole di handling (mai echo, mai commit), stessa storia di rotazione (401 → chiedi il nuovo valore). Un leak compra solo token brevi di *quel* driver, revocabile in un click.
 
 ### 1.4 Gamba umana — device flow, custodia lato MGR
 
@@ -103,7 +103,7 @@ Finestra **dual-auth**: l'edge accetta legacy bearer (= bootstrap admin) e token
 
 - **Layer macchina (MGR-owned)**: MGR ha già tutti i dati (sessioni, close con esito merge, job run, build app) nel proprio DB. Li espone: **`GET /mgr/projects/{p}/log`**. Zero scritture nei repo dei progetti, zero violazioni della proprietà dei contenuti.
 - **Layer narrativo (driver-owned)**: `docs/log-operativo.md` con contratto in testa (tre domande: dove eravamo / dove prevedevamo di andare / cosa è stato fatto + scarti, stato, prossimo passo; voci non si cancellano, si correggono con voci nuove). **Lo skeleton nasce dal template alla creazione del progetto e da quel momento è del progetto, per sempre** — la regola torchio DEC-18 generalizzata. Il template non lo tocca mai dopo la creazione: collisione risolta per costruzione.
-- **Regola SEAL nuova**: *chiudi lavoro coerente → aggiungi una voce in cima al log operativo*.
+- **Regola SIGILED nuova**: *chiudi lavoro coerente → aggiungi una voce in cima al log operativo*.
 - **Hint onesto**: `close` risponde con `log_operativo_touched: false` quando il file non è stato modificato — specchio, non enforcement.
 
 ## 3. Template versioning — il recepimento sale di livello
@@ -115,7 +115,7 @@ La meccanica di torchio DEC-17, applicata a vm-tmpl:
 - **Recepimento**: allowlist di path MGR-owned + `sync` script + **drift detection** (se hai toccato file MGR-owned, si ferma e segnala). Rollback = `git revert` o re-pin al tag precedente.
 - **Mai auto-update** — simmetria con torchio DEC-07: MGR non riscrive mai i repo dei progetti di propria iniziativa. Sync v1 in sessione (close = imbragatura), v2 come job.
 - **Visibilità**: `status` mostra `template_behind: true` accanto a `needs_merge`.
-- **Il contratto servito dal motore**: **`GET /mgr/contract`** — il testo SEAL canonico, versionato. Con `healthz.version` già esistente, ogni driver può verificare la freschezza della propria skill e rigenerarla (l'Appendix A lo prescrive; ora diventa meccanico).
+- **Il contratto servito dal motore**: **`GET /mgr/contract`** — il testo SIGILED canonico, versionato. Con `healthz.version` già esistente, ogni driver può verificare la freschezza della propria skill e rigenerarla (l'Appendix A lo prescrive; ora diventa meccanico).
 
 ### 3.1 Il workspace v2 — immagine base + ext per linguaggio (ratificato 2026-08-02)
 
@@ -191,7 +191,7 @@ Sequenza alternativa: auth prima, se il dolore della chiave unica in giro per le
 ## 6. Questioni aperte
 
 1. **Scope auth v1**: solo operatore + agenti LLM; il lattice di gruppi umani (family/friends) arriva al primo use case vero.
-2. ~~Il repo di MGR stesso è MGR-registrato?~~ **Risolta 2026-08-02: sì — §7, DEC-11…15.** La piattaforma v2 si chiama SEAL; la resurrezione è affidata a `seal-supervisor`.
+2. ~~Il repo di MGR stesso è MGR-registrato?~~ **Risolta 2026-08-02: sì — §7, DEC-11…15.** La piattaforma v2 si chiama SIGILED; la resurrezione è affidata a `sigiled-supervisor`.
 3. Claim di gruppo nei token via property mapping — da verificare su Authentik 2026.5.6.
 4. Lista definitiva delle operazioni che richiedono approval (candidati: `projects new`, apps verbs; da ratificare).
 5. Soglia di merge debt oltre la quale `status` urla (candidata: 1 — qualunque debt è urlato).
@@ -202,23 +202,23 @@ Sequenza alternativa: auth prima, se il dolore della chiave unica in giro per le
 
 ## 7. Autogestione — MGR è MGR-registrato (ratificato 2026-08-02)
 
-La piattaforma si chiama **SIGILED** (nata «MGR v2» → «SEAL», rinominata 2026-08-03): progetto e codice in `ivan-saorin/sigiled`; il contratto di guida resta **SEAL**. La frase incisa: **SIGILED gestisce tutto di sé tranne la propria resurrezione.**
+La piattaforma si chiama **SIGILED** (nata «MGR v2» → «SIGILED», rinominata 2026-08-03): progetto e codice in `ivan-saorin/sigiled`; il contratto di guida resta **SIGILED**. La frase incisa: **SIGILED gestisce tutto di sé tranne la propria resurrezione.**
 
 | Cosa | Dove vive | Chi lo muove |
 |---|---|---|
-| Codice di SIGILED | repo `ivan-saorin/sigiled` (storia da `ivan-saorin/seal`) | sessioni SEAL, come tutti i progetti |
-| Contratto SEAL | `docs/` di questo repo | sessioni; servito da `GET /mgr/contract` allo sha deployato |
-| Servizio in esecuzione | box, sha pinnato | deploy out-of-band via **seal-supervisor** — mai SEAL su SEAL |
-| Stato runtime | DB sul box (+ backup) | SEAL; migrazioni expand-contract |
-| Resurrezione | `seal-supervisor` | API propria: chiamarla restarta seal |
+| Codice di SIGILED | repo `ivan-saorin/sigiled` (storia da `ivan-saorin/sigiled`) | sessioni SIGILED, come tutti i progetti |
+| Contratto SIGILED | `docs/` di questo repo | sessioni; servito da `GET /mgr/contract` allo sha deployato |
+| Servizio in esecuzione | box, sha pinnato | deploy out-of-band via **sigiled-supervisor** — mai SIGILED su SIGILED |
+| Stato runtime | DB sul box (+ backup) | SIGILED; migrazioni expand-contract |
+| Resurrezione | `sigiled-supervisor` | API propria: chiamarla restarta sigiled |
 
 Regole specifiche:
 
-- **seal-supervisor**: supervisor esterno minimale (~100 righe — se cresce, sta sbagliando), repo proprio `ivan-saorin/seal-supervisor`, deploy indipendente da SEAL (sul box, **mai come `[app]` di MGR**: è nel percorso di resurrezione, non può dipendere da ciò che resuscita). Espone una sua API: chiamarla = restart di seal (pull allo sha pinnato → build → restart → health check → report). Endpoint protetto e loggato; deve restare raggiungibile a stack mezzo morto, quindi auth propria e semplice, non OIDC.
+- **sigiled-supervisor**: supervisor esterno minimale (~100 righe — se cresce, sta sbagliando), repo proprio `ivan-saorin/sigiled-supervisor`, deploy indipendente da SIGILED (sul box, **mai come `[app]` di MGR**: è nel percorso di resurrezione, non può dipendere da ciò che resuscita). Espone una sua API: chiamarla = restart di sigiled (pull allo sha pinnato → build → restart → health check → report). Endpoint protetto e loggato; deve restare raggiungibile a stack mezzo morto, quindi auth propria e semplice, non OIDC.
 - **Bootstrap di piattaforma**: progetti creati freschi, il codice entra via prima sessione — si aggira il 503 di session-start sui progetti adottati (bug noto da sistemare).
-- **Approval obbligatoria**: sessioni su `seal` e `seal-supervisor` richiedono approval valida (DEC-02/03) — il repo che governa tutti i repo richiede l'operatore presente.
+- **Approval obbligatoria**: sessioni su `sigiled` e `sigiled-supervisor` richiedono approval valida (DEC-02/03) — il repo che governa tutti i repo richiede l'operatore presente.
 - **Mai auto-deploy al close**: master si muove via close; il deploy resta atto separato e umano.
-- **Runbook di rollback** in `docs/runbook-deploy.md` — leggibile da GitHub anche a SEAL morto; da scrivere insieme al primo deploy.
+- **Runbook di rollback** in `docs/runbook-deploy.md` — leggibile da GitHub anche a SIGILED morto; da scrivere insieme al primo deploy.
 
 ---
 
@@ -229,20 +229,20 @@ Regole specifiche:
 | DEC-01 | Auth a due gambe: `client_credentials` per-driver (macchina) + device flow con approval umana (umano). Il bearer unico muore dopo una finestra dual-auth. |
 | DEC-02 | Custodia dei token umani **lato MGR** (DB + auto-refresh serializzato); mai nelle skill, mai nei transcript. Nelle skill solo `client_id`/`client_secret` del driver. |
 | DEC-03 | `actor` a due componenti `{driver, approval}` su sessioni e job; capability map MGR-locale secondo la dottrina «IdP membership-only». |
-| DEC-04 | Log operativo a due layer: macchina via API dal DB di MGR; narrativo `docs/log-operativo.md` dal template, project-owned per sempre. Regola SEAL: chiudi lavoro coerente → voce in cima. |
+| DEC-04 | Log operativo a due layer: macchina via API dal DB di MGR; narrativo `docs/log-operativo.md` dal template, project-owned per sempre. Regola SIGILED: chiudi lavoro coerente → voce in cima. |
 | DEC-05 | Template versioning con pin `template = "vm-tmpl@x.y.z"` in `mgr.toml`, recepimento on-demand con drift detection; **mai auto-update**. |
 | DEC-06 | Il motore serve il proprio contratto: `GET /mgr/contract`, versionato; le skill si auto-verificano contro `healthz.version`. |
 | DEC-07 | Concorrenza a riconciliazione: un branch per workload, lock solo nella sezione critica di merge; niente più 409 su open. |
 | DEC-08 | Merge debt con pacchetto di contesto; risoluzione **obbligatoria prima di qualsiasi altro lavoro, quale che sia il modello**; se incerto, chiedi all'operatore. |
 | DEC-09 | Merge commit, non rebase: la traccia del confine di sessione è memoria. |
 | DEC-10 | Conflitti semantici: dopo merge multipli recenti, compilazione di scrupolo obbligatoria; se rotta, DEVE essere sistemata prima di procedere. |
-| DEC-11 | MGR è MGR-registrato (autogestione): il codice della piattaforma vive nel repo del progetto; il servizio è una deployment a sha pinnato; SEAL gestisce tutto di sé tranne la propria resurrezione (§7). **Ratificata 2026-08-02.** |
-| DEC-12 | ~~Naming v2: SEAL~~ **Emendata 2026-08-03: la piattaforma si chiama SIGILED.** Domini `sigiled.dev` + `sigilled.dev` (guardiano ortografico) acquistati dal Re; il progetto continua in `ivan-saorin/sigiled`; questo repo è archiviato come fondazione. |
-| DEC-13 | La resurrezione è un servizio: `seal-supervisor`, ~100 righe, repo e deploy propri (mai `[app]` di MGR), API autonoma con auth semplice — chiamarla restarta seal. **Ratificata 2026-08-02.** |
+| DEC-11 | MGR è MGR-registrato (autogestione): il codice della piattaforma vive nel repo del progetto; il servizio è una deployment a sha pinnato; SIGILED gestisce tutto di sé tranne la propria resurrezione (§7). **Ratificata 2026-08-02.** |
+| DEC-12 | ~~Naming v2: SIGILED~~ **Emendata 2026-08-03: la piattaforma si chiama SIGILED.** Domini `sigiled.dev` + `sigilled.dev` (guardiano ortografico) acquistati dal Re; il progetto continua in `ivan-saorin/sigiled`; questo repo è archiviato come fondazione. |
+| DEC-13 | La resurrezione è un servizio: `sigiled-supervisor`, ~100 righe, repo e deploy propri (mai `[app]` di MGR), API autonoma con auth semplice — chiamarla restarta sigiled. **Ratificata 2026-08-02.** |
 | DEC-14 | Bootstrap dei progetti di piattaforma: creazione fresca, codice via prima sessione (niente adozione; il 503 di session-start su adottati resta bug noto). **Ratificata 2026-08-02.** |
-| DEC-15 | Sessioni su `sigiled` (nato `seal`) e `seal-supervisor` richiedono approval valida: la gamba umana è obbligatoria per il control plane. **Ratificata 2026-08-02; nome progetto aggiornato 2026-08-03.** |
-| DEC-16 | Linguaggio del control plane: **Rust** — conferma la realtà esistente (l'agent dei workspace `vm-base` è già un server axum; `ext/` sono crate Rust) e la estende a seal e seal-supervisor. **Ratificata 2026-08-02.** |
+| DEC-15 | Sessioni su `sigiled` (nato `sigiled`) e `sigiled-supervisor` richiedono approval valida: la gamba umana è obbligatoria per il control plane. **Ratificata 2026-08-02; nome progetto aggiornato 2026-08-03.** |
+| DEC-16 | Linguaggio del control plane: **Rust** — conferma la realtà esistente (l'agent dei workspace `vm-base` è già un server axum; `ext/` sono crate Rust) e la estende a sigiled e sigiled-supervisor. **Ratificata 2026-08-02.** |
 | DEC-17 | Workspace v2 = **immagine base pre-buildata per tag**: `FROM vm-base:x.y.z` + layer di toolchain del progetto. Fine del vendoring di `server/`+`ext/`+`build-ext.sh` nei repo e della ricompilazione a ogni build (§3.1). **Ratificata 2026-08-02.** |
 | DEC-18 | Ext per linguaggio: `ext-rust/` (compiled-in, come oggi), `ext-py/`, `ext-go/` come processi locali supervisionati proxati da vm-base; contratto unico HTTP a `/x/<nome>` dentro il token gate (§3.1). **Ratificata 2026-08-02.** |
-| DEC-19 | SEAL v2 sarà **open source al 100%**, con landing GitHub Pages esplicativa. Il repo si scrive da subito come pubblico: igiene dei segreti sulla storia, commit message pubblicabili, stack-specifics estratti in config. Preparazione «flip-ready» nella sessione 1b del build plan. **Ratificata 2026-08-02.** |
+| DEC-19 | SIGILED v2 sarà **open source al 100%**, con landing GitHub Pages esplicativa. Il repo si scrive da subito come pubblico: igiene dei segreti sulla storia, commit message pubblicabili, stack-specifics estratti in config. Preparazione «flip-ready» nella sessione 1b del build plan. **Ratificata 2026-08-02.** |
 | DEC-20 | Le immagini base `vm-base:x.y.z` sono pubblicate **pubbliche** su ghcr (`ghcr.io/ivan-saorin/vm-base`): pull senza credenziali dal box e da chiunque self-hosti; PAT solo per il push. Il pin (template Dockerfile e script) usa il nome completo. Nessun segreto vive nelle immagini per costruzione (regola 8). **Ratificata 2026-08-02.** |

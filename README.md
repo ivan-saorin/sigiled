@@ -1,12 +1,12 @@
-# SEAL — Session Execution And Lifecycle
+# SIGILED
 
-SEAL is the platform: the workload orchestrator of the automa stack
+SIGILED is the platform: the workload orchestrator of the automa stack
 (`api.016180.xyz`), its workspace agent, and its project template — one repo,
-self-managed as an MGR/SEAL project itself (DEC-11/12). v2 of what was MGR.
+self-managed as an MGR/SIGILED project itself (DEC-11/12). v2 of what was MGR.
 
 ## Layout
 
-- `seald/` — the orchestrator (control plane): axum service behind the edge.
+- `sigiledd/` — the orchestrator (control plane): axum service behind the edge.
   Serves `/healthz`, the canonical driving contract at `/mgr/contract`, and
   the MGR verbs (built out across the v2 sessions).
 - `vm-base/` — the workspace agent: fs / git / exec / health + session-token
@@ -18,7 +18,7 @@ self-managed as an MGR/SEAL project itself (DEC-11/12). v2 of what was MGR.
   `mgr.toml` with template pin, empty `ext-rust/` example.
 - `images/` — image build scripts (`build-vm-base.sh`).
 - `docs/` — design (`mgr-v2.md`, DEC-01…18), build plan, the canonical
-  contract (`seal-contract.md`), and the narrative `log-operativo.md`.
+  contract (`sigiled-contract.md`), and the narrative `log-operativo.md`.
 - `Dockerfile` (root) — session image of this repo under MGR v1 (compat until
   cutover) and source of `vm-base:x.y.z`.
 

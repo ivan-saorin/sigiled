@@ -11,7 +11,7 @@ use crate::state::AppState;
 
 /// Normalize without touching the filesystem (target may not exist yet),
 /// rejecting any `..` traversal, then require the result to sit under an
-/// allowed root (§5: /workspace + declared mounts). The seal is structural:
+/// allowed root (§5: /workspace + declared mounts). The sigil is structural:
 /// this API simply cannot express a path outside the container's own view.
 fn resolve(st: &AppState, raw: &str) -> Result<PathBuf, ApiError> {
     let p = Path::new(raw);
