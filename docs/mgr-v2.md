@@ -115,6 +115,17 @@ La meccanica di torchio DEC-17, applicata a vm-tmpl:
 - **Visibilità**: `status` mostra `template_behind: true` accanto a `needs_merge`.
 - **Il contratto servito dal motore**: **`GET /mgr/contract`** — il testo SEAL canonico, versionato. Con `healthz.version` già esistente, ogni driver può verificare la freschezza della propria skill e rigenerarla (l'Appendix A lo prescrive; ora diventa meccanico).
 
+### 3.1 Il workspace v2 — immagine base + ext per linguaggio (ratificato 2026-08-02)
+
+Fatto emerso leggendo il vm-tmpl v1: ogni progetto vendorizza `server/` + `ext/` + `build-ext.sh` + lo stage cargo del `Dockerfile`, e ricompila vm-base a ogni build (con `COPY . .` che sbatte la cache a ogni commit). La v2 lo ribalta:
+
+- **Immagine base pre-buildata per tag**: vm-base è pubblicata come immagine taggata (`vm-base:x.y.z`, registry dello stack). Il Dockerfile del progetto si riduce a `FROM vm-base:x.y.z` + i layer di toolchain del progetto (python, go, …). Il recepimento dell'agent diventa **bump del tag** (punto esatto del pin — Dockerfile o `mgr.toml` — da fissare in implementazione). Dai repo dei progetti spariscono `server/`, `ext/` vendored, `build-ext.sh` e lo stage cargo: con loro muore la ricompilazione a ogni build.
+- **Ext per linguaggio**: il punto di estensione si generalizza in `ext-<lang>/`:
+  - `ext-rust/` — la convenzione attuale: crate compilate **dentro** vm-base (statico, zero runtime aggiuntivo);
+  - `ext-py/`, `ext-go/`, … — processi locali supervisionati nel container; vm-base fa reverse-proxy su porta/socket.
+  - Contratto unico invariato: HTTP montato a **`/x/<nome>`**, dentro lo stesso token gate. La toolchain segue l'ext: un progetto con `ext-py/` porta python nell'immagine via layer progetto.
+- **vm-tmpl v2** di conseguenza: Dockerfile sottile (FROM + hook toolchain), `docs/` skeleton (incl. log-operativo), `mgr.toml` commentato, `ext-rust/` di esempio vuota. L'allowlist MGR-owned si riduce quasi a zero — scheletro docs e poco più: il grosso del recepimento viaggia sul tag dell'immagine.
+
 ## 4. Concorrenza — da esclusione a riconciliazione
 
 ### 4.1 Il cambio strutturale
@@ -183,7 +194,7 @@ Sequenza alternativa: auth prima, se il dolore della chiave unica in giro per le
 4. Lista definitiva delle operazioni che richiedono approval (candidati: `projects new`, apps verbs; da ratificare).
 5. Soglia di merge debt oltre la quale `status` urla (candidata: 1 — qualunque debt è urlato).
 6. Durate definitive dei token (proposte: access driver breve ~1h auto-mintato; approval 12h; refresh 30d).
-7. **Toolchain del workspace** (emersa 2026-08-02): oggi ogni progetto vendorizza `server/` + `ext/` + `build-ext.sh` + `Dockerfile` — l'agent è Rust/axum compilato dal contesto del repo, il runtime è debian-slim con solo git/bash/curl. Come separare la parte **template-owned** del Dockerfile (build dell'agent) da quella **project-owned** (toolchain del progetto, es. python)? Candidati: hook `workspace-toolchain.sh` project-owned invocato dal Dockerfile; oppure immagine base pre-buildata per tag (elimina anche la ricompilazione di vm-base a ogni build di progetto). Da decidere al primo progetto con toolchain non minimale — vedi §3 per il recepimento.
+7. ~~Toolchain del workspace~~ **Risolta 2026-08-02: immagine base per tag + ext per linguaggio — §3.1, DEC-17/18.**
 
 ---
 
@@ -229,3 +240,5 @@ Regole specifiche:
 | DEC-14 | Bootstrap dei progetti di piattaforma: creazione fresca, codice via prima sessione (niente adozione; il 503 di session-start su adottati resta bug noto). **Ratificata 2026-08-02.** |
 | DEC-15 | Sessioni su `seal` e `seal-supervisor` richiedono approval valida: la gamba umana è obbligatoria per il control plane. **Ratificata 2026-08-02.** |
 | DEC-16 | Linguaggio del control plane: **Rust** — conferma la realtà esistente (l'agent dei workspace `vm-base` è già un server axum; `ext/` sono crate Rust) e la estende a seal e seal-supervisor. **Ratificata 2026-08-02.** |
+| DEC-17 | Workspace v2 = **immagine base pre-buildata per tag**: `FROM vm-base:x.y.z` + layer di toolchain del progetto. Fine del vendoring di `server/`+`ext/`+`build-ext.sh` nei repo e della ricompilazione a ogni build (§3.1). **Ratificata 2026-08-02.** |
+| DEC-18 | Ext per linguaggio: `ext-rust/` (compiled-in, come oggi), `ext-py/`, `ext-go/` come processi locali supervisionati proxati da vm-base; contratto unico HTTP a `/x/<nome>` dentro il token gate (§3.1). **Ratificata 2026-08-02.** |

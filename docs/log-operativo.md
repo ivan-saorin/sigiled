@@ -8,16 +8,24 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-02, sessione 5163827a_
+_aggiornato: 2026-08-02, sessione 5d7a7469_
 
 - **Su master**: solo documentazione — `docs/mgr-v2.md` v0.2, questo log. Nessun codice.
-- **Decisioni**: DEC-01…DEC-16 registrate. **DEC-11…16 ratificate dal Re 2026-08-02** (autogestione + Rust per il control plane); DEC-01…10 restano da ratificare.
+- **Decisioni**: DEC-01…DEC-18 registrate. **DEC-11…18 ratificate dal Re 2026-08-02** (autogestione, Rust, workspace v2 = immagine base + ext per linguaggio); DEC-01…10 restano da ratificare.
 - **Progetti di piattaforma**: `seal` (codice + contratto, questo repo), `seal-supervisor` (resurrezione; creato 2026-08-02, spec in `docs/requisiti.md` lì).
 - **Prossimo passo previsto**: ratifica delle DEC-01…10; poi sequenza §5 passo 1 (`GET /mgr/contract` + tag vm-tmpl + pin in `mgr.toml`).
 
 ---
 
 ## Voci
+
+### 2026-08-02 · DEC-17/18: workspace v2 = immagine base + ext per linguaggio — driver: Kimi K3
+
+- **Dove eravamo**: questione aperta §6.7 (toolchain dei workspace); il Re: «per v2, immagine base + /ext-rust; i progetti python si costruiranno /ext-py, quelli go /ext-go».
+- **Fatto**: §3.1 nuova (immagine base pre-buildata per tag; `FROM vm-base:x.y.z` + layer progetto; ext-rust compiled-in, ext-py/ext-go come processi supervisionati proxati a `/x/<nome>`; vm-tmpl v2 con allowlist quasi a zero); §6.7 chiusa; DEC-17/18 ratificate. Nomi normalizzati a `ext-<lang>` col trattino.
+- **Scarti**: nessuno sulla sostanza; normalizzazione formale dei nomi delle directory.
+- **Stato a fine sessione**: vedi «Stato attuale» sopra.
+- **Prossimo passo previsto**: ratifica DEC-01…10; la v2 può partire (sequenza §5).
 
 ### 2026-08-02 · DEC-16: Rust per il control plane; questione toolchain — driver: Kimi K3
 
