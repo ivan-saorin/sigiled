@@ -1,6 +1,6 @@
 # MGR v2 — Documento di design
 
-**Versione:** 0.1 · **Data:** 2026-08-02 · **Stato:** proposta, da ratificare
+**Versione:** 0.2 · **Data:** 2026-08-02 · **Stato:** DEC-11…15 (autogestione) **ratificate dal Re** 2026-08-02; DEC-01…10 restano da ratificare
 **Origine:** sessione di design del 2026-08-02 (driver: Kimi K3), partita dalla lettura degli aggiornamenti di `tomes-and-tales` (auth deployata con Authentik) e `torchio` (requisiti v0.3, DEC-17/18): i pattern nati nei progetti **salgano di un livello**, dentro la piattaforma.
 **Memoria operativa:** `docs/log-operativo.md` — ogni sessione la aggiorna (convenzione §3).
 
@@ -178,7 +178,7 @@ Sequenza alternativa: auth prima, se il dolore della chiave unica in giro per le
 ## 6. Questioni aperte
 
 1. **Scope auth v1**: solo operatore + agenti LLM; il lattice di gruppi umani (family/friends) arriva al primo use case vero.
-2. **Il repo di MGR stesso è MGR-registrato?** Se no, valutare il dogfood supremo: MGR con il proprio log operativo, recepimento e actor.
+2. ~~Il repo di MGR stesso è MGR-registrato?~~ **Risolta 2026-08-02: sì — §7, DEC-11…15.** La piattaforma v2 si chiama SEAL; la resurrezione è affidata a `seal-supervisor`.
 3. Claim di gruppo nei token via property mapping — da verificare su Authentik 2026.5.6.
 4. Lista definitiva delle operazioni che richiedono approval (candidati: `projects new`, apps verbs; da ratificare).
 5. Soglia di merge debt oltre la quale `status` urla (candidata: 1 — qualunque debt è urlato).
@@ -186,7 +186,29 @@ Sequenza alternativa: auth prima, se il dolore della chiave unica in giro per le
 
 ---
 
-## 7. Registro delle decisioni
+## 7. Autogestione — MGR è MGR-registrato (ratificato 2026-08-02)
+
+La piattaforma v2 si chiama **SEAL**: contratto, progetto e codice coincidono in `ivan-saorin/seal` (questo repo). La frase incisa: **SEAL gestisce tutto di sé tranne la propria resurrezione.**
+
+| Cosa | Dove vive | Chi lo muove |
+|---|---|---|
+| Codice di SEAL | repo `ivan-saorin/seal` | sessioni SEAL, come tutti i progetti |
+| Contratto SEAL | `docs/` di questo repo | sessioni; servito da `GET /mgr/contract` allo sha deployato |
+| Servizio in esecuzione | box, sha pinnato | deploy out-of-band via **seal-supervisor** — mai SEAL su SEAL |
+| Stato runtime | DB sul box (+ backup) | SEAL; migrazioni expand-contract |
+| Resurrezione | `seal-supervisor` | API propria: chiamarla restarta seal |
+
+Regole specifiche:
+
+- **seal-supervisor**: supervisor esterno minimale (~100 righe — se cresce, sta sbagliando), repo proprio `ivan-saorin/seal-supervisor`, deploy indipendente da SEAL (sul box, **mai come `[app]` di MGR**: è nel percorso di resurrezione, non può dipendere da ciò che resuscita). Espone una sua API: chiamarla = restart di seal (pull allo sha pinnato → build → restart → health check → report). Endpoint protetto e loggato; deve restare raggiungibile a stack mezzo morto, quindi auth propria e semplice, non OIDC.
+- **Bootstrap di piattaforma**: progetti creati freschi, il codice entra via prima sessione — si aggira il 503 di session-start sui progetti adottati (bug noto da sistemare).
+- **Approval obbligatoria**: sessioni su `seal` e `seal-supervisor` richiedono approval valida (DEC-02/03) — il repo che governa tutti i repo richiede l'operatore presente.
+- **Mai auto-deploy al close**: master si muove via close; il deploy resta atto separato e umano.
+- **Runbook di rollback** in `docs/runbook-deploy.md` — leggibile da GitHub anche a SEAL morto; da scrivere insieme al primo deploy.
+
+---
+
+## 8. Registro delle decisioni
 
 | # | Decisione |
 |---|---|
@@ -200,3 +222,8 @@ Sequenza alternativa: auth prima, se il dolore della chiave unica in giro per le
 | DEC-08 | Merge debt con pacchetto di contesto; risoluzione **obbligatoria prima di qualsiasi altro lavoro, quale che sia il modello**; se incerto, chiedi all'operatore. |
 | DEC-09 | Merge commit, non rebase: la traccia del confine di sessione è memoria. |
 | DEC-10 | Conflitti semantici: dopo merge multipli recenti, compilazione di scrupolo obbligatoria; se rotta, DEVE essere sistemata prima di procedere. |
+| DEC-11 | MGR è MGR-registrato (autogestione): il codice della piattaforma vive nel repo del progetto; il servizio è una deployment a sha pinnato; SEAL gestisce tutto di sé tranne la propria resurrezione (§7). **Ratificata 2026-08-02.** |
+| DEC-12 | Naming v2: la piattaforma si chiama **SEAL** — contratto, progetto e repo coincidono (`ivan-saorin/seal`). **Ratificata 2026-08-02.** |
+| DEC-13 | La resurrezione è un servizio: `seal-supervisor`, ~100 righe, repo e deploy propri (mai `[app]` di MGR), API autonoma con auth semplice — chiamarla restarta seal. **Ratificata 2026-08-02.** |
+| DEC-14 | Bootstrap dei progetti di piattaforma: creazione fresca, codice via prima sessione (niente adozione; il 503 di session-start su adottati resta bug noto). **Ratificata 2026-08-02.** |
+| DEC-15 | Sessioni su `seal` e `seal-supervisor` richiedono approval valida: la gamba umana è obbligatoria per il control plane. **Ratificata 2026-08-02.** |

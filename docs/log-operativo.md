@@ -8,15 +8,25 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-02, sessione 4f458f6f_
+_aggiornato: 2026-08-02, sessione ebb0b3c9_
 
-- **Su master**: solo documentazione — `docs/mgr-v2.md` v0.1, questo log. Nessun codice.
-- **Decisioni**: DEC-01…DEC-10 registrate, tutte **da ratificare** dal Re.
-- **Prossimo passo previsto**: ratifica delle DEC; poi sequenza §5 passo 1 (`GET /mgr/contract` + tag vm-tmpl + pin in `mgr.toml`). Questione aperta prioritaria: il repo di MGR stesso è MGR-registrato? (§6.2)
+- **Su master**: solo documentazione — `docs/mgr-v2.md` v0.2, questo log. Nessun codice.
+- **Decisioni**: DEC-01…DEC-15 registrate. **DEC-11…15 (autogestione) ratificate dal Re 2026-08-02**; DEC-01…10 restano da ratificare.
+- **Progetti di piattaforma**: `seal` (codice + contratto, questo repo), `seal-supervisor` (resurrezione; creato 2026-08-02, spec in `docs/requisiti.md` lì).
+- **Prossimo passo previsto**: ratifica delle DEC-01…10; poi sequenza §5 passo 1 (`GET /mgr/contract` + tag vm-tmpl + pin in `mgr.toml`).
 
 ---
 
 ## Voci
+
+### 2026-08-02 · v0.1 → v0.2: autogestione ratificata, nasce seal-supervisor — driver: Kimi K3
+
+- **Dove eravamo**: design v0.1 su master; questione aperta §6.2 — MGR MGR-registrato?
+- **Previsione**: discussione in chat su implicazioni e limiti dell'autogestione.
+- **Fatto**: il Re ha deciso: (1) la piattaforma v2 si chiama **SEAL**, repo canonico questo; (2) la resurrezione è un servizio — `seal-supervisor` (~100 righe, repo e deploy propri, API autonoma: chiamarla restarta seal); (3) bootstrap fresco + codice via prima sessione. Registrate come DEC-11…15 ratificate; nuova §7 (autogestione) con tabella codice/servizio/stato/resurrezione; §6.2 chiusa. Progetto `seal-supervisor` creato e spec scritta nel suo repo.
+- **Scarti**: il naming — il Re ha unificato contratto/progetto/codice sotto SEAL, oltre la proposta «repo ivan-saorin/mgr». E l'auth del supervisor: niente OIDC, deve funzionare a stack mezzo morto.
+- **Stato a fine sessione**: vedi «Stato attuale» sopra.
+- **Prossimo passo previsto**: ratifica DEC-01…10; poi sequenza §5 passo 1.
 
 ### 2026-08-02 · nascita del repo + design MGR v2 v0.1 — driver: Kimi K3
 
