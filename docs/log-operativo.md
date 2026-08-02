@@ -8,16 +8,26 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-02, sessione 34eadd3d_
+_aggiornato: 2026-08-02, sessione 03fe1b7d (sessione 1/4 del build plan)_
 
-- **Su master**: solo documentazione — `docs/mgr-v2.md` v0.2, questo log. Nessun codice.
-- **Decisioni**: DEC-01…DEC-18 registrate. **DEC-11…18 ratificate dal Re 2026-08-02** (autogestione, Rust, workspace v2 = immagine base + ext per linguaggio); DEC-01…10 restano da ratificare.
-- **Progetti di piattaforma**: `seal` (codice + contratto, questo repo), `seal-supervisor` (resurrezione; creato 2026-08-02, spec in `docs/requisiti.md` lì).
-- **Prossimo passo previsto**: ratifica delle DEC-01…10; poi sequenza §5 passo 1 (`GET /mgr/contract` + tag vm-tmpl + pin in `mgr.toml`).
+- **Su master**: docs (`mgr-v2.md` v0.2, `v2-build-plan.md`, `seal-contract.md` 2.0.0-draft, questo log) **+ codice sessione 1**: workspace cargo con `seald/` (healthz, `GET /mgr/contract`, `GET /mgr/projects` con `template_version`; 7 unit test) e `vm-base/` (port del server v1, build-ext.sh su `ext-rust/`), `template/` (vm-tmpl v2), `images/build-vm-base.sh`, `tools/dev-toolchain.sh`.
+- **Decisioni**: DEC-01…DEC-18 registrate. **DEC-11…18 ratificate dal Re 2026-08-02**; DEC-01…10 restano da ratificare — `seal-contract.md` è marcato draft finché non lo sono.
+- **Progetti di piattaforma**: `seal` (codice + contratto, questo repo), `seal-supervisor` (resurrezione; spec in `docs/requisiti.md` lì).
+- **Per l'operatore**: (a) l'immagine base non è ancora né buildata né pushata — decidere il registry (prerequisito §1.3 del piano) e lanciare `images/build-vm-base.sh` sul box; (b) per la sessione 3 serve il token API Authentik in stack env (prerequisito §1.2).
+- **Prossimo passo previsto**: sessione 2/4 — log operativo macchina (`GET /mgr/projects/{p}/log`), hint di close, `template/tools/sync-template.sh` con drift detection, `template_behind`; banco di prova `mgr-smoke`.
 
 ---
 
 ## Voci
+
+### 2026-08-02 · sessione 1/4 chiusa: fondamenta v2 su master — driver: Claude Code (sessione 03fe1b7d)
+
+- **Dove eravamo**: solo docs su master; assessment appena registrato (voce sotto): greenfield per seald, evoluzione per vm-base.
+- **Previsione**: i deliverable di §2 del piano — layout, healthz+contract, parse del pin template, template v2, script immagine.
+- **Fatto**: tutto §2. (1) Layout: workspace cargo, `server/`→`vm-base/` via git mv, `build-ext.sh` su convenzione `ext-rust/`, Dockerfile root a doppio ruolo (compat sessioni MGR v1 + sorgente di `vm-base:x.y.z`). (2) `docs/seal-contract.md` 2.0.0-draft generato da mgr-v2.md, embedded in seald a compile time (`GET /mgr/contract` serve allo sha del build per costruzione). (3) seald: `/healthz`, `/mgr/contract`, `/mgr/projects` con `template_version` dal pin `template = "vm-tmpl@x.y.z"` (parser con 7 unit test, incluso il test che il manifest del template non regredisca). (4) `template/`: Dockerfile sottile FROM vm-base:0.1.0, mgr.toml commentato col pin, skeleton log-operativo, ext-rust/ vuota. (5) `images/build-vm-base.sh` (versione da vm-base/Cargo.toml). Acceptance verificata: build+test verdi, run locale su :8099 risponde su tutti e tre gli endpoint.
+- **Scarti**: uno solo, strumentale — il container di sessione (runtime v1, debian-slim) non ha né rust né cc: per «build e test dentro la sessione» è nato `tools/dev-toolchain.sh` (rustup + gcc-14/binutils/libc6-dev estratti da deb.debian.org in `$HOME/tc` senza root, ~2 min; effimero, da rilanciare dopo recycle). Da valutare in sessione 2 se l'immagine v2 debba includere la toolchain di serie.
+- **Stato a fine sessione**: vedi «Stato attuale» sopra. Master chiude verde.
+- **Prossimo passo previsto**: sessione 2/4 (log macchina + recepimento); per l'operatore, build+push di vm-base:0.1.0 e registry (§1.3), token Authentik in stack env per la sessione 3 (§1.2).
 
 ### 2026-08-02 · sessione 1/4, assessment iniziale: greenfield per seald, evoluzione per vm-base — driver: Claude Code (sessione 03fe1b7d)
 
