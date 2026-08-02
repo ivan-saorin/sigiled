@@ -22,6 +22,14 @@
   li::before { content:"▸ "; color:var(--gold); }
   nav a { color:var(--gold); text-decoration:none; margin:0 .8rem; font-size:.9rem; }
   nav a:hover { text-decoration:underline; }
+  section { text-align:left; margin:0 0 1.8rem; }
+  h2 { font-size:.95rem; color:var(--gold); letter-spacing:.15em; text-transform:uppercase;
+       margin:0 0 .5em; font-weight:600; }
+  section p { color:var(--dim); font-size:.9rem; line-height:1.55; margin:0 0 .6em; }
+  section p em { color:var(--fg); font-style:normal; }
+  pre { background:#161b22; border:1px solid #21262d; border-radius:6px; padding:.8rem 1rem;
+        font-size:.82rem; line-height:1.5; overflow-x:auto; margin:.4rem 0 0; }
+  pre .c { color:#484f58; }
   footer { margin-top:3rem; color:#484f58; font-size:.75rem; }
 </style>
 </head>
@@ -52,6 +60,40 @@
     <li>Two-legged identity: machine credentials for drivers, device-flow approval for the human</li>
     <li>Open source, Rust end to end, self-hosted — it resurrects itself (almost)</li>
   </ul>
+
+  <section>
+    <h2>The contract is the product</h2>
+    <p>The driving rules are not docs <em>about</em> the platform — they are its
+       API surface. The orchestrator serves its own canonical contract, at the
+       exact sha it is running:</p>
+    <pre>GET /mgr/contract   <span class="c"># any LLM that speaks HTTPS can start driving</span></pre>
+  </section>
+
+  <section>
+    <h2>Reconciliation, not locks</h2>
+    <p>Sessions merge to master on close; conflicts become <em>merge debt</em> —
+       a structured packet the next session must resolve before anything else.
+       Job runs live on append-only branches: history a language model reads
+       back, never rewritten, never merged.</p>
+  </section>
+
+  <section>
+    <h2>Security model</h2>
+    <p>Two-legged identity: OAuth2 client credentials per machine driver,
+       device-flow approval by the human on privileged verbs. Workspace calls
+       carry two headers — the edge validates the stack credential, then swaps
+       in the per-session token. Secrets arrive as container env, never touch
+       git. The workspace is sealed by construction: container filesystem plus
+       declared mounts — no docker, no ssh, no host.</p>
+  </section>
+
+  <section>
+    <h2>Self-host</h2>
+    <p>Rust end to end, one base image, everything stack-specific is env with
+       documented defaults:</p>
+    <pre>docker pull ghcr.io/ivan-saorin/vm-base:0.1.0   <span class="c"># public, no credentials</span>
+PUSH=1 images/build-vm-base.sh                  <span class="c"># or build your own</span></pre>
+  </section>
 
   <nav>
     <a href="https://github.com/ivan-saorin/sigiled">github</a>
