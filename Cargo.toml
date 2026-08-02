@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["seald", "vm-base"]
+
+# Profiles live at workspace root; member profiles are ignored by cargo.
+[profile.release]
+strip = true

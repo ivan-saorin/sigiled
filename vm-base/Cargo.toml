@@ -17,5 +17,3 @@ base64 = "0.22.1"
 # ext-deps-begin (managed by build-ext.sh — do not edit between markers)
 # ext-deps-end
 
-[profile.release]
-strip = true

@@ -1,0 +1,5 @@
+[package]
+name = "seald"
+version = "2.0.0-alpha.1"
+edition = "2021"
+description = "SEAL v2 orchestrator — control plane of the automa stack"
