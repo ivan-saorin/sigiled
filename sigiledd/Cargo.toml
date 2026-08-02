@@ -6,7 +6,7 @@ description = "SIGILED v2 orchestrator — the control plane"
 
 # Dependency policy (DEC-16, build plan): minimal and motivated.
 # axum/tokio/serde*: the platform is an HTTP JSON service, same stack as vm-base.
-# toml: mgr.toml is the manifest format inherited from v1.
+# toml: sigiled.toml is the manifest format inherited from v1.
 # tracing*: structured logs are the ops surface of a headless control plane.
 [dependencies]
 axum = "0.8.9"

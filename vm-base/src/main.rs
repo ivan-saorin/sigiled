@@ -61,7 +61,7 @@ async fn main() {
 
     tracing_subscriber::fmt().with_target(false).init();
 
-    // Deploy key (injected by MGR at creation): wire GIT_SSH_COMMAND
+    // Deploy key (injected by SIGILED at creation): wire GIT_SSH_COMMAND
     // process-wide so both the git API and anything under /exec can push.
     let key = std::env::var("GIT_SSH_KEY").unwrap_or_else(|_| "/secrets/deploy_key".into());
     if std::path::Path::new(&key).exists() && std::env::var("GIT_SSH_COMMAND").is_err() {

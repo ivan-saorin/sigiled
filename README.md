@@ -18,12 +18,12 @@ Three workload classes:
 
 The driving rules are not documentation *about* the platform — they are the
 product. The orchestrator serves its own canonical contract at
-`GET /mgr/contract`, at the exact sha it is running: any LLM that can issue
+`GET /sigiled/contract`, at the exact sha it is running: any LLM that can issue
 HTTPS requests can fetch it and start driving.
 
 ## Status
 
-v2 is under construction — in the open, by LLM drivers, in MGR sessions on
+v2 is under construction — in the open, by LLM drivers, in SIGILED sessions on
 this very repo (it is self-managed: session `sigiled`, supervised for
 resurrection by [sigiled-supervisor]). v1 runs the reference stack today.
 The build plan is [docs/v2-build-plan.md](docs/v2-build-plan.md); progress is
@@ -33,20 +33,20 @@ by design, the two things a new driver must read first.
 ## Layout
 
 - `sigiledd/` — the orchestrator (control plane): axum service behind the
-  edge. Serves `/healthz`, the canonical driving contract at `/mgr/contract`,
-  and the MGR verbs (built out across the v2 sessions).
+  edge. Serves `/healthz`, the canonical driving contract at `/sigiled/contract`,
+  and the SIGILED verbs (built out across the v2 sessions).
 - `vm-base/` — the workspace agent: fs / git / exec / health + session-token
   auth. Built into the published base image
   `ghcr.io/ivan-saorin/vm-base:x.y.z` (public, pull without credentials);
   project images start `FROM` it. `build-ext.sh` folds `ext-rust/` crates in.
 - `template/` — vm-tmpl v2: what a new project repo is generated from. Thin
   Dockerfile (`FROM vm-base`), docs skeleton (log-operativo), commented
-  `mgr.toml` with template pin, empty `ext-rust/` example.
+  `sigiled.toml` with template pin, empty `ext-rust/` example.
 - `images/` — image build scripts (`build-vm-base.sh`).
-- `docs/` — design (`mgr-v2.md`, DEC-01…21), build plan, the canonical
+- `docs/` — design (`sigiled-v2.md`, DEC-01…22), build plan, the canonical
   contract (`sigiled-contract.md`), deploy runbook, and the narrative
   `log-operativo.md`.
-- `Dockerfile` (root) — session image of this repo under MGR v1 (compat until
+- `Dockerfile` (root) — session image of this repo under SIGILED v1 (compat until
   cutover) and source of `vm-base:x.y.z`.
 - `index.html` + `CNAME` — the landing page ([sigiled.dev]), served by
   GitHub Pages.
@@ -74,7 +74,7 @@ with the v2 cutover.
 The code, the contract and this README are English. The design docs and the
 operational log are **Italian** — they are the project's living memory,
 written in the language of its operator ("il Re", the ratifier of the DEC
-decision records you'll find in `docs/mgr-v2.md`). Translate nothing;
+decision records you'll find in `docs/sigiled-v2.md`). Translate nothing;
 `git log` speaks both.
 
 ## License

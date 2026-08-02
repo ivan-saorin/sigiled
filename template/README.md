@@ -11,7 +11,7 @@ replace when the project re-pins to a newer tag.
 - `Dockerfile` — thin: `FROM vm-base:x.y.z` (DEC-17) + project toolchain
   layers. The agent (fs/git/exec/health API) lives in the base image; the
   project only adds what it needs.
-- `mgr.toml` — workload manifest, read by SIGILED from master. Carries the
+- `sigiled.toml` — workload manifest, read by SIGILED from master. Carries the
   `template = "vm-tmpl@x.y.z"` pin (DEC-05).
 - `docs/log-operativo.md` — narrative operating log. Born here, then
   project-owned forever (DEC-04): no sync ever touches it.
@@ -24,10 +24,10 @@ replace when the project re-pins to a newer tag.
 
 | Path | Owner |
 |---|---|
-| `Dockerfile` FROM line + `mgr.toml` template pin | updated by re-pin/sync |
+| `Dockerfile` FROM line + `sigiled.toml` template pin | updated by re-pin/sync |
 | everything else, `docs/log-operativo.md` above all | project, forever |
 
 Any LLM driving this workspace: state lives in git or declared volumes,
 nothing else survives the container. Read `git log` and the log operativo
 on start; write intent-carrying commit messages; add a log entry when you
-close coherent work. The full contract: `GET /mgr/contract`.
+close coherent work. The full contract: `GET /sigiled/contract`.

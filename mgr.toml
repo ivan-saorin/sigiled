@@ -1,4 +1,8 @@
-# MGR workload manifest. Schema: mgr repo README.
+# Manifest workload v1 di questo repo. Il NOME del file è un vincolo
+# dell'orchestratore v1, che cerca `mgr.toml` nei repo per costruire le
+# sessioni di questo stesso progetto — resta così fino al cutover (DEC-22).
+# La v2 legge `sigiled.toml` (fallback su questo nome per i repo nati sotto
+# v1); lo schema di riferimento è template/sigiled.toml.
 # class: session | job | app
 # source: repo | image
 
@@ -20,5 +24,6 @@ source = "repo"
 # "volume-name" = "ro" | "rw"
 
 [secrets]
-# Secret refs resolved by MGR at container creation; values never in git.
+# Secret refs resolved by the orchestrator at container creation; values
+# never in git.
 # ENV_NAME = "env-var-name-in-stack-env"

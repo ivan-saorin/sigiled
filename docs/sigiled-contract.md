@@ -4,10 +4,10 @@
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.0.0-draft · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /mgr/contract` at the deployed sha.
-**Status:** draft until DEC-01…10 are ratified (see `docs/mgr-v2.md` §8); v2 behavior lands progressively across the four build sessions. The v1 contract (single bearer, session lock) remains authoritative for a running v1 until cutover.
+**Contract version:** 2.0.0-draft · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha.
+**Status:** draft until DEC-01…10 are ratified (see `docs/sigiled-v2.md` §8); v2 behavior lands progressively across the four build sessions. The v1 contract (single bearer, session lock) remains authoritative for a running v1 until cutover.
 
-This is the complete operating contract for SIGILED (v2 of MGR). It is
+This is the complete operating contract for SIGILED (v2 of SIGILED). It is
 vendor-neutral: any LLM that can issue HTTPS requests can drive the system
 with only this document. If you are reading this, you are the driver.
 
@@ -35,13 +35,13 @@ sessions.
 
 | Surface | Base | Auth |
 |---|---|---|
-| MGR verbs | `https://api.016180.xyz/mgr` | `Authorization: Bearer <access-token>` |
+| SIGILED verbs | `https://api.016180.xyz/sigiled` | `Authorization: Bearer <access-token>` |
 | Workspace | `https://api.016180.xyz/s/{project}` | same Bearer **and** `X-Session-Token: {token}` |
 | Web search | `https://search.016180.xyz` | same Bearer |
 
 **Machine leg (yours).** Each driver is an OAuth2 client of the stack IdP
 (`auth.016180.xyz`, Authentik): your skill carries a per-driver
-`client_id` + `client_secret` (providers `mgr-claude`, `mgr-kimi`, …).
+`client_id` + `client_secret` (providers `sigiled-claude`, `sigiled-kimi`, …).
 Mint your own short-lived access token when needed:
 
 ```
@@ -59,13 +59,13 @@ it dies at cutover.
 approved this" (see capability map, §4) go through the device flow:
 
 ```
-POST /mgr/auth/elevate        → { verification_uri, user_code, expires }
+POST /sigiled/auth/elevate        → { verification_uri, user_code, expires }
 ```
 
 Relay the URL + code to the operator in chat; they approve in the browser
 once. SIGILED polls, then keeps the approval tokens in its own DB (never in
 skills, never in transcripts) and auto-refreshes them. Inspect with
-`GET /mgr/auth/approvals`. An approval names a human and an expiry; it
+`GET /sigiled/auth/approvals`. An approval names a human and an expiry; it
 rides alongside your driver identity as `actor: {driver, approval}` on
 every session and job record.
 
@@ -76,7 +76,7 @@ a token minted for project A is rejected by project B's container — never
 reuse tokens across projects, or after `recycle`/`close`.
 
 Request and response bodies are JSON unless noted (`git/diff` and
-`git/show` return plain text; `GET /mgr/contract` returns markdown).
+`git/show` return plain text; `GET /sigiled/contract` returns markdown).
 
 ## 2. Commands — the normal operations
 
@@ -87,16 +87,16 @@ covered here falls through to the full API (§4, §6).
 
 | Command | Procedure |
 |---|---|
-| `status` | `GET /mgr/healthz` + `GET /mgr/projects`. Report version and, per project, `merge_debt` queue, `template_behind`, `needs_merge`; **any merge debt is shouted first**. |
-| `projects` | `GET /mgr/projects` — full records (incl. `template_version`, `template_behind`). |
-| `new <name>` | Requires approval for `stack:drivers`. `POST /mgr/projects` `{name}` (lowercase alnum+dash, 2–39 chars, letter first). Warn first: there is no delete verb — projects are permanent. |
-| `open <project>` | `POST /mgr/projects/{p}/sessions`. Store `session_id`, `token`, `endpoint`. **If the response carries `merge_debt`, resolving it is your first and only job (§5).** Then rule 1: `GET /git/log?limit=15` and summarize the handoff before any write. |
-| `close` | Commit pending work, then `POST /mgr/sessions/{id}/close`. Report the merge outcome (`ff` / `merged` / `debt`) and `log_operativo_touched`. |
-| `recycle` | `POST /mgr/sessions/{id}/recycle`. Replace the stored token (the old one is dead), confirm with `GET {endpoint}/health`. |
-| `elevate` | `POST /mgr/auth/elevate` → relay URL + code to the operator; poll status via `GET /mgr/auth/approvals`. |
-| `log <project>` | `GET /mgr/projects/{p}/log` — the machine layer of history (sessions, merges, job runs). The narrative layer is `docs/log-operativo.md` in the repo. |
-| `jobs <project>` | `GET /mgr/projects/{p}/branches` filtered to `job-*`, plus `GET /mgr/projects/{p}/jobs/{j}/runs` per job of interest; summarize outcomes newest-first. |
-| `run <project> <job>` | `POST /mgr/projects/{p}/jobs/{j}/run`. 202 → run started; 409 → a run of the same job is in flight; 422 → broken `[jobs]` table on master. |
+| `status` | `GET /sigiled/healthz` + `GET /sigiled/projects`. Report version and, per project, `merge_debt` queue, `template_behind`, `needs_merge`; **any merge debt is shouted first**. |
+| `projects` | `GET /sigiled/projects` — full records (incl. `template_version`, `template_behind`). |
+| `new <name>` | Requires approval for `stack:drivers`. `POST /sigiled/projects` `{name}` (lowercase alnum+dash, 2–39 chars, letter first). Warn first: there is no delete verb — projects are permanent. |
+| `open <project>` | `POST /sigiled/projects/{p}/sessions`. Store `session_id`, `token`, `endpoint`. **If the response carries `merge_debt`, resolving it is your first and only job (§5).** Then rule 1: `GET /git/log?limit=15` and summarize the handoff before any write. |
+| `close` | Commit pending work, then `POST /sigiled/sessions/{id}/close`. Report the merge outcome (`ff` / `merged` / `debt`) and `log_operativo_touched`. |
+| `recycle` | `POST /sigiled/sessions/{id}/recycle`. Replace the stored token (the old one is dead), confirm with `GET {endpoint}/health`. |
+| `elevate` | `POST /sigiled/auth/elevate` → relay URL + code to the operator; poll status via `GET /sigiled/auth/approvals`. |
+| `log <project>` | `GET /sigiled/projects/{p}/log` — the machine layer of history (sessions, merges, job runs). The narrative layer is `docs/log-operativo.md` in the repo. |
+| `jobs <project>` | `GET /sigiled/projects/{p}/branches` filtered to `job-*`, plus `GET /sigiled/projects/{p}/jobs/{j}/runs` per job of interest; summarize outcomes newest-first. |
+| `run <project> <job>` | `POST /sigiled/projects/{p}/jobs/{j}/run`. 202 → run started; 409 → a run of the same job is in flight; 422 → broken `[jobs]` table on master. |
 | `recap <project> [job]` | Recap flow (§7): runs → branches → in a session, `GET /git/log?ref=origin/job-…` and `GET /git/show?ref=…&path=…`. Never merge or delete job branches. |
 | `apps <name> [action]` | `GET /apps/{a}` for status. `start`/`stop`/`restart`/`upgrade` require approval for `stack:drivers`. 202 `action=building` = background build: poll status, never re-fire the verb. |
 | `sync <project>` | Template recepimento (§8): run `tools/sync-template.sh` in a session; it stops on drift. Never auto-update. |
@@ -149,9 +149,9 @@ dangling (rule 6).
     change is trivial. Git can merge cleanly and still be wrong. If it is
     broken: fix it before proceeding.
 
-## 4. MGR verbs
+## 4. SIGILED verbs
 
-Base `https://api.016180.xyz/mgr` — bearer only. Nothing exists beyond
+Base `https://api.016180.xyz/sigiled` — bearer only. Nothing exists beyond
 this table. Capability map: `stack:admins` do everything; `stack:drivers`
 need a live approval for `projects new`, app verbs, and any session on
 `sigiled` / `sigiled-supervisor` (the control plane demands a present operator).
@@ -176,14 +176,14 @@ need a live approval for `projects new`, app verbs, and any session on
 
 ## 5. Session lifecycle — the main loop
 
-**Start**: `POST /mgr/projects/{p}/sessions` → 201:
+**Start**: `POST /sigiled/projects/{p}/sessions` → 201:
 
 ```json
 {"session_id": "…", "project": "…", "branch": "session/…", "token": "…",
  "endpoint": "https://api.016180.xyz/s/{p}/", "head": "<sha>",
  "stale": false, "last_commit": null,
  "merge_debt": null,
- "actor": {"driver": "mgr-claude", "approval": null}}
+ "actor": {"driver": "sigiled-claude", "approval": null}}
 ```
 
 - `stale: true` — you are resuming an existing branch after an auto-close
@@ -201,12 +201,12 @@ need a live approval for `projects new`, app verbs, and any session on
 **Work**: everything through `endpoint` with both headers (§6). The cycle
 is read → edit → `exec` to build/test → `POST /git/commit`.
 
-**Recycle** (`POST /mgr/sessions/{id}/recycle`): flush, destroy the
+**Recycle** (`POST /sigiled/sessions/{id}/recycle`): flush, destroy the
 container, recreate it **from your branch** with a freshly minted token.
 Use when handing the session to another provider or when the container is
 wedged. Replace your stored token with the returned one.
 
-**Close** (`POST /mgr/sessions/{id}/close`): flush, then under the
+**Close** (`POST /sigiled/sessions/{id}/close`): flush, then under the
 project's merge lock (seconds): fast-forward if master has not moved,
 three-way merge if it has and the changes are disjoint, **merge debt**
 otherwise — master stays put, your branch survives, the debt package is
@@ -241,7 +241,7 @@ they are the tested recovery paths. `exec` is for builds, tests, tooling.
 
 ## 7. Jobs, apps and the recap flow
 
-Jobs are declared in the project repo's `mgr.toml` **on master**:
+Jobs are declared in the project repo's `sigiled.toml` **on master**:
 
 ```toml
 [jobs.<name>]
@@ -253,7 +253,7 @@ hc_ping = "MY_HC_URL"       # optional stack-env ref, pinged on finish
 SOME_KEY = "STACK_ENV_VAR"  # container env <- SIGILED env, resolved at creation
 ```
 
-Changing job definitions = editing `mgr.toml` in a session and closing it
+Changing job definitions = editing `sigiled.toml` in a session and closing it
 (definitions are read from master, refreshed within ~5 min). A broken
 `[jobs]` table disables that project's jobs until fixed; a manual trigger
 surfaces the parse error as 422.
@@ -264,14 +264,14 @@ Run states: `running · succeeded · failed · timeout · error ·
 skipped_locked · aborted`.
 
 **Recap flow** ("what did the jobs do last week"):
-1. `GET /mgr/projects/{p}/jobs/{j}/runs` — outcome metadata.
-2. `GET /mgr/projects/{p}/branches` — filter `job-*`, sort by stamp.
+1. `GET /sigiled/projects/{p}/jobs/{j}/runs` — outcome metadata.
+2. `GET /sigiled/projects/{p}/branches` — filter `job-*`, sort by stamp.
 3. In a session on that project: `GET /git/log?ref=origin/job-…` then
    `GET /git/show?ref=origin/job-…&path=…` — read the content itself.
 
 Never merge or delete job branches (rule 7).
 
-**Resident apps** live in the same mgr.toml — at most **one** `[app]` per
+**Resident apps** live in the same sigiled.toml — at most **one** `[app]` per
 project (singular table), read from master on the same refresh as jobs:
 
 ```toml
@@ -293,7 +293,7 @@ same-sha = config refresh); `start` never recreates. A 202
 
 Project repos are born from **vm-tmpl v2** and pinned to it:
 
-- `mgr.toml` on master carries `template = "vm-tmpl@x.y.z"`; the project
+- `sigiled.toml` on master carries `template = "vm-tmpl@x.y.z"`; the project
   record exposes `template_version` and `template_behind`.
 - The project Dockerfile is thin: `FROM vm-base:x.y.z` + the project's own
   toolchain layers (DEC-17). Adopting a new agent = bumping the tag.
@@ -312,7 +312,7 @@ Project repos are born from **vm-tmpl v2** and pinned to it:
 | Code | Meaning | Do |
 |---|---|---|
 | 401 | expired/invalid access token, or bad session token on `/s/` | mint a fresh token; if a fresh one still 401s, the operator rotated your credentials — ask |
-| 403 | capability requires approval | `POST /mgr/auth/elevate`, relay code to operator, retry after approval |
+| 403 | capability requires approval | `POST /sigiled/auth/elevate`, relay code to operator, retry after approval |
 | 404 | unknown project / session / job / app | typo, or job defs not on master yet |
 | 409 | merge lock busy, job already in flight, or name taken | seconds-scale: retry close once after a beat; never hammer |
 | 422 | invalid name / broken manifest | fix the input; do not retry as-is |

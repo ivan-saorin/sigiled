@@ -20,7 +20,7 @@ async fn healthz() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({ "status": "ok", "version": version() }))
 }
 
-fn mgr_router(state: project::Registry) -> Router {
+fn sigiled_router(state: project::Registry) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/contract", get(contract::serve))
@@ -29,11 +29,11 @@ fn mgr_router(state: project::Registry) -> Router {
 }
 
 pub fn app(state: project::Registry) -> Router {
-    // Same routes bare and under /mgr: the edge forwards /mgr/* verbatim,
+    // Same routes bare and under /sigiled: the edge forwards /sigiled/* verbatim,
     // a local run can use either.
     Router::new()
-        .merge(mgr_router(state.clone()))
-        .nest("/mgr", mgr_router(state))
+        .merge(sigiled_router(state.clone()))
+        .nest("/sigiled", sigiled_router(state))
 }
 
 #[tokio::main]

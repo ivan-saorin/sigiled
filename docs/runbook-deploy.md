@@ -57,6 +57,6 @@ del repo (DEC-19) non tocca questa impostazione.
 ## Deploy del control plane (sigiledd)
 
 Rimandato: fino al cutover (build plan §6) il control plane in produzione
-resta MGR v1; sigiledd si esercita in run locale dentro le sessioni. Il
+resta SIGILED v1; sigiledd si esercita in run locale dentro le sessioni. Il
 deploy reale passa da `sigiled-supervisor` (sessione 4) e sarà documentato
 qui.

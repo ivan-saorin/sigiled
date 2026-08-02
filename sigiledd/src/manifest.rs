@@ -1,4 +1,4 @@
-// mgr.toml — the workload manifest read from a project repo's master.
+// sigiled.toml — the workload manifest read from a project repo's master.
 // Session 1 scope: the `template = "vm-tmpl@x.y.z"` pin (DEC-05). The jobs
 // and [app] tables land with their features in later sessions.
 use serde::Deserialize;
@@ -18,7 +18,7 @@ pub enum ManifestError {
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ManifestError::Toml(e) => write!(f, "mgr.toml parse error: {e}"),
+            ManifestError::Toml(e) => write!(f, "sigiled.toml parse error: {e}"),
             ManifestError::BadTemplateRef(s) => {
                 write!(f, "bad template ref {s:?}: expected \"<name>@<x.y.z>\"")
             }
@@ -110,7 +110,7 @@ mod tests {
     fn shipped_template_manifest_parses_with_pin() {
         // The template we generate projects from must never regress against
         // our own parser.
-        let m = Manifest::parse(include_str!("../../template/mgr.toml")).unwrap();
+        let m = Manifest::parse(include_str!("../../template/sigiled.toml")).unwrap();
         let t = m.template.unwrap();
         assert_eq!((t.name.as_str(), t.version.as_str()), ("vm-tmpl", "0.1.0"));
     }

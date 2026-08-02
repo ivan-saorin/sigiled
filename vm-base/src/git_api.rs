@@ -13,8 +13,8 @@ const US: char = '\u{1f}'; // unit separator
 const RS: char = '\u{1e}'; // record separator
 
 /// Run git in the workspace. Deploy key (if present at $GIT_SSH_KEY, injected
-/// by MGR at container creation) is wired via GIT_SSH_COMMAND; identity has
-/// mgr defaults, overridable by env.
+/// by SIGILED at container creation) is wired via GIT_SSH_COMMAND; identity has
+/// neutral defaults, overridable by env.
 async fn git(st: &AppState, args: &[&str]) -> Result<String, ApiError> {
     let mut cmd = Command::new("git");
     cmd.args(args)

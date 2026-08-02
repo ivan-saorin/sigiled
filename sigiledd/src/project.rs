@@ -1,5 +1,5 @@
 // The project registry surface. Session 1 scope: the record shape with
-// template_version (DEC-05) behind GET /mgr/projects, over an in-memory
+// template_version (DEC-05) behind GET /sigiled/projects, over an in-memory
 // store. Persistence and the v1-registry import arrive with later sessions
 // and the cutover.
 use crate::manifest::Manifest;
@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectRecord {
     pub name: String,
-    /// From the mgr.toml pin on master, e.g. "vm-tmpl@0.1.0"; null on
+    /// From the sigiled.toml pin on master, e.g. "vm-tmpl@0.1.0"; null on
     /// repos that never adopted the pin.
     pub template_version: Option<String>,
     pub needs_merge: bool,
@@ -52,10 +52,10 @@ mod tests {
     #[test]
     fn record_exposes_template_version_from_manifest() {
         let m = Manifest::parse("template = \"vm-tmpl@0.1.0\"\n").unwrap();
-        let r = ProjectRecord::new("mgr-smoke", &m);
+        let r = ProjectRecord::new("smoke", &m);
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["template_version"], "vm-tmpl@0.1.0");
-        assert_eq!(json["name"], "mgr-smoke");
+        assert_eq!(json["name"], "smoke");
     }
 
     #[test]

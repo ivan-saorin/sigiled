@@ -10,7 +10,7 @@
 # The registry defaults to the public ghcr namespace (DEC-20) so the tag
 # printed here is exactly what template/Dockerfile pins in its FROM line.
 # Version comes from vm-base/Cargo.toml — single source of truth for the tag
-# that template/Dockerfile and the mgr.toml pin refer to.
+# that template/Dockerfile and the sigiled.toml pin refer to.
 set -eu
 
 cd "$(dirname "$0")/.."
