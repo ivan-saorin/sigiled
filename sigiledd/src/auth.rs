@@ -88,6 +88,9 @@ pub struct Actor {
 
 // --- capability policy (§1.6 + DEC-15) --------------------------------------
 
+// Open/Close are consumed by sessions.rs; the other variants await their
+// verbs (jobs, apps, recycle — cutover territory). Exercised by tests.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
     OpenSession,
