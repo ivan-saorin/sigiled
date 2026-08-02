@@ -2,6 +2,7 @@
 name = "sigiledd"
 version = "2.0.0-alpha.1"
 edition = "2021"
+license = "MIT"
 description = "SIGILED v2 orchestrator — the control plane"
 
 # Dependency policy (DEC-16, build plan): minimal and motivated.

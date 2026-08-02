@@ -79,7 +79,7 @@ decision records you'll find in `docs/sigiled-v2.md`). Translate nothing;
 
 ## License
 
-[Apache-2.0](LICENSE).
+[MIT](LICENSE).
 
 [sigiled-supervisor]: https://github.com/ivan-saorin/sigiled-supervisor
 [sigiled.dev]: https://sigiled.dev
