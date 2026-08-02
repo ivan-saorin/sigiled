@@ -1,6 +1,8 @@
-# MGR v2 — Documento di design
+# SIGILED — Documento di design
 
-**Versione:** 0.2 · **Data:** 2026-08-02 · **Stato:** DEC-11…15 (autogestione) **ratificate dal Re** 2026-08-02; DEC-01…10 restano da ratificare
+*(nato come «MGR v2», poi «SEAL» — rinominato 2026-08-03 con DEC-12 emendata; il contratto di guida resta SEAL)*
+
+**Versione:** 0.3 · **Data:** 2026-08-03 · **Stato:** DEC-11…20 ratificate; DEC-12 **emendata** 2026-08-03 → piattaforma **SIGILED** (`ivan-saorin/sigiled`, domini `sigiled.dev`/`sigilled.dev`); DEC-01…10 restano da ratificare
 **Origine:** sessione di design del 2026-08-02 (driver: Kimi K3), partita dalla lettura degli aggiornamenti di `tomes-and-tales` (auth deployata con Authentik) e `torchio` (requisiti v0.3, DEC-17/18): i pattern nati nei progetti **salgano di un livello**, dentro la piattaforma.
 **Memoria operativa:** `docs/log-operativo.md` — ogni sessione la aggiorna (convenzione §3).
 
@@ -200,11 +202,11 @@ Sequenza alternativa: auth prima, se il dolore della chiave unica in giro per le
 
 ## 7. Autogestione — MGR è MGR-registrato (ratificato 2026-08-02)
 
-La piattaforma v2 si chiama **SEAL**: contratto, progetto e codice coincidono in `ivan-saorin/seal` (questo repo). La frase incisa: **SEAL gestisce tutto di sé tranne la propria resurrezione.**
+La piattaforma si chiama **SIGILED** (nata «MGR v2» → «SEAL», rinominata 2026-08-03): progetto e codice in `ivan-saorin/sigiled`; il contratto di guida resta **SEAL**. La frase incisa: **SIGILED gestisce tutto di sé tranne la propria resurrezione.**
 
 | Cosa | Dove vive | Chi lo muove |
 |---|---|---|
-| Codice di SEAL | repo `ivan-saorin/seal` | sessioni SEAL, come tutti i progetti |
+| Codice di SIGILED | repo `ivan-saorin/sigiled` (storia da `ivan-saorin/seal`) | sessioni SEAL, come tutti i progetti |
 | Contratto SEAL | `docs/` di questo repo | sessioni; servito da `GET /mgr/contract` allo sha deployato |
 | Servizio in esecuzione | box, sha pinnato | deploy out-of-band via **seal-supervisor** — mai SEAL su SEAL |
 | Stato runtime | DB sul box (+ backup) | SEAL; migrazioni expand-contract |
@@ -235,10 +237,10 @@ Regole specifiche:
 | DEC-09 | Merge commit, non rebase: la traccia del confine di sessione è memoria. |
 | DEC-10 | Conflitti semantici: dopo merge multipli recenti, compilazione di scrupolo obbligatoria; se rotta, DEVE essere sistemata prima di procedere. |
 | DEC-11 | MGR è MGR-registrato (autogestione): il codice della piattaforma vive nel repo del progetto; il servizio è una deployment a sha pinnato; SEAL gestisce tutto di sé tranne la propria resurrezione (§7). **Ratificata 2026-08-02.** |
-| DEC-12 | Naming v2: la piattaforma si chiama **SEAL** — contratto, progetto e repo coincidono (`ivan-saorin/seal`). **Ratificata 2026-08-02.** |
+| DEC-12 | ~~Naming v2: SEAL~~ **Emendata 2026-08-03: la piattaforma si chiama SIGILED.** Domini `sigiled.dev` + `sigilled.dev` (guardiano ortografico) acquistati dal Re; il progetto continua in `ivan-saorin/sigiled`; questo repo è archiviato come fondazione. |
 | DEC-13 | La resurrezione è un servizio: `seal-supervisor`, ~100 righe, repo e deploy propri (mai `[app]` di MGR), API autonoma con auth semplice — chiamarla restarta seal. **Ratificata 2026-08-02.** |
 | DEC-14 | Bootstrap dei progetti di piattaforma: creazione fresca, codice via prima sessione (niente adozione; il 503 di session-start su adottati resta bug noto). **Ratificata 2026-08-02.** |
-| DEC-15 | Sessioni su `seal` e `seal-supervisor` richiedono approval valida: la gamba umana è obbligatoria per il control plane. **Ratificata 2026-08-02.** |
+| DEC-15 | Sessioni su `sigiled` (nato `seal`) e `seal-supervisor` richiedono approval valida: la gamba umana è obbligatoria per il control plane. **Ratificata 2026-08-02; nome progetto aggiornato 2026-08-03.** |
 | DEC-16 | Linguaggio del control plane: **Rust** — conferma la realtà esistente (l'agent dei workspace `vm-base` è già un server axum; `ext/` sono crate Rust) e la estende a seal e seal-supervisor. **Ratificata 2026-08-02.** |
 | DEC-17 | Workspace v2 = **immagine base pre-buildata per tag**: `FROM vm-base:x.y.z` + layer di toolchain del progetto. Fine del vendoring di `server/`+`ext/`+`build-ext.sh` nei repo e della ricompilazione a ogni build (§3.1). **Ratificata 2026-08-02.** |
 | DEC-18 | Ext per linguaggio: `ext-rust/` (compiled-in, come oggi), `ext-py/`, `ext-go/` come processi locali supervisionati proxati da vm-base; contratto unico HTTP a `/x/<nome>` dentro il token gate (§3.1). **Ratificata 2026-08-02.** |

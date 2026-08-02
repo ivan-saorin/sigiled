@@ -3,11 +3,13 @@
 **Versione:** 0.1 · **Data:** 2026-08-02 · **Driver previsto:** Claude Code (vale per qualunque driver)
 **Fonte di verità:** `docs/mgr-v2.md` (design + DEC-01…18). Questo piano è esecuzione; in caso di conflitto vince il design doc.
 
+**Nota 2026-08-03:** la piattaforma si chiama **SIGILED** (DEC-12 emendata); le sessioni di costruzione si aprono sul progetto `sigiled` — la storia del repo `seal` viaggia là col push dell'operatore. DEC-19/20 (open source, ghcr) ratificate nel frattempo; la «sessione 1b» qui sotto è stata aggiunta da Claude Code.
+
 ---
 
 ## Come si usa questo piano
 
-- **Una sessione = una sezione (§2…§5).** Ogni sessione: open su `seal` → git log → leggi `docs/mgr-v2.md` + questo piano + `docs/log-operativo.md` → lavoro → commit intent-carrying a ogni passo coerente → voce nel log operativo → **close**. Mai lasciare sessioni aperte.
+- **Una sessione = una sezione (§2…§5).** Ogni sessione: open su `sigiled` (nato `seal`) → git log → leggi `docs/mgr-v2.md` + questo piano + `docs/log-operativo.md` → lavoro → commit intent-carrying a ogni passo coerente → voce nel log operativo → **close**. Mai lasciare sessioni aperte.
 - **Master chiude sempre verde**: build + test passano a fine sessione.
 - **Rust ovunque** (DEC-16). Dipendenze minime e motivate nel commit message.
 - **Il workspace non ha docker/ssh**: dentro la sessione build, unit test, mock. Deploy e smoke sul box sono dell'operatore — lascia istruzioni precise nel log.
@@ -100,7 +102,7 @@ DEC; build+test verdi; close.
 - **Provisioning dei provider** `mgr-device` + `mgr-<driver>`: via API Authentik col token da stack env, oppure istruzioni passo-passo per l'operatore (script `docs/authentik-setup.md`).
 - **Nota di migrazione per le skill** (`docs/skill-migration.md`): come un driver passa da bearer legacy a `client_id`/`client_secret` — testo pronto da incollare nelle skill.
 
-**Acceptance:** con JWT driver valido → open/close normali; senza approval → open su `seal` negato; con approval device approvata dall'operatore → passa; legacy bearer ancora funzionante (finestra dual-auth); close.
+**Acceptance:** con JWT driver valido → open/close normali; senza approval → open su `sigiled` negato; con approval device approvata dall'operatore → passa; legacy bearer ancora funzionante (finestra dual-auth); close.
 
 ## 5. Sessione 4 — concorrenza + supervisor + runbook
 

@@ -8,17 +8,26 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-02, sessione 03fe1b7d (sessione 1/4 del build plan)_
+_aggiornato: 2026-08-03, sessione d2e77904 (rinomina SIGILED)_
 
 - **Su master**: docs (`mgr-v2.md` v0.2, `v2-build-plan.md`, `seal-contract.md` 2.0.0-draft, questo log) **+ codice sessione 1**: workspace cargo con `seald/` (healthz, `GET /mgr/contract`, `GET /mgr/projects` con `template_version`; 7 unit test) e `vm-base/` (port del server v1, build-ext.sh su `ext-rust/`), `template/` (vm-tmpl v2), `images/build-vm-base.sh`, `tools/dev-toolchain.sh`.
 - **Decisioni**: DEC-01…DEC-18 registrate. **DEC-11…18 ratificate dal Re 2026-08-02**; DEC-01…10 restano da ratificare — `seal-contract.md` è marcato draft finché non lo sono.
-- **Progetti di piattaforma**: `seal` (codice + contratto, questo repo), `seal-supervisor` (resurrezione; spec in `docs/requisiti.md` lì).
+- **STATO: RINOMINA IN CORSO → SIGILED.** DEC-12 emendata 2026-08-03: la piattaforma si chiama **SIGILED**; domini `sigiled.dev` + `sigilled.dev` acquistati dal Re. Progetto MGR `sigiled` creato (repo `ivan-saorin/sigiled`): la storia di QUESTO repo viaggia là con un push dell'operatore (vedi voce 2026-08-03 sotto); poi questo repo si archivia come fondazione.
+- **Progetti di piattaforma**: `sigiled` (codice + contratto, dopo il travaso), `seal` (fondazione, archivio), `seal-supervisor` (resurrezione; nome da ridiscutere alla luce del rename).
 - **Per l'operatore**: (a) l'immagine base non è ancora né buildata né pushata — decidere il registry (prerequisito §1.3 del piano) e lanciare `images/build-vm-base.sh` sul box; (b) per la sessione 3 serve il token API Authentik in stack env (prerequisito §1.2).
 - **Prossimo passo previsto**: **sessione 1b** (open source flip-ready, DEC-19/20: license, audit storia, naming, ghcr pubblico, landing gh-pages), poi sessione 2/4 — log operativo macchina, hint di close, sync-template con drift detection, `template_behind`; banco di prova `mgr-smoke`.
 
 ---
 
 ## Voci
+
+### 2026-08-03 · il nome: SIGILED — rinomina, domini, landing Pages — driver: Kimi K3 (sessione d2e77904)
+
+- **Dove eravamo**: DEC-12 (nome SEAL) ratificata ieri; DEC-19 (open source + landing gh-pages) ratificata in serata; restava il problema del dominio pubblico. Nel frattempo Claude Code aveva chiuso la sessione 1/4 (codice!) — il peso di questo repo è cambiato: non più solo docs.
+- **Fatto**: esplorazione guidata dal Re con verifica RDAP sistematica (kunukku, editto, castellan, vseal, sigiled…); il Re ha scelto **sigiled** e acquistato la coppia `sigiled.dev` + `sigilled.dev` (il guardiano ortografico neutralizza l'ambiguità di spelling possedendo entrambe; `.ai` scartato: 83€/anno vs 13€/anno del `.dev`). Emendata **DEC-12**; sweep di rinomina su `mgr-v2.md` (titolo, header, §7, DEC-15); aggiunti `CNAME` (`sigiled.dev`) e `index.html` (landing pubblica) alla radice. Progetto MGR `sigiled` creato. Il contratto/skill resta **SEAL** — piattaforma SIGILED, contratto SEAL; questione aperta se uniformare.
+- **Scarti**: (1) il nome scelto non è tra i quattro raccomandati dal driver (kunukku/editto/castellan/vseal) — il Re ha visto oltre; (2) la strategia di travaso è cambiata in corsa: invece di partire da repo fresco, TUTTO il contenuto (codice sessione 1 compreso) viaggia con la storia — il push è un comando solo dell'operatore, niente chirurgia sul DB di MGR.
+- **Stato a fine sessione**: vedi «Stato attuale» sopra.
+- **Prossimo passo previsto**: operatore pusha master di seal → `ivan-saorin/sigiled` (force, primo push); poi sessione su `sigiled` per la **sessione 1b** (flip-ready open source, DEC-19/20) — che include l'abilitazione della Pages su `sigiled.dev`; DNS: 4×A verso GitHub Pages su `sigiled.dev`, 301 HTTPS del guardiano `sigilled.dev`.
 
 ### 2026-08-02 · DEC-19/20 ratificate: open source al 100%, immagini pubbliche su ghcr; nasce la sessione 1b — driver: Claude Code (sessione b5245bba)
 
