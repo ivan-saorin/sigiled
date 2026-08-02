@@ -38,6 +38,46 @@
 
 **Acceptance:** cargo build verde; unit test del dominio verdi; `/mgr/contract` risponde in run locale; voce di log con assessment e scarti; close.
 
+## 2b. Sessione 1b — open source al 100% (DEC-19/20)
+
+Il Re ha deciso (2026-08-02, in chat, ratifica diretta): SEAL v2 sarà **open
+source al 100%**, con una landing GitHub Pages che spiega il progetto. Il repo
+si scrive da subito come se fosse pubblico. Questa sessione rende il repo
+«flip-ready»: pubblicarlo deve ridursi a girare l'interruttore di visibilità.
+
+**Deliverables:**
+
+- **LICENSE**: proposta **Apache-2.0** (patent grant, standard per
+  infrastruttura); il Re ratifica la scelta in sessione — se preferisce MIT,
+  è un file diverso, zero impatti.
+- **Verifica naming**: «SEAL» collide (metodo MIT di self-adapting LLMs,
+  Microsoft SEAL crypto, SEAL team…). Decidere il nome pubblico del repo/
+  progetto (candidati: tenere `seal` con tagline disambiguante,
+  `seal-orchestrator`, altro) e registrarlo in DEC. La landing e il README
+  usano il nome deciso.
+- **Audit igiene della storia git**: scan di tutta la storia (bearer, token,
+  chiavi, path privati) — la storia è giovane, farlo ORA che riscriverla è
+  ancora possibile senza dolore. Regola permanente da qui in poi: ogni
+  commit si scrive sapendo che sarà pubblico.
+- **Generalizzazione stack-specifics**: inventario dei punti dove lo stack
+  di Ivan è cablato (api/auth/search.016180.xyz, `ghcr.io/ivan-saorin`,
+  nomi provider `mgr-*`, `automa`) → in seald diventano config/env con
+  default documentati; i docs di design restano liberi di citare lo stack
+  di riferimento come istanza esemplare.
+- **ghcr pubblico (DEC-20)**: `template/Dockerfile` → `FROM
+  ghcr.io/ivan-saorin/vm-base:0.1.0`; `images/build-vm-base.sh` con lo
+  stesso default per `VM_BASE_REGISTRY`; istruzioni per marcare il package
+  public in `docs/runbook-deploy.md` (bozza).
+- **README pubblico (EN) + landing gh-pages**: `docs/landing/` con la pagina
+  che spiega mental model, il contratto come prodotto (`GET /mgr/contract`),
+  concorrenza a riconciliazione, quickstart self-host, modello di sicurezza.
+  Pages si attiva solo al flip; qui si prepara tutto. I doc interni restano
+  in italiano (memoria di progetto), con nota esplicita nel README.
+
+**Acceptance:** LICENSE presente; audit storia documentato pulito nel log;
+FROM/script coerenti su ghcr; landing renderizzabile; naming registrato in
+DEC; build+test verdi; close.
+
 ## 3. Sessione 2 — log operativo macchina + recepimento
 
 **Deliverables:**

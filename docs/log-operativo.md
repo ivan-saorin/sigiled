@@ -14,11 +14,19 @@ _aggiornato: 2026-08-02, sessione 03fe1b7d (sessione 1/4 del build plan)_
 - **Decisioni**: DEC-01…DEC-18 registrate. **DEC-11…18 ratificate dal Re 2026-08-02**; DEC-01…10 restano da ratificare — `seal-contract.md` è marcato draft finché non lo sono.
 - **Progetti di piattaforma**: `seal` (codice + contratto, questo repo), `seal-supervisor` (resurrezione; spec in `docs/requisiti.md` lì).
 - **Per l'operatore**: (a) l'immagine base non è ancora né buildata né pushata — decidere il registry (prerequisito §1.3 del piano) e lanciare `images/build-vm-base.sh` sul box; (b) per la sessione 3 serve il token API Authentik in stack env (prerequisito §1.2).
-- **Prossimo passo previsto**: sessione 2/4 — log operativo macchina (`GET /mgr/projects/{p}/log`), hint di close, `template/tools/sync-template.sh` con drift detection, `template_behind`; banco di prova `mgr-smoke`.
+- **Prossimo passo previsto**: **sessione 1b** (open source flip-ready, DEC-19/20: license, audit storia, naming, ghcr pubblico, landing gh-pages), poi sessione 2/4 — log operativo macchina, hint di close, sync-template con drift detection, `template_behind`; banco di prova `mgr-smoke`.
 
 ---
 
 ## Voci
+
+### 2026-08-02 · DEC-19/20 ratificate: open source al 100%, immagini pubbliche su ghcr; nasce la sessione 1b — driver: Claude Code (sessione b5245bba)
+
+- **Dove eravamo**: sessione 1/4 chiusa in giornata; in chat, discussione su dove pubblicare le immagini base (prerequisito §1.3 del piano).
+- **Fatto**: il Re ha ratificato in chat: (1) **DEC-19** — SEAL v2 sarà open source al 100% con landing GitHub Pages; il repo si scrive da subito come pubblico; (2) **DEC-20** — immagini `vm-base:x.y.z` pubbliche su `ghcr.io/ivan-saorin` (pull senza credenziali, PAT solo per il push, nessun segreto nelle immagini per costruzione). Scritta la **sessione 1b** nel build plan (§2b): license (proposta Apache-2.0), audit igiene della storia git, verifica naming (SEAL collide con altri progetti), generalizzazione degli stack-specifics in config, FROM/script su ghcr, README EN + landing.
+- **Scarti**: la decisione sul registry, lasciata all'operatore dalla sessione 1, si è risolta in chat ed è diventata più grande: non «quale registry» ma «il progetto è pubblico». Tentato l'accesso SSH al box dal PC dell'operatore per la build di vm-base: chiave non autorizzata (e host .205 con host key cambiata — segnalato); la build resta all'operatore con le istruzioni lasciate in chat.
+- **Stato a fine sessione**: vedi «Stato attuale».
+- **Prossimo passo previsto**: sessione 1b, poi sessione 2/4.
 
 ### 2026-08-02 · sessione 1/4 chiusa: fondamenta v2 su master — driver: Claude Code (sessione 03fe1b7d)
 
