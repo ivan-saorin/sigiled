@@ -1,0 +1,21 @@
+[package]
+name = "vm-base"
+version = "0.1.0"
+edition = "2021"
+description = "MGR workspace base server: fs / git / exec / health + token auth (§5)"
+
+[dependencies]
+axum = "0.8.9"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process", "fs", "time", "io-util"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+subtle = "2.6.1"
+base64 = "0.22.1"
+
+# ext-deps-begin (managed by build-ext.sh — do not edit between markers)
+# ext-deps-end
+
+[profile.release]
+strip = true

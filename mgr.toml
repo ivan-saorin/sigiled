@@ -1,0 +1,24 @@
+# MGR workload manifest. Schema: mgr repo README.
+# class: session | job | app
+# source: repo | image
+
+class = "session"
+source = "repo"
+
+# [jobs.<name>]                    # scheduled jobs (phase 5) — any number
+# cron = "30 3 * * *"              # required; container-local time (TZ)
+# command = "./jobs/recap.sh"      # required; bash -lc in /workspace
+# timeout_minutes = 30             # 1..60, default 60 — hard wall clock
+# hc_ping = "MY_JOB_HC_URL"        # optional: stack-.env var with the ping URL
+# [jobs.<name>.secrets]            # container env <- stack-.env var (§6)
+# ANTHROPIC_API_KEY = "JOB_ANTHROPIC_API_KEY"
+# Each run: branch job-<name>-<stamp> off master, pushed immediately,
+# NEVER merged — append-only, LLM-readable history (§3.8).
+
+[volumes]
+# Declared mounts. ro is the default; rw must be explicit.
+# "volume-name" = "ro" | "rw"
+
+[secrets]
+# Secret refs resolved by MGR at container creation; values never in git.
+# ENV_NAME = "env-var-name-in-stack-env"
