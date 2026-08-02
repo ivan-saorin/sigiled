@@ -1,0 +1,6 @@
+# SIGILED-owned paths in a project repo (design §3): sync-template.sh
+# vendored-replaces exactly these, nothing else. Everything not listed here
+# is project-owned forever — docs/log-operativo.md above all (DEC-04).
+# One path per line, relative to the repo root.
+tools/sync-template.sh
+tools/template-allowlist
