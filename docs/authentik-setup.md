@@ -26,9 +26,25 @@ AUTHENTIK_API_TOKEN=<token admin> tools/authentik-provision.sh
 Idempotente. Crea: scope mapping `sigiled-groups` (claim `groups` per la
 capability map), gruppi `stack:admins`/`stack:drivers`, provider+application
 `sigiled-device` (public, gamba umana) e un provider **confidential per
-driver** (`sigiled-claude`, `sigiled-kimi`; override con `DRIVERS="…"`).
-Lo script chiude stampando i passi manuali residui (membership dei gruppi,
-device flow sul brand, dove vivono i client_secret).
+driver** (`sigiled-claude`, `sigiled-kimi`; override con `DRIVERS="…"`),
+poi «prima» ogni driver (primo mint → nasce il service account
+`ak-<driver>-client_credentials`) e lo mette in `stack:drivers`.
+Lo script chiude stampando i passi manuali residui (il TUO utente in
+stack:admins, device flow sul brand, dove vivono i client_secret).
+
+**Eseguito con successo il 2026-08-02** sull'IdP dello stack (2026.5.6):
+provider pk 2/3/4, e2e completo — JWT mintato con client_credentials,
+claim `groups: ["stack:drivers"]`, validato da sigiledd via JWKS live.
+
+### Trappola: `grant_types` è una allowlist (versioni recenti)
+
+Un provider creato via API con `grant_types: []` **rifiuta ogni grant** con
+`invalid_grant` *silenzioso* (nessun evento nel log di Authentik — il
+rifiuto avviene in `TokenParams.__post_init__` prima di tutto il resto).
+Diagnostica: se il mint fallisce invalid_grant, il secret combacia e gli
+eventi tacciono, controlla `grant_types` sul provider. Lo script li imposta
+espliciti: `client_credentials` per i driver, `device_code` per
+sigiled-device — che è poi il «grant ristretto» prescritto dal design §1.8.
 
 ## Provisioning manuale (fallback, UI)
 

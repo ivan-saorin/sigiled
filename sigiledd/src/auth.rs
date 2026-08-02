@@ -229,6 +229,7 @@ pub async fn validate_jwt(
         let mut v = Validation::new(Algorithm::RS256);
         v.insecure_disable_signature_validation();
         v.validate_exp = false;
+        v.validate_aud = false;
         decode::<Claims>(token, &DecodingKey::from_secret(b"x"), &v)
             .map_err(|e| format!("jwt claims: {e}"))?
             .claims
@@ -243,7 +244,10 @@ pub async fn validate_jwt(
     }
     let key = keys.get(&kid).ok_or("kid not found in issuer JWKS")?;
 
-    let validation = Validation::new(Algorithm::RS256);
+    let mut validation = Validation::new(Algorithm::RS256);
+    // aud is the per-driver client_id (§1.3): sigiledd accepts every provider
+    // under the trusted issuer base, so audience is deliberately not pinned.
+    validation.validate_aud = false;
     let data = decode::<Claims>(token, &key, &validation).map_err(|e| format!("jwt: {e}"))?;
     Ok(data.claims)
 }
@@ -482,6 +486,7 @@ pub async fn elevate(
                             let mut v = Validation::new(Algorithm::RS256);
                             v.insecure_disable_signature_validation();
                             v.validate_exp = false;
+                            v.validate_aud = false;
                             decode::<Claims>(t, &DecodingKey::from_secret(b"x"), &v).ok()
                         })
                         .map(|d| d.claims.driver())
