@@ -50,7 +50,6 @@ pub struct LogEntry {
 /// Close computes its hint from the list of paths the session branch changed
 /// vs the master it forked from. Kept pure so the close verb (session 4) and
 /// tests share the exact same judgement.
-#[allow(dead_code)]
 pub fn log_operativo_touched<S: AsRef<str>>(changed_paths: &[S]) -> bool {
     changed_paths
         .iter()

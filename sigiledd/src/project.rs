@@ -87,8 +87,20 @@ impl Registry {
 pub async fn list(
     _actor: crate::auth::Actor,
     State(state): State<crate::AppState>,
-) -> axum::Json<Vec<ProjectRecord>> {
-    axum::Json(state.registry.snapshot())
+) -> axum::Json<serde_json::Value> {
+    // Records enriched with the live merge-debt queue (design §4: status
+    // shows the debt queue per project, next to needs_merge).
+    let enriched: Vec<serde_json::Value> = state
+        .registry
+        .snapshot()
+        .into_iter()
+        .map(|r| {
+            let mut v = serde_json::to_value(&r).unwrap();
+            v["merge_debt"] = serde_json::to_value(state.sessions.debts_for(&r.name)).unwrap();
+            v
+        })
+        .collect();
+    axum::Json(serde_json::Value::Array(enriched))
 }
 
 #[cfg(test)]

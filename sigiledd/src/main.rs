@@ -8,7 +8,9 @@ mod auth;
 mod contract;
 mod events;
 mod manifest;
+mod merge;
 mod project;
+mod sessions;
 
 use axum::{
     routing::{get, post},
@@ -21,6 +23,7 @@ pub struct AppState {
     pub registry: project::Registry,
     pub events: events::EventLog,
     pub auth: auth::AuthState,
+    pub sessions: sessions::SessionState,
 }
 
 pub fn version() -> String {
@@ -43,6 +46,8 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/contract", get(contract::serve))
         .route("/projects", get(project::list))
         .route("/projects/{project}/log", get(events::project_log))
+        .route("/projects/{project}/sessions", post(sessions::open))
+        .route("/sessions/{session_id}/close", post(sessions::close))
         .route("/auth/elevate", post(auth::elevate))
         .route("/auth/approvals", get(auth::approvals))
         .with_state(state)
@@ -71,6 +76,7 @@ async fn main() {
         registry,
         events: events::EventLog::default(),
         auth: auth::AuthState::default(),
+        sessions: sessions::SessionState::default(),
     };
     axum::serve(listener, app(state)).await.expect("serve");
 }

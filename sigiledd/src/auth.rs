@@ -21,9 +21,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// The policy layer below is exercised by tests today and consumed by the
-// session/app verbs of build session 4 — dead-code allowances carry that.
-#[allow(dead_code)]
 pub const PLATFORM_PROJECTS: [&str; 2] = ["sigiled", "sigiled-supervisor"];
 
 pub fn now_epoch() -> u64 {
@@ -91,7 +88,6 @@ pub struct Actor {
 
 // --- capability policy (§1.6 + DEC-15) --------------------------------------
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
     OpenSession,
@@ -107,7 +103,6 @@ pub enum Action {
 
 /// The rows of the capability map where `stack:drivers` needs a live human
 /// approval. Everything else is open to both groups.
-#[allow(dead_code)]
 pub fn requires_approval(action: Action, project: Option<&str>) -> bool {
     match action {
         Action::ProjectsNew | Action::AppVerb => true,
@@ -118,11 +113,9 @@ pub fn requires_approval(action: Action, project: Option<&str>) -> bool {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub struct Denial(pub String);
 
-#[allow(dead_code)]
 pub fn authorize(
     actor: &Actor,
     action: Action,
