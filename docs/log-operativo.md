@@ -19,6 +19,17 @@ _aggiornato: 2026-08-02, sessione 34eadd3d_
 
 ## Voci
 
+### 2026-08-02 · sessione 1/4, assessment iniziale: greenfield per seald, evoluzione per vm-base — driver: Claude Code (sessione 03fe1b7d)
+
+- **Dove eravamo**: piano in 4 sessioni su master; il prerequisito §1.1 (push del codice MGR v1 o decisione esplicita di greenfield) non era stato consumato.
+- **Assessment** (il bivio del piano, risolto sull'evidenza del repo):
+  1. Il codice dell'orchestratore MGR v1 **non è su questo repo**: su master c'è solo il vendoring vm-tmpl v1 (`server/`, `ext/`, `build-ext.sh`, `Dockerfile`, `mgr.toml`) dell'Initial commit.
+  2. `seald/` nasce **greenfield guidato**: la spec del comportamento v1 è il contratto SEAL (la skill), la v2 è `docs/mgr-v2.md` — riscrivere in Rust da spec (DEC-16) è più pulito che re-importare un codice che qui non esiste.
+  3. `vm-base/` è **evoluzione**: il server axum vendorizzato è già Rust e già in produzione come agent dei workspace — si porta con `git mv` e diventa la sorgente dell'immagine `vm-base:x.y.z` (DEC-17).
+  4. `template/` si riscrive sottile per costruzione (DEC-17/18): `FROM vm-base` + skeleton docs + `mgr.toml` commentato + `ext-rust/` d'esempio.
+  5. Vincolo pratico: il `Dockerfile` di root deve restare funzionante — MGR **v1** lo usa per costruire l'immagine di sessione di questo stesso repo — quindi si adatta a puntare a `vm-base/`, non si elimina.
+- **Prossimo passo previsto**: layout repo, poi seald (healthz + contract + parse template pin), template v2, script immagine. Voce di chiusura a fine sessione.
+
 ### 2026-08-02 · piano di costruzione v2 per Claude Code — driver: Kimi K3
 
 - **Dove eravamo**: design completo (DEC-01…18); il Re vuole costruire la v2 in Claude Code, in 3-4 sessioni.
