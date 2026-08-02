@@ -52,11 +52,11 @@ si scrive da subito come se fosse pubblico. Questa sessione rende il repo
 - **LICENSE**: proposta **Apache-2.0** (patent grant, standard per
   infrastruttura); il Re ratifica la scelta in sessione — se preferisce MIT,
   è un file diverso, zero impatti.
-- **Verifica naming**: «SIGILED» collide (metodo MIT di self-adapting LLMs,
-  Microsoft SIGILED crypto, SIGILED team…). Decidere il nome pubblico del repo/
-  progetto (candidati: tenere `sigiled` con tagline disambiguante,
-  `sigiled-orchestrator`, altro) e registrarlo in DEC. La landing e il README
-  usano il nome deciso.
+- **Verifica naming**: le collisioni che motivavano questa voce riguardavano
+  il nome di battesimo della piattaforma (metodo MIT di self-adapting LLMs,
+  libreria crypto Microsoft omonima…), eradicato con DEC-12 emendata. Resta
+  da verificare che **sigiled** sia pulito e registrare l'esito in DEC. La
+  landing e il README usano il nome verificato con tagline disambiguante.
 - **Audit igiene della storia git**: scan di tutta la storia (bearer, token,
   chiavi, path privati) — la storia è giovane, farlo ORA che riscriverla è
   ancora possibile senza dolore. Regola permanente da qui in poi: ogni

@@ -2,7 +2,7 @@
 
 *(nato come «MGR v2», poi «SIGILED» — rinominato 2026-08-03 con DEC-12 emendata; il contratto di guida resta SIGILED)*
 
-**Versione:** 0.3 · **Data:** 2026-08-03 · **Stato:** DEC-11…20 ratificate; DEC-12 **emendata** 2026-08-03 → piattaforma **SIGILED** (`ivan-saorin/sigiled`, domini `sigiled.dev`/`sigilled.dev`); DEC-01…10 restano da ratificare
+**Versione:** 0.3 · **Data:** 2026-08-03 · **Stato:** DEC-11…20 ratificate, DEC-21 registrata (esito verifica naming, sessione 1b); DEC-12 **emendata** 2026-08-03 → piattaforma **SIGILED** (`ivan-saorin/sigiled`, domini `sigiled.dev`/`sigilled.dev`); DEC-01…10 restano da ratificare
 **Origine:** sessione di design del 2026-08-02 (driver: Kimi K3), partita dalla lettura degli aggiornamenti di `tomes-and-tales` (auth deployata con Authentik) e `torchio` (requisiti v0.3, DEC-17/18): i pattern nati nei progetti **salgano di un livello**, dentro la piattaforma.
 **Memoria operativa:** `docs/log-operativo.md` — ogni sessione la aggiorna (convenzione §3).
 
@@ -246,3 +246,4 @@ Regole specifiche:
 | DEC-18 | Ext per linguaggio: `ext-rust/` (compiled-in, come oggi), `ext-py/`, `ext-go/` come processi locali supervisionati proxati da vm-base; contratto unico HTTP a `/x/<nome>` dentro il token gate (§3.1). **Ratificata 2026-08-02.** |
 | DEC-19 | SIGILED v2 sarà **open source al 100%**, con landing GitHub Pages esplicativa. Il repo si scrive da subito come pubblico: igiene dei segreti sulla storia, commit message pubblicabili, stack-specifics estratti in config. Preparazione «flip-ready» nella sessione 1b del build plan. **Ratificata 2026-08-02.** |
 | DEC-20 | Le immagini base `vm-base:x.y.z` sono pubblicate **pubbliche** su ghcr (`ghcr.io/ivan-saorin/vm-base`): pull senza credenziali dal box e da chiunque self-hosti; PAT solo per il push. Il pin (template Dockerfile e script) usa il nome completo. Nessun segreto vive nelle immagini per costruzione (regola 8). **Ratificata 2026-08-02.** |
+| DEC-21 | Nome pubblico = **sigiled**, confermato dalla verifica collisioni (sessione 1b, 2026-08-02): sulle ricerche web «sigiled» esiste solo come aggettivo (carte Magic, un campione di Raid Shadow Legends, prosa Raku) — nessun progetto software, libreria, azienda o prodotto. Le collisioni pesanti che motivavano la verifica riguardavano il nome di battesimo, già eradicato con DEC-12 emendata. Tagline disambiguante sulla landing; nessuna nuova decisione richiesta al Re — registrazione dell'esito. |
