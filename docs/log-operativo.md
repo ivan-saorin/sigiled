@@ -14,12 +14,21 @@ _aggiornato: 2026-08-03, sessione corrente (eradicazione «seal» → «sigiled�
 - **RINOMINA COMPLETATA.** Per ordine diretto del Re («eradica completamente la stringa seal») il repo non contiene più alcuna occorrenza di «seal» in nessuna forma: codice (crate `sigiledd`, env `SIGILED_BUILD_SHA`, header `x-sigiled-version`), documenti, contratto, template, commenti, **voci storiche di questo log comprese**. La storia vera (la piattaforma nacque «MGR v2» → «SEAL» → SIGILED) è preservata dalla storia git, non più dal testo. Compilazione di scrupolo eseguita dopo lo sweep: `cargo build --workspace` verde (sigiledd + vm-base). Push del Re verificato: `ivan-saorin/sigiled` master = 2ab8f43, storia completa.
 - **Decisioni**: DEC-01…DEC-20 registrate. DEC-11…20 ratificate; DEC-01…10 da ratificare — `sigiled-contract.md` resta draft finché non lo sono.
 - **Progetti di piattaforma**: `sigiled` (codice + contratto — QUESTO repo, `ivan-saorin/sigiled`), il vecchio progetto MGR registrato col nome precedente (fondazione, da archiviare lato operatore su GitHub), `sigiled-supervisor` (resurrezione; nome confermato).
-- **Per l'operatore**: (a) archiviare il vecchio repo su GitHub; (b) DNS `sigiled.dev` → 4×A GitHub Pages (185.199.108-111.153), `sigilled.dev` → 301 HTTPS; (c) abilitare Pages su `ivan-saorin/sigiled` (source: master, root); (d) build/push immagine `vm-base` su ghcr (`images/build-vm-base.sh`, DEC-20); (e) token API Authentik in stack env per la sessione 3.
-- **Prossimo passo previsto**: progetto fresco `sigiled-supervisor` (requisiti già sweepati) + archiviazione del log del vecchio supervisor; poi **sessione 1b** (open source flip-ready: license, audit storia, ghcr pubblico, Pages live), poi sessione 2/4.
+- **Sessioni MGR su `sigiled`: FUNZIONANO** (verificato 2026-08-02 sera, sessione ebdd0c8f — 201, container ok, build+test verdi). Il progetto era stato registrato per **adozione** (repo già esistente) e il temuto 503 sugli adottati **non si è manifestato**: o il bug è stato risolto, o non colpisce questo percorso. I progetti registry `seal`/`seal-supervisor` restano lapidi (MGR non ha delete): l'import al cutover le salta.
+- **Per l'operatore**: (a) archiviare/eliminare i repo `-history` residui su GitHub se ancora presenti; (b) DNS `sigiled.dev` → 4×A GitHub Pages (185.199.108-111.153), `sigilled.dev` → 301 HTTPS; (c) abilitare Pages su `ivan-saorin/sigiled` (source: master, root); (d) ~~build/push vm-base su ghcr~~ **fatto 2026-08-02**: `ghcr.io/ivan-saorin/vm-base:0.1.0` pushata dal box (resta da marcare Public il package); (e) token API Authentik in stack env per la sessione 3.
+- **Prossimo passo previsto**: **sessione 1b** (open source flip-ready: license, audit storia, FROM su ghcr, Pages live, eventuale genesi `sigiled-supervisor`), poi sessione 2/4.
 
 ---
 
 ## Voci
+
+### 2026-08-02 · verifica del travaso: sessioni su `sigiled` funzionanti, adozione senza 503, ghcr fatto — driver: Claude Code (sessione ebdd0c8f)
+
+- **Dove eravamo**: rinomina completata dall'altro driver (voce sotto); da questa parte risultava il progetto MGR del vecchio nome morto (404 GitHub, nessun redirect) e i nuovi `sigiled`/`sigiled-supervisor` già registrati per **adozione** — con il rischio teorico del bug 503 sulle sessioni degli adottati (DEC-14). Piano alternativo pronto (creazione fresca + import della storia), scartato perché il nome era ormai registrato.
+- **Fatto**: (1) diagnosi del client GitHub di MGR: **non segue i redirect 301** (502 su repo rinominato) — l'operatore ha riallineato i nomi su GitHub e la sessione su `sigiled` è partita: **201, il bug 503 sugli adottati non ha morso**. (2) Compilazione di scrupolo post-rename: toolchain bootstrap + `cargo build` + `cargo test` → verdi (7 test, `sigiledd` + `vm-base`). (3) Registrato: `ghcr.io/ivan-saorin/vm-base:0.1.0` **buildata e pushata dal box dall'operatore** (PAT classic; package da marcare Public); utente box = `auto@automa`; la chiave SSH del PC operatore non è autorizzata sul box (tentativo di delega fallito, istruzioni lasciate in chat).
+- **Scarti**: il piano «rename in -history + creazione fresca» concordato in chat è stato superato dai fatti (adozione già avvenuta da un'altra chat) — è bastato il rename inverso. Fortuna: l'adozione, che DEC-14 dava per rotta sulle sessioni, funziona; DEC-14 resta valida come dottrina per i progetti di piattaforma, ma il bug segnalato va ri-verificato prima di considerarlo un vincolo.
+- **Stato a fine sessione**: vedi «Stato attuale» sopra. Master chiude verde.
+- **Prossimo passo previsto**: sessione 1b.
 
 ### 2026-08-03 · eradicazione totale «seal» → «sigiled», build verde — driver: Kimi K3 (sessione corrente)
 
