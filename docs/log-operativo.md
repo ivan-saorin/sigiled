@@ -8,7 +8,7 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-02, sessione 5d7a7469_
+_aggiornato: 2026-08-02, sessione 34eadd3d_
 
 - **Su master**: solo documentazione — `docs/mgr-v2.md` v0.2, questo log. Nessun codice.
 - **Decisioni**: DEC-01…DEC-18 registrate. **DEC-11…18 ratificate dal Re 2026-08-02** (autogestione, Rust, workspace v2 = immagine base + ext per linguaggio); DEC-01…10 restano da ratificare.
@@ -19,13 +19,21 @@ _aggiornato: 2026-08-02, sessione 5d7a7469_
 
 ## Voci
 
+### 2026-08-02 · piano di costruzione v2 per Claude Code — driver: Kimi K3
+
+- **Dove eravamo**: design completo (DEC-01…18); il Re vuole costruire la v2 in Claude Code, in 3-4 sessioni.
+- **Fatto**: scritto `docs/v2-build-plan.md` v0.1 — 4 sessioni (fondamenta+contratto+immagine base; log macchina+recepimento; auth due gambe; concorrenza+supervisor+runbook), prerequisiti operatore, acceptance per sessione, cutover. Il prompt per il driver punta al repo come memoria.
+- **Scarti**: il piano prevede esplicitamente il bivio evoluzione/greenfield all'apertura della sessione 1 (il codice MGR attuale non è noto al piano) e l'import del registry v1 al cutover.
+- **Stato a fine sessione**: vedi «Stato attuale» sopra.
+- **Prossimo passo previsto**: prerequisiti operatore (§1 del piano), poi sessione 1 in Claude Code.
+
 ### 2026-08-02 · DEC-17/18: workspace v2 = immagine base + ext per linguaggio — driver: Kimi K3
 
 - **Dove eravamo**: questione aperta §6.7 (toolchain dei workspace); il Re: «per v2, immagine base + /ext-rust; i progetti python si costruiranno /ext-py, quelli go /ext-go».
 - **Fatto**: §3.1 nuova (immagine base pre-buildata per tag; `FROM vm-base:x.y.z` + layer progetto; ext-rust compiled-in, ext-py/ext-go come processi supervisionati proxati a `/x/<nome>`; vm-tmpl v2 con allowlist quasi a zero); §6.7 chiusa; DEC-17/18 ratificate. Nomi normalizzati a `ext-<lang>` col trattino.
 - **Scarti**: nessuno sulla sostanza; normalizzazione formale dei nomi delle directory.
 - **Stato a fine sessione**: vedi «Stato attuale» sopra.
-- **Prossimo passo previsto**: ratifica DEC-01…10; la v2 può partire (sequenza §5).
+- **Prossimo passo previsto**: costruzione v2 in 4 sessioni da parte di Claude Code, secondo `docs/v2-build-plan.md` (prerequisiti operatore §1 del piano); ratifica DEC-01…10 in parallelo.
 
 ### 2026-08-02 · DEC-16: Rust per il control plane; questione toolchain — driver: Kimi K3
 
