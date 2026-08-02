@@ -107,6 +107,15 @@ mod tests {
     }
 
     #[test]
+    fn shipped_template_manifest_parses_with_pin() {
+        // The template we generate projects from must never regress against
+        // our own parser.
+        let m = Manifest::parse(include_str!("../../template/mgr.toml")).unwrap();
+        let t = m.template.unwrap();
+        assert_eq!((t.name.as_str(), t.version.as_str()), ("vm-tmpl", "0.1.0"));
+    }
+
+    #[test]
     fn broken_toml_is_a_toml_error() {
         assert!(matches!(Manifest::parse("class = "), Err(ManifestError::Toml(_))));
     }
