@@ -183,6 +183,7 @@ Sequenza alternativa: auth prima, se il dolore della chiave unica in giro per le
 4. Lista definitiva delle operazioni che richiedono approval (candidati: `projects new`, apps verbs; da ratificare).
 5. Soglia di merge debt oltre la quale `status` urla (candidata: 1 — qualunque debt è urlato).
 6. Durate definitive dei token (proposte: access driver breve ~1h auto-mintato; approval 12h; refresh 30d).
+7. **Toolchain del workspace** (emersa 2026-08-02): oggi ogni progetto vendorizza `server/` + `ext/` + `build-ext.sh` + `Dockerfile` — l'agent è Rust/axum compilato dal contesto del repo, il runtime è debian-slim con solo git/bash/curl. Come separare la parte **template-owned** del Dockerfile (build dell'agent) da quella **project-owned** (toolchain del progetto, es. python)? Candidati: hook `workspace-toolchain.sh` project-owned invocato dal Dockerfile; oppure immagine base pre-buildata per tag (elimina anche la ricompilazione di vm-base a ogni build di progetto). Da decidere al primo progetto con toolchain non minimale — vedi §3 per il recepimento.
 
 ---
 
@@ -227,3 +228,4 @@ Regole specifiche:
 | DEC-13 | La resurrezione è un servizio: `seal-supervisor`, ~100 righe, repo e deploy propri (mai `[app]` di MGR), API autonoma con auth semplice — chiamarla restarta seal. **Ratificata 2026-08-02.** |
 | DEC-14 | Bootstrap dei progetti di piattaforma: creazione fresca, codice via prima sessione (niente adozione; il 503 di session-start su adottati resta bug noto). **Ratificata 2026-08-02.** |
 | DEC-15 | Sessioni su `seal` e `seal-supervisor` richiedono approval valida: la gamba umana è obbligatoria per il control plane. **Ratificata 2026-08-02.** |
+| DEC-16 | Linguaggio del control plane: **Rust** — conferma la realtà esistente (l'agent dei workspace `vm-base` è già un server axum; `ext/` sono crate Rust) e la estende a seal e seal-supervisor. **Ratificata 2026-08-02.** |

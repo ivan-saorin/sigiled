@@ -8,16 +8,25 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-02, sessione ebb0b3c9_
+_aggiornato: 2026-08-02, sessione 5163827a_
 
 - **Su master**: solo documentazione — `docs/mgr-v2.md` v0.2, questo log. Nessun codice.
-- **Decisioni**: DEC-01…DEC-15 registrate. **DEC-11…15 (autogestione) ratificate dal Re 2026-08-02**; DEC-01…10 restano da ratificare.
+- **Decisioni**: DEC-01…DEC-16 registrate. **DEC-11…16 ratificate dal Re 2026-08-02** (autogestione + Rust per il control plane); DEC-01…10 restano da ratificare.
 - **Progetti di piattaforma**: `seal` (codice + contratto, questo repo), `seal-supervisor` (resurrezione; creato 2026-08-02, spec in `docs/requisiti.md` lì).
 - **Prossimo passo previsto**: ratifica delle DEC-01…10; poi sequenza §5 passo 1 (`GET /mgr/contract` + tag vm-tmpl + pin in `mgr.toml`).
 
 ---
 
 ## Voci
+
+### 2026-08-02 · DEC-16: Rust per il control plane; questione toolchain — driver: Kimi K3
+
+- **Dove eravamo**: v0.2 su master; in chat il Re decide il linguaggio di piattaforma.
+- **Previsione**: registrare la decisione e verificare i fatti sul template.
+- **Fatto**: letti `Dockerfile`, `build-ext.sh`, `mgr.toml`, `server/` del vm-tmpl (via questo repo): l'agent `vm-base` è già Rust/axum, `ext/` sono crate montati a `/x/<nome>` da build-ext.sh, il runtime è debian-slim con git/bash/curl e basta. Registrata DEC-16 (Rust, ratificata); aggiunta questione aperta §6.7 — separazione template-owned/project-owned nel Dockerfile dei workspace (hook toolchain vs immagine base per tag).
+- **Scarti**: la domanda del Re («se uno vuole una vm in python?») ha rivelato che oggi ogni progetto **vendorizza e ricompila** l'agent — il recepimento di §3 è ancora più necessario di quanto scritto in v0.1.
+- **Stato a fine sessione**: vedi «Stato attuale» sopra.
+- **Prossimo passo previsto**: ratifica DEC-01…10; la questione toolchain si decide al primo progetto con toolchain non minimale.
 
 ### 2026-08-02 · v0.1 → v0.2: autogestione ratificata, nasce seal-supervisor — driver: Kimi K3
 
