@@ -71,14 +71,14 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 
 // --- actor ------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Admin,
     Driver,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Actor {
     pub driver: String,
     pub role: Role,
@@ -268,7 +268,7 @@ pub fn actor_from_claims(claims: &Claims, cfg: &AuthConfig, approvals: &Approval
 
 // --- approvals (§1.4) -------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalState {
     Pending,
@@ -277,15 +277,16 @@ pub enum ApprovalState {
     Expired,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Approval {
     pub driver: String,
     pub human: String,
     pub expires_epoch: u64,
     pub state: ApprovalState,
-    /// Custody (§1.4): the device-flow tokens live here and are NEVER
-    /// serialized out — the approvals endpoint only mirrors the metadata.
-    #[serde(skip)]
+    /// Custody (§1.4): the device-flow tokens live here — and, since the
+    /// store exists, in the 0600 state file: SIGILED is their keeper. The
+    /// API surface never carries them (ApprovalView is metadata only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<serde_json::Value>,
 }
 
@@ -320,6 +321,12 @@ impl ApprovalStore {
         if let Some(a) = self.0.write().unwrap().get_mut(driver) {
             a.state = state;
         }
+    }
+    pub fn dump(&self) -> HashMap<String, Approval> {
+        self.0.read().unwrap().clone()
+    }
+    pub fn hydrate(&self, map: HashMap<String, Approval>) {
+        *self.0.write().unwrap() = map;
     }
 }
 
@@ -439,26 +446,31 @@ pub async fn elevate(
         state: ApprovalState::Pending,
         tokens: None,
     });
+    state.persist();
 
     // Poll the token endpoint in the background until approved or expired
     // (§1.4 step 5). The tokens stay in the store; the driver only ever sees
-    // the approval metadata.
+    // the approval metadata. The task holds the whole AppState so every
+    // outcome hits the disk too.
     let driver = actor.driver.clone();
+    let app = state.clone();
     tokio::spawn(async move {
         let token_url = format!("{}application/o/token/", ensure_slash(&base));
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
             if now_epoch() >= expires {
-                auth.approvals.mark(&driver, ApprovalState::Expired);
+                app.auth.approvals.mark(&driver, ApprovalState::Expired);
+                app.persist();
                 return;
             }
-            let Ok(r) = auth
+            let Ok(r) = app
+                .auth
                 .http
                 .post(&token_url)
                 .form(&[
                     ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                     ("device_code", &device_code),
-                    ("client_id", &auth.config.device_client_id),
+                    ("client_id", &app.auth.config.device_client_id),
                 ])
                 .send()
                 .await
@@ -469,7 +481,8 @@ pub async fn elevate(
             match body["error"].as_str() {
                 Some("authorization_pending") | Some("slow_down") => continue,
                 Some(_) => {
-                    auth.approvals.mark(&driver, ApprovalState::Denied);
+                    app.auth.approvals.mark(&driver, ApprovalState::Denied);
+                    app.persist();
                     return;
                 }
                 None => {
@@ -488,7 +501,8 @@ pub async fn elevate(
                         .map(|d| d.claims.driver())
                         .unwrap_or_else(|| "operator".into());
                     let ttl = body["expires_in"].as_u64().unwrap_or(43200);
-                    auth.approvals.grant(&driver, &human, now_epoch() + ttl, body);
+                    app.auth.approvals.grant(&driver, &human, now_epoch() + ttl, body);
+                    app.persist();
                     return;
                 }
             }
@@ -753,10 +767,24 @@ YQIDAQAB
     }
 
     #[test]
-    fn approval_custody_never_serializes_tokens() {
+    fn approval_api_view_never_carries_tokens() {
+        // The store DOES keep the tokens (custody §1.4, persisted 0600 by
+        // store.rs); what must never carry them is the API surface.
         let store = ApprovalStore::default();
         store.grant("d", "ivan", 2000, serde_json::json!({"access_token": "SECRET"}));
-        let json = serde_json::to_string(&store.snapshot()).unwrap();
+        let views: Vec<ApprovalView> = store
+            .snapshot()
+            .into_iter()
+            .map(|a| ApprovalView {
+                driver: a.driver,
+                human: a.human,
+                expires: a.expires_epoch,
+                state: a.state,
+            })
+            .collect();
+        let json = serde_json::to_string(&views).unwrap();
         assert!(!json.contains("SECRET"));
+        // ...while the custody itself survives in the store.
+        assert!(store.snapshot()[0].tokens.is_some());
     }
 }

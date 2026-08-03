@@ -7,17 +7,17 @@
 // Shells out to git like vm-base does: the repo is a normal worktree at
 // SIGILED_REPOS_DIR/{project}. Container runtime is cutover territory —
 // this engine is what the real close verb will call.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebtSide {
     pub sha: String,
     pub commit_messages: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergeDebt {
     pub branch: String,
     pub conflicted_files: Vec<String>,

@@ -13,4 +13,12 @@ services:
       - "8080:8080"
     env_file:
       - .env
+    environment:
+      SIGILED_STATE_DIR: /data
+    volumes:
+      - sigiled-data:/data
     restart: unless-stopped
+
+volumes:
+  sigiled-data:
+    name: sigiled-data

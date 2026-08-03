@@ -9,7 +9,7 @@ use axum::extract::State;
 use serde::Serialize;
 use std::sync::{Arc, RwLock};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct ProjectRecord {
     pub name: String,
     /// From the sigiled.toml pin on master, e.g. "vm-tmpl@0.1.0"; null on
@@ -81,6 +81,9 @@ impl Registry {
     }
     pub fn snapshot(&self) -> Vec<ProjectRecord> {
         self.records.read().unwrap().clone()
+    }
+    pub fn replace_all(&self, records: Vec<ProjectRecord>) {
+        *self.records.write().unwrap() = records;
     }
 }
 

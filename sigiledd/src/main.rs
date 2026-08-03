@@ -11,6 +11,7 @@ mod manifest;
 mod merge;
 mod project;
 mod sessions;
+mod store;
 
 use axum::{
     routing::{get, post},
@@ -24,6 +25,33 @@ pub struct AppState {
     pub events: events::EventLog,
     pub auth: auth::AuthState,
     pub sessions: sessions::SessionState,
+    pub store: store::Store,
+}
+
+impl AppState {
+    /// Snapshot every store to disk (atomic, store.rs). Handlers call this
+    /// after each mutation: the state file is always one rename behind the
+    /// truth, never more.
+    pub fn persist(&self) {
+        self.store.save(&store::StateSnapshot {
+            projects: self.registry.snapshot(),
+            events: self.events.dump(),
+            debts: self.sessions.dump_debts(),
+            approvals: self.auth.approvals.dump(),
+            sessions: self.sessions.dump_records(),
+        });
+    }
+
+    /// Boot-time inverse of persist().
+    pub fn hydrate_from_disk(&self) {
+        if let Some(snap) = self.store.load() {
+            self.registry.replace_all(snap.projects);
+            self.events.hydrate(snap.events);
+            self.sessions.hydrate(snap.debts, snap.sessions);
+            self.auth.approvals.hydrate(snap.approvals);
+            tracing::info!("state hydrated from disk");
+        }
+    }
 }
 
 pub fn version() -> String {
@@ -77,6 +105,8 @@ async fn main() {
         events: events::EventLog::default(),
         auth: auth::AuthState::default(),
         sessions: sessions::SessionState::default(),
+        store: store::Store::from_env(),
     };
+    state.hydrate_from_disk();
     axum::serve(listener, app(state)).await.expect("serve");
 }

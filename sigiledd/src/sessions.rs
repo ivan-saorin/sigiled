@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct SessionRecord {
     pub session_id: String,
     pub project: String,
@@ -69,6 +69,20 @@ impl SessionState {
         if let Some(q) = self.debts.write().unwrap().get_mut(project) {
             q.retain(|d| d.branch != branch);
         }
+    }
+    pub fn dump_debts(&self) -> HashMap<String, Vec<MergeDebt>> {
+        self.debts.read().unwrap().clone()
+    }
+    pub fn dump_records(&self) -> HashMap<String, SessionRecord> {
+        self.records.read().unwrap().clone()
+    }
+    pub fn hydrate(
+        &self,
+        debts: HashMap<String, Vec<MergeDebt>>,
+        records: HashMap<String, SessionRecord>,
+    ) {
+        *self.debts.write().unwrap() = debts;
+        *self.records.write().unwrap() = records;
     }
     fn merge_lock(&self, project: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.merge_locks
@@ -140,6 +154,8 @@ pub async fn open(
         now_epoch(),
         Event::SessionOpened { session_id: id.clone(), branch: branch.clone(), stale: false },
     );
+
+    state.persist();
 
     // merge_debt on top when present (rule: shout, don't whisper).
     let debts = state.sessions.debts_for(&project);
@@ -223,6 +239,8 @@ pub async fn close(
             log_operativo_touched: touched,
         },
     );
+
+    state.persist();
 
     Json(json!({
         "closed": true, "merge": merge_kind, "sha": sha, "flushed": true,
@@ -321,6 +339,40 @@ mod tests {
         let (status, _) =
             body_json(open(driver(), State(state.clone()), AxPath("sigiled".into())).await).await;
         assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn debt_survives_a_reboot() {
+        let (state, repo) = app_state("smoke-persist", "spers");
+        // Same AppState but with a real store attached.
+        let store_dir = repo.parent().unwrap().join("smoke-persist-state");
+        let state = crate::AppState {
+            store: crate::store::Store::at_dir(&store_dir),
+            ..state
+        };
+        let (_, a) = body_json(
+            open(admin(), State(state.clone()), AxPath("smoke-persist".into())).await,
+        )
+        .await;
+        let id = a["session_id"].as_str().unwrap().to_string();
+        let branch = a["branch"].as_str().unwrap().to_string();
+        commit_on(&repo, "master", "hot.txt", "ours\n", "fix: ours");
+        commit_on(&repo, &branch, "hot.txt", "theirs\n", "fix: theirs");
+        let (_, closed) = body_json(close(admin(), State(state.clone()), AxPath(id)).await).await;
+        assert_eq!(closed["merge"], "debt");
+
+        // "Reboot": a fresh AppState over the same store hydrates the debt.
+        let reborn = crate::AppState {
+            store: crate::store::Store::at_dir(&store_dir),
+            sessions: SessionState::with_repos_dir(repo.parent().unwrap().to_path_buf()),
+            ..crate::AppState::default()
+        };
+        reborn.hydrate_from_disk();
+        let debts = reborn.sessions.debts_for("smoke-persist");
+        assert_eq!(debts.len(), 1);
+        assert_eq!(debts[0].branch, branch);
+        // And the machine log came back with it.
+        assert_eq!(reborn.events.for_project("smoke-persist").len(), 2);
     }
 
     #[tokio::test]

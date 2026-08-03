@@ -40,7 +40,7 @@ pub enum Event {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     pub at_epoch: u64,
     #[serde(flatten)]
@@ -76,6 +76,13 @@ impl EventLog {
             .get(project)
             .cloned()
             .unwrap_or_default()
+    }
+
+    pub fn dump(&self) -> HashMap<String, Vec<LogEntry>> {
+        self.0.read().unwrap().clone()
+    }
+    pub fn hydrate(&self, map: HashMap<String, Vec<LogEntry>>) {
+        *self.0.write().unwrap() = map;
     }
 }
 
