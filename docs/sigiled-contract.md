@@ -4,8 +4,8 @@
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.0.0-draft · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha.
-**Status:** draft until DEC-01…10 are ratified (see `docs/sigiled-v2.md` §8); v2 behavior lands progressively across the four build sessions. The v1 contract (single bearer, session lock) remains authoritative for a running v1 until cutover.
+**Contract version:** 2.0.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha.
+**Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8); every verb below is implemented and live-verified. SIGILED is the only orchestrator of the stack.
 
 This is the complete operating contract for SIGILED (v2 of SIGILED). It is
 vendor-neutral: any LLM that can issue HTTPS requests can drive the system
@@ -36,8 +36,8 @@ sessions.
 | Surface | Base | Auth |
 |---|---|---|
 | SIGILED verbs | `https://api.016180.xyz/sigiled` | `Authorization: Bearer <access-token>` |
-| Workspace | `https://api.016180.xyz/s/{project}` | same Bearer **and** `X-Session-Token: {token}` |
-| Web search | `https://search.016180.xyz` | same Bearer |
+| Workspace | `https://api.016180.xyz/s/{project}` | `X-Session-Token: {token}` (send your Bearer too — the edge does not inspect it here, the token is the auth) |
+| Web search | `https://search.016180.xyz` | stack search credential (operator-provided; a stack service, not part of SIGILED auth) |
 
 **Machine leg (yours).** Each driver is an OAuth2 client of the stack IdP
 (`auth.016180.xyz`, Authentik): your skill carries a per-driver
@@ -51,9 +51,9 @@ POST https://auth.016180.xyz/application/o/token/
 
 Token expired → mint another. 401 on a fresh token → the operator rotated
 your credentials: ask for the new pair. Never echo credentials or tokens
-into chat, logs, or committed files. During the dual-auth migration window
-the legacy stack bearer is also accepted (maps to the bootstrap admin) —
-it dies at cutover.
+into chat, logs, or committed files. The dual-auth window is **closed**
+(2026-08-03): per-driver tokens are the only machine credential — there is
+no shared bearer.
 
 **Human leg (the operator's).** Operations that require "the operator
 approved this" (see capability map, §4) go through the device flow:
@@ -69,11 +69,14 @@ skills, never in transcripts) and auto-refreshes them. Inspect with
 rides alongside your driver identity as `actor: {driver, approval}` on
 every session and job record.
 
-The workspace contract is two-header by design: the edge validates your
-bearer, then swaps `X-Session-Token` into `Authorization` before the
-request reaches the container. The token comes from `POST .../sessions`;
-a token minted for project A is rejected by project B's container — never
-reuse tokens across projects, or after `recycle`/`close`.
+The workspace contract is two-header by design: the edge swaps
+`X-Session-Token` into `Authorization` before the request reaches the
+container, and the container validates it — the per-project, 192-bit,
+per-life token IS the workspace authentication (whatever `Authorization`
+you sent on `/s/` is not inspected at the edge). The token comes from
+`POST .../sessions`; a token minted for project A is rejected by project
+B's container — never reuse tokens across projects, or after
+`recycle`/`close`.
 
 Request and response bodies are JSON unless noted (`git/diff` and
 `git/show` return plain text; `GET /sigiled/contract` returns markdown).

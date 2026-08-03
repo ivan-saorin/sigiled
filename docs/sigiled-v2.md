@@ -2,7 +2,7 @@
 
 *(nato come «SIGILED v2», poi «SIGILED» — rinominato 2026-08-03 con DEC-12 emendata; il contratto di guida resta SIGILED)*
 
-**Versione:** 0.3 · **Data:** 2026-08-03 · **Stato:** DEC-11…20, DEC-22 e DEC-23 ratificate, DEC-21 registrata (esito verifica naming, sessione 1b); DEC-12 **emendata** 2026-08-03 → piattaforma **SIGILED** (`ivan-saorin/sigiled`, domini `sigiled.dev`/`sigilled.dev`); DEC-01…10 restano da ratificare
+**Versione:** 0.3 · **Data:** 2026-08-03 · **Stato:** TUTTE le decisioni ratificate — DEC-01…10 ratificate dal Re il 2026-08-03 (in chat, a piattaforma completa e verificata dal vivo); DEC-11…20, DEC-22 e DEC-23 ratificate in precedenza, DEC-21 registrata; DEC-12 **emendata** 2026-08-03 → piattaforma **SIGILED** (`ivan-saorin/sigiled`, domini `sigiled.dev`/`sigilled.dev`). Il contratto è 2.0.0, non più draft
 **Origine:** sessione di design del 2026-08-02 (driver: Kimi K3), partita dalla lettura degli aggiornamenti di `tomes-and-tales` (auth deployata con Authentik) e `torchio` (requisiti v0.3, DEC-17/18): i pattern nati nei progetti **salgano di un livello**, dentro la piattaforma.
 **Memoria operativa:** `docs/log-operativo.md` — ogni sessione la aggiorna (convenzione §3).
 
@@ -226,16 +226,16 @@ Regole specifiche:
 
 | # | Decisione |
 |---|---|
-| DEC-01 | Auth a due gambe: `client_credentials` per-driver (macchina) + device flow con approval umana (umano). Il bearer unico muore dopo una finestra dual-auth. |
-| DEC-02 | Custodia dei token umani **lato SIGILED** (DB + auto-refresh serializzato); mai nelle skill, mai nei transcript. Nelle skill solo `client_id`/`client_secret` del driver. |
-| DEC-03 | `actor` a due componenti `{driver, approval}` su sessioni e job; capability map SIGILED-locale secondo la dottrina «IdP membership-only». |
-| DEC-04 | Log operativo a due layer: macchina via API dal DB di SIGILED; narrativo `docs/log-operativo.md` dal template, project-owned per sempre. Regola SIGILED: chiudi lavoro coerente → voce in cima. |
-| DEC-05 | Template versioning con pin `template = "vm-tmpl@x.y.z"` in `sigiled.toml`, recepimento on-demand con drift detection; **mai auto-update**. |
-| DEC-06 | Il motore serve il proprio contratto: `GET /sigiled/contract`, versionato; le skill si auto-verificano contro `healthz.version`. |
-| DEC-07 | Concorrenza a riconciliazione: un branch per workload, lock solo nella sezione critica di merge; niente più 409 su open. |
-| DEC-08 | Merge debt con pacchetto di contesto; risoluzione **obbligatoria prima di qualsiasi altro lavoro, quale che sia il modello**; se incerto, chiedi all'operatore. |
-| DEC-09 | Merge commit, non rebase: la traccia del confine di sessione è memoria. |
-| DEC-10 | Conflitti semantici: dopo merge multipli recenti, compilazione di scrupolo obbligatoria; se rotta, DEVE essere sistemata prima di procedere. |
+| DEC-01 | Auth a due gambe: `client_credentials` per-driver (macchina) + device flow con approval umana (umano). Il bearer unico muore dopo una finestra dual-auth. **Ratificata 2026-08-03.** |
+| DEC-02 | Custodia dei token umani **lato SIGILED** (DB + auto-refresh serializzato); mai nelle skill, mai nei transcript. Nelle skill solo `client_id`/`client_secret` del driver. **Ratificata 2026-08-03.** |
+| DEC-03 | `actor` a due componenti `{driver, approval}` su sessioni e job; capability map SIGILED-locale secondo la dottrina «IdP membership-only». **Ratificata 2026-08-03.** |
+| DEC-04 | Log operativo a due layer: macchina via API dal DB di SIGILED; narrativo `docs/log-operativo.md` dal template, project-owned per sempre. Regola SIGILED: chiudi lavoro coerente → voce in cima. **Ratificata 2026-08-03.** |
+| DEC-05 | Template versioning con pin `template = "vm-tmpl@x.y.z"` in `sigiled.toml`, recepimento on-demand con drift detection; **mai auto-update**. **Ratificata 2026-08-03.** |
+| DEC-06 | Il motore serve il proprio contratto: `GET /sigiled/contract`, versionato; le skill si auto-verificano contro `healthz.version`. **Ratificata 2026-08-03.** |
+| DEC-07 | Concorrenza a riconciliazione: un branch per workload, lock solo nella sezione critica di merge; niente più 409 su open. **Ratificata 2026-08-03.** |
+| DEC-08 | Merge debt con pacchetto di contesto; risoluzione **obbligatoria prima di qualsiasi altro lavoro, quale che sia il modello**; se incerto, chiedi all'operatore. **Ratificata 2026-08-03.** |
+| DEC-09 | Merge commit, non rebase: la traccia del confine di sessione è memoria. **Ratificata 2026-08-03.** |
+| DEC-10 | Conflitti semantici: dopo merge multipli recenti, compilazione di scrupolo obbligatoria; se rotta, DEVE essere sistemata prima di procedere. **Ratificata 2026-08-03.** |
 | DEC-11 | SIGILED è SIGILED-registrato (autogestione): il codice della piattaforma vive nel repo del progetto; il servizio è una deployment a sha pinnato; SIGILED gestisce tutto di sé tranne la propria resurrezione (§7). **Ratificata 2026-08-02.** |
 | DEC-12 | ~~Naming v2: SIGILED~~ **Emendata 2026-08-03: la piattaforma si chiama SIGILED.** Domini `sigiled.dev` + `sigilled.dev` (guardiano ortografico) acquistati dal Re; il progetto continua in `ivan-saorin/sigiled`; questo repo è archiviato come fondazione. |
 | DEC-13 | La resurrezione è un servizio: `sigiled-supervisor`, ~100 righe, repo e deploy propri (mai `[app]` di SIGILED), API autonoma con auth semplice — chiamarla restarta sigiled. **Ratificata 2026-08-02.** |
