@@ -58,6 +58,13 @@ pub enum Event {
         session_id: String,
         sha: String,
     },
+    /// The reaper (session 7, contract rule 6): idle too long — autosave
+    /// flushed, container destroyed, branch left as an orphan the next
+    /// open resumes stale.
+    SessionReaped {
+        session_id: String,
+        branch: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +154,10 @@ fn render_markdown(project: &str, entries: &[LogEntry]) -> String {
                 e.at_epoch,
                 session_id,
                 &sha[..12.min(sha.len())]
+            ),
+            Event::SessionReaped { session_id, branch } => format!(
+                "- [{}] session `{}` reaped for idleness — `{}` left to resume",
+                e.at_epoch, session_id, branch
             ),
         };
         out.push_str(&line);

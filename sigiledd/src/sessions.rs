@@ -89,6 +89,25 @@ impl SessionState {
     pub fn dump_debts(&self) -> HashMap<String, Vec<MergeDebt>> {
         self.debts.read().unwrap().clone()
     }
+    pub fn record(&self, id: &str) -> Option<SessionRecord> {
+        self.records.read().unwrap().get(id).cloned()
+    }
+    pub fn remove_record(&self, id: &str) {
+        self.records.write().unwrap().remove(id);
+    }
+    /// Sessions that hold a workspace token — the ones the reaper polls.
+    pub fn live_records(&self) -> Vec<SessionRecord> {
+        self.records
+            .read()
+            .unwrap()
+            .values()
+            .filter(|r| r.token.is_some())
+            .cloned()
+            .collect()
+    }
+    pub fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
     pub fn dump_records(&self) -> HashMap<String, SessionRecord> {
         self.records.read().unwrap().clone()
     }
@@ -122,6 +141,49 @@ fn err(status: StatusCode, detail: impl Into<String>) -> Response {
     (status, Json(json!({ "detail": detail.into() }))).into_response()
 }
 
+/// A session/* branch nobody owns: no live record rides it and it is not a
+/// debtor waiting in the merge-debt queue. The reaper kills containers,
+/// crashes lose control planes, the v1 left one behind — the branch on the
+/// repo is the truth, and open() resumes the first orphan it finds instead
+/// of cutting a new one (contract §5: stale resume).
+fn find_orphan(repo: &std::path::Path, project: &str, state: &crate::AppState) -> Option<String> {
+    let refs = git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads/session/*",
+            "refs/remotes/origin/session/*",
+        ],
+    )
+    .ok()?;
+    let debts: Vec<String> = state
+        .sessions
+        .debts_for(project)
+        .into_iter()
+        .map(|d| d.branch)
+        .collect();
+    let live: Vec<String> = state
+        .sessions
+        .records
+        .read()
+        .unwrap()
+        .values()
+        .filter(|r| r.project == project)
+        .map(|r| r.branch.clone())
+        .collect();
+    let mut names: Vec<String> = refs
+        .lines()
+        .map(|l| l.trim().trim_start_matches("origin/").to_string())
+        .filter(|b| b.starts_with("session/"))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .find(|b| !debts.contains(b) && !live.contains(b))
+}
+
 fn now_epoch() -> u64 {
     crate::auth::now_epoch()
 }
@@ -142,17 +204,29 @@ pub async fn open(
         return err(StatusCode::FORBIDDEN, denial.0);
     }
 
-    let id = SessionState::session_id();
-    let branch = format!("session/{id}");
-
     // Two paths, one contract. With a runtime: mirror + container + the
     // branch cut inside the workspace and pushed at once. Without: the
-    // branch only, on the local repo (dev/tests).
-    let (head, token, endpoint) = match &state.sessions.runtime {
+    // branch only, on the local repo (dev/tests). Both first look for an
+    // orphan session/* branch (reaper, crash, v1 leftovers) and resume it
+    // stale instead of cutting a new one (contract §5).
+    fn fresh_id_branch() -> (String, String) {
+        let id = SessionState::session_id();
+        let branch = format!("session/{id}");
+        (id, branch)
+    }
+    let (id, branch, resume, head, token, endpoint) = match &state.sessions.runtime {
         Some(rt) => {
-            if let Err(e) = rt.ensure_mirror(&project) {
-                return err(StatusCode::NOT_FOUND, e);
-            }
+            let mirror = match rt.ensure_mirror(&project) {
+                Ok(m) => m,
+                Err(e) => return err(StatusCode::NOT_FOUND, e),
+            };
+            let (id, branch, resume) = match find_orphan(&mirror, &project, &state) {
+                Some(b) => (b.trim_start_matches("session/").to_string(), b, true),
+                None => {
+                    let (id, branch) = fresh_id_branch();
+                    (id, branch, false)
+                }
+            };
             let tok = mint_token();
             if let Err(e) = rt.create_container(&project, &id, &tok) {
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
@@ -162,10 +236,10 @@ pub async fn open(
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
             match rt
-                .boot_workspace(&state.sessions.http, &project, &tok, &branch, false)
+                .boot_workspace(&state.sessions.http, &project, &tok, &branch, resume)
                 .await
             {
-                Ok(head) => (head, Some(tok), Some(rt.endpoint(&project))),
+                Ok(head) => (id, branch, resume, head, Some(tok), Some(rt.endpoint(&project))),
                 Err(e) => {
                     rt.destroy(&project);
                     return err(StatusCode::INTERNAL_SERVER_ERROR, e);
@@ -180,10 +254,23 @@ pub async fn open(
             if !repo.join(".git").exists() {
                 return err(StatusCode::NOT_FOUND, format!("unknown project: {project}"));
             }
-            if let Err(e) = git(&repo, &["branch", &branch, "master"]) {
-                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+            match find_orphan(&repo, &project, &state) {
+                Some(b) => {
+                    let head = match git(&repo, &["rev-parse", &b]) {
+                        Ok(h) => h,
+                        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+                    };
+                    (b.trim_start_matches("session/").to_string(), b, true, head, None, None)
+                }
+                None => {
+                    let (id, branch) = fresh_id_branch();
+                    if let Err(e) = git(&repo, &["branch", &branch, "master"]) {
+                        return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+                    }
+                    let head = git(&repo, &["rev-parse", "master"]).unwrap_or_default();
+                    (id, branch, false, head, None, None)
+                }
             }
-            (git(&repo, &["rev-parse", "master"]).unwrap_or_default(), None, None)
         }
     };
 
@@ -192,7 +279,7 @@ pub async fn open(
         project: project.clone(),
         branch: branch.clone(),
         head: head.clone(),
-        stale: false,
+        stale: resume,
         actor: actor.clone(),
         token: token.clone(),
     };
@@ -200,7 +287,7 @@ pub async fn open(
     state.events.record(
         &project,
         now_epoch(),
-        Event::SessionOpened { session_id: id.clone(), branch: branch.clone(), stale: false },
+        Event::SessionOpened { session_id: id.clone(), branch: branch.clone(), stale: resume },
     );
 
     state.persist();
@@ -212,7 +299,8 @@ pub async fn open(
         Json(json!({
             "session_id": id, "project": project, "branch": branch,
             "token": token, "endpoint": endpoint,
-            "head": head, "stale": false, "last_commit": null,
+            "head": head, "stale": resume,
+            "last_commit": if resume { json!(head) } else { serde_json::Value::Null },
             "merge_debt": debts.first(),
             "actor": actor,
         })),
@@ -554,6 +642,65 @@ mod tests {
         assert_eq!(debts[0].branch, branch);
         // And the machine log came back with it.
         assert_eq!(reborn.events.for_project("smoke-persist").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn reaped_session_leaves_orphan_and_open_resumes_it() {
+        let (state, repo) = app_state("smoke-reap", "sreap");
+        let (_, a) =
+            body_json(open(admin(), State(state.clone()), AxPath("smoke-reap".into())).await).await;
+        assert_eq!(a["stale"], false);
+        let id = a["session_id"].as_str().unwrap().to_string();
+        let branch = a["branch"].as_str().unwrap().to_string();
+        commit_on(&repo, &branch, "midwork.txt", "m\n", "feat: interrupted work");
+
+        crate::reaper::reap(&state, &id, "idle").await;
+        assert!(state.sessions.record(&id).is_none(), "reap must drop the record");
+        let ev = serde_json::to_value(state.events.for_project("smoke-reap")).unwrap();
+        assert_eq!(ev[1]["kind"], "session_reaped");
+
+        // The next open resumes the orphan branch, stale and honest.
+        let (status, b) =
+            body_json(open(admin(), State(state.clone()), AxPath("smoke-reap".into())).await).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(b["stale"], true, "body: {b}");
+        assert_eq!(b["branch"], json!(branch.clone()));
+        assert_eq!(b["session_id"], json!(id.clone()));
+        assert_eq!(
+            b["last_commit"].as_str().unwrap(),
+            sh(&repo, &["rev-parse", &branch])
+        );
+        // The resumed session closes clean, interrupted work merged.
+        let (_, closed) =
+            body_json(close(admin(), State(state.clone()), AxPath(id)).await).await;
+        assert_eq!(closed["merge"], "ff");
+        sh(&repo, &["checkout", "-f", "master"]);
+        assert!(repo.join("midwork.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn orphan_scan_ignores_live_and_debtor_branches() {
+        let (state, repo) = app_state("smoke-orph", "sorph");
+        // A live session: its branch is owned.
+        let (_, live) =
+            body_json(open(admin(), State(state.clone()), AxPath("smoke-orph".into())).await).await;
+        // A debtor: closed into conflict, branch survives in the debt queue.
+        let (_, d) =
+            body_json(open(admin(), State(state.clone()), AxPath("smoke-orph".into())).await).await;
+        let debtor_id = d["session_id"].as_str().unwrap().to_string();
+        let debtor_branch = d["branch"].as_str().unwrap().to_string();
+        commit_on(&repo, "master", "hot.txt", "ours\n", "fix: ours");
+        commit_on(&repo, &debtor_branch, "hot.txt", "theirs\n", "fix: theirs");
+        let (_, closed) =
+            body_json(close(admin(), State(state.clone()), AxPath(debtor_id)).await).await;
+        assert_eq!(closed["merge"], "debt");
+        // A fresh open must cut a NEW branch: the live one is owned, the
+        // debtor is queued — neither is an orphan.
+        let (_, c) =
+            body_json(open(admin(), State(state.clone()), AxPath("smoke-orph".into())).await).await;
+        assert_eq!(c["stale"], false, "body: {c}");
+        assert_ne!(c["branch"], live["branch"]);
+        assert_ne!(c["branch"], json!(debtor_branch));
     }
 
     #[tokio::test]

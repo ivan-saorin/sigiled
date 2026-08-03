@@ -14,6 +14,7 @@ mod manifest;
 mod merge;
 mod import;
 mod project;
+mod reaper;
 mod runtime;
 mod sessions;
 mod store;
@@ -139,5 +140,9 @@ async fn main() {
         github: github::GitHub::from_env(),
     };
     state.hydrate_from_disk();
+    // The reaper patrols only where containers exist (contract rule 6).
+    if state.sessions.runtime.is_some() {
+        tokio::spawn(reaper::run(state.clone()));
+    }
     axum::serve(listener, app(state)).await.expect("serve");
 }

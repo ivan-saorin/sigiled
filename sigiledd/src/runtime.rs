@@ -234,6 +234,28 @@ impl Runtime {
         Err(format!("{} not healthy after 30s", Self::vm_name(project)))
     }
 
+    /// How long the workspace has been idle (its /health, which by contract
+    /// does NOT count as activity itself — the reaper can poll freely).
+    pub async fn idle_secs(
+        &self,
+        http: &reqwest::Client,
+        project: &str,
+        token: &str,
+    ) -> Result<u64, String> {
+        let r = http
+            .get(self.agent_url(project, "/health"))
+            .bearer_auth(token)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| format!("health: {e}"))?;
+        if !r.status().is_success() {
+            return Err(format!("health: {}", r.status()));
+        }
+        let v: serde_json::Value = r.json().await.map_err(|e| format!("health decode: {e}"))?;
+        v["idle_secs"].as_u64().ok_or_else(|| "health: no idle_secs".into())
+    }
+
     pub async fn exec(
         &self,
         http: &reqwest::Client,
