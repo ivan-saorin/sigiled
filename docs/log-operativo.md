@@ -8,7 +8,7 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-03, sessione 3ace5bd7 (sessione 6 — recycle)_
+_aggiornato: 2026-08-03, sessione 21c7f3fb (sessione 7 — reaper + resume)_
 
 - **Su master**: docs (`sigiled-v2.md`, `v2-build-plan.md`, `sigiled-contract.md` 2.0.0-draft, questo log) + codice sessione 1: workspace cargo con `sigiledd/` (ex `seald/` — healthz, `GET /sigiled/contract`, `GET /sigiled/projects` con `template_version`; 7 unit test) e `vm-base/` (port del server v1, build-ext.sh su `ext-rust/`), `template/` (vm-tmpl v2), `images/build-vm-base.sh`, `tools/dev-toolchain.sh`, `CNAME` (`sigiled.dev`) + `index.html` (landing Pages).
 - **RINOMINA COMPLETATA.** Per ordine diretto del Re («eradica completamente la stringa seal») il repo non contiene più alcuna occorrenza di «seal» in nessuna forma: codice (crate `sigiledd`, env `SIGILED_BUILD_SHA`, header `x-sigiled-version`), documenti, contratto, template, commenti, **voci storiche di questo log comprese**. La storia vera (la piattaforma è nata sotto due nomi precedenti, entrambi eradicati dal testo) è preservata dalla storia git. Compilazione di scrupolo eseguita dopo lo sweep: `cargo build --workspace` verde (sigiledd + vm-base). Push del Re verificato: `ivan-saorin/sigiled` master = 2ab8f43, storia completa.
@@ -28,11 +28,21 @@ _aggiornato: 2026-08-03, sessione 3ace5bd7 (sessione 6 — recycle)_
 - **Fase 2.4 (apps engine v2 puro) su master**: decreto del Re — *le app tutte v2 pure, niente v1 convertite; una migrazione per sessione*. `[app]` nel manifest del progetto (nome=DNS, niente `image:` per costruzione), `upgrade` = sha → build `{nome}:{sha12}` in background (202+build record) → recreate coi secrets risolti dallo stack env; `start` non ricrea mai; verbi gated dalla capability map. 58 test.
 - **Sessione 5 (POST /projects) su master**: `github.rs` — il github.py della v1 portato in Rust e ristretto al verbo: generate da `vm-tmpl` (o **adozione** su 422 + probe del repo: un 422 di validazione vera resta un errore, niente progetti fantasma), deploy key ed25519 generata con `ssh-keygen` nel layout che `runtime.rs` già legge, chiave sul repo via API, registrazione per ultima (fallimento a metà = stato pulito, verbo ritentabile). `GITHUB_PAT` nello `.env` del canary accende il verbo (assente = 503 onesto); `GITHUB_API_BASE` overridabile per i test (mock axum locale, zero rete). `Event::ProjectCreated` nel log macchina. 67 test. **Il rituale re-import è morto**: i progetti nascono direttamente nel v2.
 - **Sessione 6 (recycle) su master**: `POST /sessions/{id}/recycle` — flush best-effort col token custodito, destroy, recreate dal branch della sessione (`boot_workspace` resume=true) con token fresco; swap persistito nel record (il vecchio token muore lì), `Event::SessionRecycled` nel log macchina, branch-only path onesto per dev/test. 69 test.
-- **Prossimo passo previsto**: reaper + resume (loop tokio su idle_secs, autosave, riapertura stale del branch — banco di prova: `oannes-one` session/206f26ec), poi jobs engine (`[jobs.*]` in sigiled.toml, scheduler cron, run su branch `job-*`). A feature verificate: purga v1 dalla skill sigil e spegnimento v1 (stop stack-mgr-1, via `/mgr/*` dal Caddyfile — `/s/{project}` resta). Dal Re: DEC-01…10. Dall'operatore: package `vm-base` → Public, Pages + DNS per il flip, client_secret dei driver nelle skill.
+- **Sessione 7 (reaper + resume) su master**: `reaper.rs` — loop tokio accanto al server (solo con runtime): `/health` di ogni sessione con token, `idle_secs` oltre soglia (env `SIGILED_REAPER_POLL_SECS`/`_IDLE_SECS`, default 60/3600) → autosave flush col token custodito, destroy, record via, `Event::SessionReaped`; niente merge, il branch resta orfano su origin. Il resume è il gemello: `find_orphan` in open() — branch `session/*` senza record vivo e non debitore → ripreso `stale:true` con `last_commit`, che l'orfano venga dal reaper, da un crash o dalla v1. Zero stato nuovo nello store: il repo è la verità. Agent irraggiungibile = skip rumoroso, mai destroy su un hiccup. 72 test.
+- **Prossimo passo previsto**: jobs engine (loop tokio su idle_secs, autosave, riapertura stale del branch — banco di prova: `oannes-one` session/206f26ec), poi jobs engine (`[jobs.*]` in sigiled.toml, scheduler cron, run su branch `job-*`). A feature verificate: purga v1 dalla skill sigil e spegnimento v1 (stop stack-mgr-1, via `/mgr/*` dal Caddyfile — `/s/{project}` resta). Dal Re: DEC-01…10. Dall'operatore: package `vm-base` → Public, Pages + DNS per il flip, client_secret dei driver nelle skill.
 
 ---
 
 ## Voci
+
+### 2026-08-03 · sessione 7 — reaper + resume: il contratto smette di mentire sulla regola 6 — driver: Claude (sessione 21c7f3fb)
+
+- **Dove eravamo**: recycle verificato dal vivo (dopo il fix identità autosave trovato proprio da quella verifica: flush true, `wip: session recycle autosave` sul branch, file sopravvissuto, token vecchio 401).
+- **Previsione**: loop tokio su idle_secs + resume del branch orfano; banco di prova reale il resume v1 pendente di `oannes-one`.
+- **Fatto**: scoperta chiave — l'import 2.3 **segnalò** il resume di oannes-one solo nel report, non nello store. Ne è nato un design più pulito: niente flag `resumable`, la verità sta nel repo. Un branch `session/*` senza record vivo e non in coda debiti è un orfano; open() lo riprende `stale:true` (`find_orphan`, entrambi i path). Il reaper diventa banale: flush autosave (col fix identità della 6b), destroy, record via, evento — il branch orfano è il testimone. Copre in un colpo solo reaper, crash del control plane e lapidi v1. `reap_pass` non distrugge mai su agent irraggiungibile (hiccup ≠ idle). TDD: test rosso visto fallire, 72 verdi.
+- **Scarti**: nessuno sul codice.
+- **Stato a fine sessione**: master verde; verifica live (reap con soglia corta su sigiled-smoke + resume oannes-one) post-deploy, esito nella prossima voce.
+- **Prossimo passo previsto**: deploy + verifica live reaper/resume, poi sessione 8: jobs engine.
 
 ### 2026-08-03 · sessione 6 — recycle: il passaggio di mano diventa un verbo — driver: Claude (sessione 3ace5bd7)
 
