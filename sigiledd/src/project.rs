@@ -100,6 +100,26 @@ impl Registry {
     pub fn replace_all(&self, records: Vec<ProjectRecord>) {
         *self.records.write().unwrap() = records;
     }
+    /// Re-derive the manifest-owned fields (template_version,
+    /// template_behind) of one record from a freshly read master manifest,
+    /// in place under the write lock. needs_merge belongs to the merge
+    /// machinery and is never touched here. Returns true only on an actual
+    /// change, so callers persist exactly when something moved.
+    pub fn refresh(&self, name: &str, manifest: &Manifest) -> bool {
+        let fresh = ProjectRecord::new(name, manifest, self.latest_template.as_deref());
+        let mut records = self.records.write().unwrap();
+        match records.iter_mut().find(|r| r.name == name) {
+            Some(r)
+                if r.template_version != fresh.template_version
+                    || r.template_behind != fresh.template_behind =>
+            {
+                r.template_version = fresh.template_version;
+                r.template_behind = fresh.template_behind;
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 pub async fn list(
@@ -307,6 +327,40 @@ mod tests {
         assert!(semver_lt("0.9.0", "0.10.0"));
         assert!(!semver_lt("0.10.0", "0.9.0"));
         assert!(semver_lt("1.2.3", "2.0.0"));
+    }
+
+    // --- Registry::refresh — the pin-reader wiring ---------------------------
+
+    #[test]
+    fn refresh_populates_pin_fields_and_preserves_needs_merge() {
+        let reg = Registry::with_latest_template(Some("0.2.0".into()));
+        reg.insert(ProjectRecord {
+            name: "smoke".into(),
+            template_version: None,
+            template_behind: false,
+            needs_merge: true,
+        });
+        let m = Manifest::parse("template = \"vm-tmpl@0.1.0\"\n").unwrap();
+        assert!(reg.refresh("smoke", &m), "first refresh reports a change");
+        let r = &reg.snapshot()[0];
+        assert_eq!(r.template_version.as_deref(), Some("vm-tmpl@0.1.0"));
+        assert!(r.template_behind, "pin 0.1.0 trails latest 0.2.0");
+        assert!(r.needs_merge, "refresh never touches needs_merge");
+    }
+
+    #[test]
+    fn refresh_is_idempotent_and_ignores_unknown_projects() {
+        let reg = Registry::with_latest_template(None);
+        reg.insert(ProjectRecord {
+            name: "smoke".into(),
+            template_version: None,
+            template_behind: false,
+            needs_merge: false,
+        });
+        let m = Manifest::parse("template = \"vm-tmpl@0.1.0\"\n").unwrap();
+        assert!(reg.refresh("smoke", &m));
+        assert!(!reg.refresh("smoke", &m), "same manifest = no change");
+        assert!(!reg.refresh("ghost", &m), "unknown project = no change, no panic");
     }
 
     // --- POST /projects (session 5) -----------------------------------------

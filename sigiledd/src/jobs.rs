@@ -146,6 +146,12 @@ pub fn fires_between(
 /// Errors map straight to verb responses: Ok(vec![]) = no jobs declared,
 /// Err(Some(422 detail)) = broken manifest, Err(None) = unknown project.
 fn jobs_of(state: &crate::AppState, project: &str) -> Result<Vec<JobManifest>, Option<String>> {
+    manifest_of(state, project).map(|m| m.jobs)
+}
+
+/// The whole manifest ON MASTER, same error mapping as jobs_of. A repo with
+/// no manifest file is a legal empty manifest, not an error.
+fn manifest_of(state: &crate::AppState, project: &str) -> Result<Manifest, Option<String>> {
     let repo = match &state.sessions.runtime {
         Some(rt) => rt.ensure_mirror(project).map_err(|_| None)?,
         None => {
@@ -159,12 +165,10 @@ fn jobs_of(state: &crate::AppState, project: &str) -> Result<Vec<JobManifest>, O
     };
     for f in ["sigiled.toml", "mgr.toml"] {
         if let Ok(text) = crate::merge::git(&repo, &["show", &format!("master:{f}")]) {
-            return Manifest::parse(&text)
-                .map(|m| m.jobs)
-                .map_err(|e| Some(format!("{project}/{f}: {e}")));
+            return Manifest::parse(&text).map_err(|e| Some(format!("{project}/{f}: {e}")));
         }
     }
-    Ok(vec![])
+    Ok(Manifest::parse("").expect("the empty manifest is legal"))
 }
 
 /// POST /sigiled/projects/{p}/jobs/{j}/run — manual trigger, same machinery
@@ -231,16 +235,21 @@ async fn scheduler_tick(
     last: &chrono::DateTime<chrono::Local>,
     now: &chrono::DateTime<chrono::Local>,
 ) {
+    let mut registry_changed = false;
     for p in state.registry.snapshot() {
-        let jobs = match jobs_of(state, &p.name) {
-            Ok(j) => j,
+        let manifest = match manifest_of(state, &p.name) {
+            Ok(m) => m,
             Err(Some(e)) => {
-                tracing::warn!(project = %p.name, %e, "broken [jobs] — project's jobs disabled");
+                tracing::warn!(project = %p.name, %e, "broken manifest — project's jobs disabled");
                 continue;
             }
             Err(None) => continue,
         };
-        for jm in jobs {
+        // The tick holds the freshly read master manifest anyway — this is
+        // where the template pin lands in the project record (DEC-05: same
+        // ~5 min refresh as the job definitions).
+        registry_changed |= state.registry.refresh(&p.name, &manifest);
+        for jm in manifest.jobs {
             match fires_between(&jm.cron, last, now) {
                 Ok(true) => {
                     if let Err(e) = trigger(state, &p.name, &jm, now) {
@@ -251,6 +260,9 @@ async fn scheduler_tick(
                 Err(e) => tracing::warn!(project = %p.name, job = %jm.name, %e, "bad cron"),
             }
         }
+    }
+    if registry_changed {
+        state.persist();
     }
 }
 
@@ -559,6 +571,30 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn scheduler_tick_reads_the_template_pin_into_the_registry() {
+        let base = app_state_with_manifest("jsmoke-e", "jse", "template = \"vm-tmpl@0.1.0\"\n");
+        let state = crate::AppState {
+            registry: crate::project::Registry::with_latest_template(Some("0.2.0".into())),
+            ..base
+        };
+        state.registry.insert(crate::project::ProjectRecord {
+            name: "jsmoke-e".into(),
+            template_version: None,
+            template_behind: false,
+            needs_merge: true,
+        });
+        scheduler_tick(&state, &local(2026, 8, 3, 10, 0, 0), &local(2026, 8, 3, 10, 0, 30)).await;
+        let r = &state.registry.snapshot()[0];
+        assert_eq!(
+            r.template_version.as_deref(),
+            Some("vm-tmpl@0.1.0"),
+            "the tick already reads the manifest — the pin must land in the record"
+        );
+        assert!(r.template_behind, "pin 0.1.0 trails latest 0.2.0");
+        assert!(r.needs_merge, "the tick refresh must not clobber needs_merge");
     }
 
     #[tokio::test]
