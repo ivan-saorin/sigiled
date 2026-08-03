@@ -87,6 +87,7 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/projects/{project}/log", get(events::project_log))
         .route("/projects/{project}/sessions", post(sessions::open))
         .route("/sessions/{session_id}/close", post(sessions::close))
+        .route("/sessions/{session_id}/recycle", post(sessions::recycle))
         .route("/auth/elevate", post(auth::elevate))
         .route("/auth/approvals", get(auth::approvals))
         .route("/apps/{app}", get(apps::status))

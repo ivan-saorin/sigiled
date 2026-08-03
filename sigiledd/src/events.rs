@@ -52,6 +52,12 @@ pub enum Event {
         repo: String,
         adopted: bool,
     },
+    /// recycle (session 6): same branch, fresh container and token — the
+    /// previous driver is structurally cut off (provider handoff, §10).
+    SessionRecycled {
+        session_id: String,
+        sha: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +141,12 @@ fn render_markdown(project: &str, entries: &[LogEntry]) -> String {
                 e.at_epoch,
                 if *adopted { "adopted" } else { "created from template" },
                 repo
+            ),
+            Event::SessionRecycled { session_id, sha } => format!(
+                "- [{}] session `{}` recycled @ `{}`",
+                e.at_epoch,
+                session_id,
+                &sha[..12.min(sha.len())]
             ),
         };
         out.push_str(&line);

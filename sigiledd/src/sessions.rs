@@ -343,6 +343,93 @@ pub async fn close(
     .into_response()
 }
 
+/// POST /sigiled/sessions/{id}/recycle — flush, destroy, recreate from the
+/// session's own branch with a freshly minted token (contract §5): the way
+/// to hand a session to another provider or to unwedge a container. The old
+/// token is dead the moment this returns.
+pub async fn recycle(
+    actor: Actor,
+    State(state): State<crate::AppState>,
+    AxPath(session_id): AxPath<String>,
+) -> Response {
+    let Some(record) = state.sessions.records.read().unwrap().get(&session_id).cloned() else {
+        return err(StatusCode::NOT_FOUND, format!("unknown session: {session_id}"));
+    };
+    if let Err(denial) = authorize(
+        &actor,
+        Action::Recycle,
+        Some(&record.project),
+        &state.auth.approvals,
+        now_epoch(),
+    ) {
+        return err(StatusCode::FORBIDDEN, denial.0);
+    }
+    // Flush is best-effort by design: a wedged container is one of the two
+    // reasons to recycle, and push-early means only unpushed leftovers are
+    // at stake. The verb proceeds either way and reports honestly.
+    let mut flushed = true;
+    let (head, token, endpoint) = match &state.sessions.runtime {
+        Some(rt) => {
+            if let Some(tok) = &record.token {
+                flushed = rt
+                    .flush(&state.sessions.http, &record.project, tok, "session recycle")
+                    .await;
+            }
+            rt.destroy(&record.project);
+            let tok = mint_token();
+            if let Err(e) = rt.create_container(&record.project, &session_id, &tok) {
+                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+            }
+            if let Err(e) = rt.wait_healthy(&state.sessions.http, &record.project, &tok).await {
+                rt.destroy(&record.project);
+                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+            }
+            // resume=true: the branch already exists on the remote — the
+            // fresh container checks it out instead of cutting a new one.
+            match rt
+                .boot_workspace(&state.sessions.http, &record.project, &tok, &record.branch, true)
+                .await
+            {
+                Ok(head) => (head, Some(tok), Some(rt.endpoint(&record.project))),
+                Err(e) => {
+                    rt.destroy(&record.project);
+                    return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+                }
+            }
+        }
+        None => {
+            let Some(repos) = state.sessions.repos_dir.clone() else {
+                return err(StatusCode::SERVICE_UNAVAILABLE, "SIGILED_REPOS_DIR not configured");
+            };
+            let repo = repos.join(&record.project);
+            match git(&repo, &["rev-parse", &record.branch]) {
+                Ok(sha) => (sha, None, None),
+                Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+            }
+        }
+    };
+    // The record survives with the fresh token: the old one is dead the
+    // moment this swap lands (and persists).
+    {
+        let mut records = state.sessions.records.write().unwrap();
+        if let Some(r) = records.get_mut(&session_id) {
+            r.token = token.clone();
+            r.head = head.clone();
+        }
+    }
+    state.events.record(
+        &record.project,
+        now_epoch(),
+        Event::SessionRecycled { session_id: session_id.clone(), sha: head.clone() },
+    );
+    state.persist();
+    Json(json!({
+        "session_id": session_id, "project": record.project, "branch": record.branch,
+        "token": token, "endpoint": endpoint, "sha_at_recycle": head, "flushed": flushed,
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +554,45 @@ mod tests {
         assert_eq!(debts[0].branch, branch);
         // And the machine log came back with it.
         assert_eq!(reborn.events.for_project("smoke-persist").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn recycle_unknown_session_is_404() {
+        let state = crate::AppState::default();
+        let (status, _) =
+            body_json(recycle(admin(), State(state), AxPath("deadbeef".into())).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn recycle_returns_branch_head_and_session_survives() {
+        let (state, repo) = app_state("smoke-rec", "srec");
+        let (_, a) =
+            body_json(open(admin(), State(state.clone()), AxPath("smoke-rec".into())).await).await;
+        let id = a["session_id"].as_str().unwrap().to_string();
+        let branch = a["branch"].as_str().unwrap().to_string();
+        commit_on(&repo, &branch, "work.txt", "w\n", "feat: work before recycle");
+
+        let (status, body) =
+            body_json(recycle(admin(), State(state.clone()), AxPath(id.clone())).await).await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        // sha_at_recycle is the branch's own head — the recreate starts there.
+        assert_eq!(
+            body["sha_at_recycle"].as_str().unwrap(),
+            sh(&repo, &["rev-parse", &branch])
+        );
+        assert_eq!(body["branch"].as_str().unwrap(), branch);
+        // Branch-only path mints no token, honestly (as open does).
+        assert!(body["token"].is_null());
+        // The record survived with the refreshed head: close still works.
+        let (status, closed) =
+            body_json(close(admin(), State(state.clone()), AxPath(id)).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(closed["merge"], "ff");
+        // Machine log: opened, recycled, closed.
+        let ev = serde_json::to_value(state.events.for_project("smoke-rec")).unwrap();
+        assert_eq!(ev[1]["kind"], "session_recycled");
+        assert_eq!(ev[1]["sha"], body["sha_at_recycle"]);
     }
 
     #[tokio::test]
