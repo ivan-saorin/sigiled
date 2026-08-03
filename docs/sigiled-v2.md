@@ -1,147 +1,149 @@
-# SIGILED — Documento di design
+# SIGILED — Design document
 
-*(nato come «SIGILED v2», poi «SIGILED» — rinominato 2026-08-03 con DEC-12 emendata; il contratto di guida resta SIGILED)*
+*(born "SIGILED v2", then "SIGILED" — renamed 2026-08-03 with DEC-12 as amended; the driving contract remains SIGILED)*
 
-**Versione:** 0.3 · **Data:** 2026-08-03 · **Stato:** TUTTE le decisioni ratificate — DEC-01…10 ratificate dal Re il 2026-08-03 (in chat, a piattaforma completa e verificata dal vivo); DEC-11…20, DEC-22 e DEC-23 ratificate in precedenza, DEC-21 registrata; DEC-12 **emendata** 2026-08-03 → piattaforma **SIGILED** (`ivan-saorin/sigiled`, domini `sigiled.dev`/`sigilled.dev`). Il contratto è 2.0.0, non più draft
-**Origine:** sessione di design del 2026-08-02 (driver: Kimi K3), partita dalla lettura degli aggiornamenti di `tomes-and-tales` (auth deployata con Authentik) e `torchio` (requisiti v0.3, DEC-17/18): i pattern nati nei progetti **salgano di un livello**, dentro la piattaforma.
-**Memoria operativa:** `docs/log-operativo.md` — ogni sessione la aggiorna (convenzione §3).
-
----
-
-## 0. Sintesi
-
-SIGILED v2 sono **quattro cambiamenti** sorretti da un solo principio: **git è il modello mentale di tutto lo stack**, non solo dei repo.
-
-1. **Auth a due gambe** — i driver LLM diventano client OAuth2 di Authentik (`client_credentials`, identità macchina per-driver); l'approvazione umana arriva via *device flow* con token custoditi **lato SIGILED**, mai nelle skill. Il bearer unico muore.
-2. **Log operativo a due layer** — SIGILED espone la storia meccanica dal proprio DB (`GET /sigiled/projects/{p}/log`); il file narrativo `docs/log-operativo.md` nasce dal template e resta per sempre del progetto.
-3. **Template versioning** — il recepimento (torchio DEC-17) sale di livello: vm-tmpl versionato con tag, pin in `sigiled.toml`, sync on-demand con drift detection, **mai auto-update**. Il motore serve il proprio contratto (`GET /sigiled/contract`).
-4. **Concorrenza a riconciliazione** — addio lock di sessione: un branch per workload, merge al close, e un **merge debt** con pacchetto di contesto che la sessione successiva **deve** risolvere prima di qualsiasi altro lavoro, quale che sia il modello che la guida.
-
-I quattro si compongono: l'auth dà autori veri al log; il log registra update di template e merge debt; il recepimento distribuisce il contratto nuovo ai progetti; la concorrenza rende tutto multi-driver senza serrature.
+**Version:** 0.3-en · **Date:** 2026-08-03 · **Status:** ALL decisions ratified — DEC-01…10 ratified by il Re on 2026-08-03 (in chat, with the platform complete and live-verified); DEC-11…20, DEC-22 and DEC-23 ratified earlier, DEC-21 and DEC-24 registered; DEC-12 **amended** 2026-08-03 → platform **SIGILED** (`ivan-saorin/sigiled`, domains `sigiled.dev`/`sigilled.dev`). The contract is 2.0.0, no longer draft.
+**Origin:** design session of 2026-08-02 (driver: Kimi K3), started from reading the updates of `tomes-and-tales` (auth deployed with Authentik) and `torchio` (v0.3 requirements, DEC-17/18): the patterns born inside the projects **move up one level**, into the platform.
+**Language note:** this is the official English version; the Italian original lives in `sigiled-v2_it.md` and remains the project's working memory. On divergence, the file that records the later ratification wins.
+**Operational memory:** `docs/log-operativo.md` — every session updates it (convention §2).
 
 ---
 
-## 1. Auth — due gambe
+## 0. Summary
 
-### 1.1 La dottrina, generalizzata da tnt
+SIGILED v2 is **four changes** carried by a single principle: **git is the mental model of the whole stack**, not just of the repos.
 
-Come in tnt (docs/auth.md §1): **l'IdP sa solo membership; ogni applicazione mappa gruppi → capability localmente**. Authentik è l'IdP dello stack, già live su `auth.016180.xyz`. SIGILED diventa una relying party come le altre — niente IdP privato, niente console nuova: Authentik È la console.
+1. **Two-legged auth** — LLM drivers become OAuth2 clients of Authentik (`client_credentials`, per-driver machine identity); human approval arrives via *device flow* with tokens held **on the SIGILED side**, never in the skills. The single shared bearer dies.
+2. **Two-layer operational log** — SIGILED exposes the mechanical history from its own DB (`GET /sigiled/projects/{p}/log`); the narrative file `docs/log-operativo.md` is born from the template and belongs to the project forever.
+3. **Template versioning** — adoption (torchio DEC-17) moves up a level: vm-tmpl versioned with tags, pin in `sigiled.toml`, on-demand sync with drift detection, **never auto-update**. The engine serves its own contract (`GET /sigiled/contract`).
+4. **Reconciliation concurrency** — goodbye session lock: one branch per workload, merge at close, and a **merge debt** with a context package that the next session **must** resolve before any other work, whatever model is driving it.
 
-### 1.2 Evidenza raccolta dal vivo (2026-08-02)
+The four compose: auth gives the log real authors; the log records template updates and merge debt; adoption distributes the new contract to the projects; concurrency makes everything multi-driver without locks.
 
-Verificato con sonde anonime:
+---
 
-- `GET /application/o/tomes-and-tales/.well-known/openid-configuration` → **200**, discovery completa e pubblica (OIDC nasce per essere scopribile).
-- Grant dichiarati: `authorization_code`, `refresh_token`, `implicit`, **`client_credentials`**, `password`, **`urn:ietf:params:oauth:grant-type:device_code`** (con `device_authorization_endpoint` dedicato).
-- `POST /application/o/token/` senza credenziali → `400 invalid_client`: il token endpoint è vivo e sorvegliato; la porta per le macchine esiste già.
-- `POST /application/o/device/` con il solo `client_id` pubblico di tnt → `400 invalid_client`: il device endpoint è attivo; serve un provider configurato per device flow.
-- JWKS del provider tnt = `{}` perché firma **HS256** (simmetrico). Per i provider SIGILED: **RS256**, così SIGILED valida i JWT localmente via JWKS.
+## 1. Auth — two legs
 
-### 1.3 Gamba machine — client_credentials per driver
+### 1.1 The doctrine, generalized from tnt
 
-- **Un provider OAuth2 per driver** (`sigiled-kimi`, `sigiled-claude`, …): ciascuno con la propria coppia `client_id`/`client_secret`, grant ristretto a `client_credentials`, firma RS256. In Authentik un provider = una coppia → per-driver significa revoca per-driver e audit per-driver.
-- **Il driver si auto-minta i token**: `POST /application/o/token/` → access token breve → `Authorization: Bearer` verso `api.016180.xyz`. Scaduto → se ne prende un altro. **Zero umani nel loop dopo il setup.**
-- **Concorrenza sicura per costruzione**: ogni token è indipendente, nessuno stato mutabile condiviso fra chat parallele — il problema di rotazione dei refresh token (§1.5) qui non esiste.
-- **Nella skill SIGILED**: `client_id` + `client_secret` al posto del bearer monolitico. Stesse regole di handling (mai echo, mai commit), stessa storia di rotazione (401 → chiedi il nuovo valore). Un leak compra solo token brevi di *quel* driver, revocabile in un click.
+As in tnt (docs/auth.md §1): **the IdP knows only membership; each application maps groups → capabilities locally**. Authentik is the stack's IdP, already live on the reference instance. SIGILED becomes a relying party like the others — no private IdP, no new console: Authentik IS the console.
 
-### 1.4 Gamba umana — device flow, custodia lato SIGILED
+### 1.2 Evidence gathered live (2026-08-02)
 
-Per le operazioni che devono portare «Ivan ha approvato»:
+Verified with anonymous probes:
+
+- `GET /application/o/tomes-and-tales/.well-known/openid-configuration` → **200**, full public discovery (OIDC is born discoverable).
+- Declared grants: `authorization_code`, `refresh_token`, `implicit`, **`client_credentials`**, `password`, **`urn:ietf:params:oauth:grant-type:device_code`** (with a dedicated `device_authorization_endpoint`).
+- `POST /application/o/token/` without credentials → `400 invalid_client`: the token endpoint is alive and guarded; the machine door already exists.
+- `POST /application/o/device/` with only tnt's public `client_id` → `400 invalid_client`: the device endpoint is active; it needs a provider configured for device flow.
+- The tnt provider's JWKS = `{}` because it signs **HS256** (symmetric). For the SIGILED providers: **RS256**, so SIGILED validates JWTs locally via JWKS.
+
+### 1.3 Machine leg — client_credentials per driver
+
+- **One OAuth2 provider per driver** (`sigiled-kimi`, `sigiled-claude`, …): each with its own `client_id`/`client_secret` pair, grant restricted to `client_credentials`, RS256 signing. In Authentik one provider = one pair → per-driver means per-driver revocation and per-driver audit.
+- **The driver mints its own tokens**: `POST /application/o/token/` → short access token → `Authorization: Bearer` toward the API edge. Expired → take another. **Zero humans in the loop after setup.**
+- **Concurrency-safe by construction**: every token is independent, no shared mutable state between parallel chats — the refresh-token rotation problem (§1.5) does not exist here.
+- **In the SIGILED skill**: `client_id` + `client_secret` in place of the monolithic bearer. Same handling rules (never echo, never commit), same rotation story (401 → ask for the new value). A leak buys only short tokens of *that* driver, revocable in one click.
+
+### 1.4 Human leg — device flow, custody on the SIGILED side
+
+For the operations that must carry "the operator approved":
 
 ```
 1. driver → POST /sigiled/auth/elevate
-2. SIGILED (client OIDC) → POST auth.016180.xyz/application/o/device/   [provider sigiled-device]
-3. SIGILED → driver → chat: «vai su auth.016180.xyz/device, codice ABCD-1234»
-4. operatore approva dal browser (una volta)
-5. SIGILED fa polling al token endpoint, ottiene access+refresh token
-   → li custodisce nel proprio DB, auto-refresh serializzato nel suo processo
+2. SIGILED (OIDC client) → POST <idp>/application/o/device/   [provider sigiled-device]
+3. SIGILED → driver → chat: "go to <idp>/device, code ABCD-1234"
+4. the operator approves from the browser (once)
+5. SIGILED polls the token endpoint, obtains access+refresh tokens
+   → holds them in its own DB, auto-refresh serialized inside its process
 ```
 
-- **Access token 12h, refresh 30 giorni** (configurazione provider): l'umano approva ~**una volta al mese per driver**, non 1-2 volte al giorno.
-- **Il token non tocca mai né skill né PC né transcript**: SIGILED è l'unico componente con stato persistente e processo sempre vivo — il custode naturale. Niente corse di rotazione: la serializzazione è interna a SIGILED.
-- Stampare `user_code` in chat è sicuro per costruzione: autorizza soltanto; i token arrivano a chi detiene il `device_code`, che resta server-side.
+- **Access token 12 h, refresh 30 days** (provider configuration): the human approves ~**once a month per driver**, not 1-2 times a day.
+- **The token never touches skill, PC or transcript**: SIGILED is the only component with persistent state and an always-alive process — the natural custodian. No rotation races: serialization is internal to SIGILED.
+- Printing the `user_code` in chat is safe by construction: it only authorizes; the tokens go to whoever holds the `device_code`, which stays server-side.
 
-### 1.5 Perché non «token di lunga vita nella skill»
+### 1.5 Why not "long-lived token in the skill"
 
-Ipotesi valutata e scartata (device flow + auto-refresh con refresh token salvato nella skill):
+Hypothesis evaluated and discarded (device flow + auto-refresh with the refresh token saved in the skill):
 
-1. **Corse di rotazione** — Authentik ruota il refresh token a ogni uso; più chat parallele con lo stesso token si invalidano a vicenda, e il problema rientra dalla finestra proprio durante le sessioni parallele.
-2. **Leak surface** — la skill viene letta per intero nel contesto a ogni attivazione: un segreto da 30 giorni in ogni transcript di ogni provider.
-3. **File ≠ database** — la skill è un documento condiviso fra superfici; farla riscrivere a ogni refresh è fragile o impossibile (alcune superfici non possono scriverla).
+1. **Rotation races** — Authentik rotates the refresh token on every use; multiple parallel chats with the same token invalidate each other, and the problem climbs back in through the window exactly during parallel sessions.
+2. **Leak surface** — the skill is read whole into context on every activation: a 30-day secret in every transcript of every provider.
+3. **File ≠ database** — the skill is a document shared across surfaces; making it rewrite itself on every refresh is fragile or impossible (some surfaces cannot write it).
 
-### 1.6 Actor e capability
+### 1.6 Actor and capabilities
 
-Ogni record session/job guadagna:
+Every session/job record gains:
 
 ```
-actor: { driver: "sigiled-kimi", approval: "ivan (device, scade 2026-08-03T01:00)" | null }
+actor: { driver: "sigiled-kimi", approval: "ivan (device, expires 2026-08-03T01:00)" | null }
 ```
 
-Capability map v1 (SIGILED-locale):
+Capability map v1 (SIGILED-local):
 
 | | `stack:admins` | `stack:drivers` |
 |---|---|---|
 | sessions open/close/recycle, git, exec | ✓ | ✓ |
 | jobs run/recap | ✓ | ✓ |
-| projects new | ✓ | con approval |
-| apps verbs (start/stop/restart/upgrade) | ✓ | con approval |
+| projects new | ✓ | with approval |
+| apps verbs (start/stop/restart/upgrade) | ✓ | with approval |
+| skill render (`GET /skill/{driver}`, DEC-24) | ✓ | with approval |
 
-### 1.7 Migrazione dal bearer unico
+### 1.7 Migration from the single bearer
 
-Finestra **dual-auth**: l'edge accetta legacy bearer (= bootstrap admin) e token Authentik; si creano i provider `sigiled-*`, si aggiornano le skill, poi il legacy muore. La skill gestisce già la rotazione via 401: storia compatibile.
+**Dual-auth** window: the edge accepts the legacy bearer (= bootstrap admin) and Authentik tokens; the `sigiled-*` providers get created, the skills get updated, then the legacy dies. The skill already handles rotation via 401: a compatible story. *(Executed: the window closed 2026-08-03.)*
 
-### 1.8 Note di sicurezza
+### 1.8 Security notes
 
-- Grant `password` **disabilitato** sui provider SIGILED — solo `client_credentials` (driver) e `device_code` (sigiled-device).
-- Secret driver lunghi e generati; verificare rate-limiting all'edge sulla route del token endpoint.
-- Validazione in SIGILED: **JWKS + RS256** (locale, niente chiamata per richiesta); introspezione come fallback/debug.
-- Claim di gruppo nei token via property mapping Authentik — da verificare in configurazione (serve per `stack:drivers` come claim).
+- `password` grant **disabled** on the SIGILED providers — only `client_credentials` (drivers) and `device_code` (sigiled-device).
+- Driver secrets long and generated; verify rate-limiting at the edge on the token-endpoint route.
+- Validation in SIGILED: **JWKS + RS256** (local, no per-request call); introspection as fallback/debug.
+- Group claims in the tokens via Authentik property mapping — verified in configuration (needed for `stack:drivers` as a claim).
 
 ---
 
-## 2. Log operativo — due layer
+## 2. Operational log — two layers
 
-- **Layer macchina (SIGILED-owned)**: SIGILED ha già tutti i dati (sessioni, close con esito merge, job run, build app) nel proprio DB. Li espone: **`GET /sigiled/projects/{p}/log`**. Zero scritture nei repo dei progetti, zero violazioni della proprietà dei contenuti.
-- **Layer narrativo (driver-owned)**: `docs/log-operativo.md` con contratto in testa (tre domande: dove eravamo / dove prevedevamo di andare / cosa è stato fatto + scarti, stato, prossimo passo; voci non si cancellano, si correggono con voci nuove). **Lo skeleton nasce dal template alla creazione del progetto e da quel momento è del progetto, per sempre** — la regola torchio DEC-18 generalizzata. Il template non lo tocca mai dopo la creazione: collisione risolta per costruzione.
-- **Regola SIGILED nuova**: *chiudi lavoro coerente → aggiungi una voce in cima al log operativo*.
-- **Hint onesto**: `close` risponde con `log_operativo_touched: false` quando il file non è stato modificato — specchio, non enforcement.
+- **Machine layer (SIGILED-owned)**: SIGILED already has all the data (sessions, closes with merge outcome, job runs, app builds) in its own DB. It exposes them: **`GET /sigiled/projects/{p}/log`**. Zero writes into project repos, zero violations of content ownership.
+- **Narrative layer (driver-owned)**: `docs/log-operativo.md` with its contract at the top (three questions: where were we / where did we plan to go / what was done + discards, state, next step; entries are never deleted, they are corrected with new entries). **The skeleton is born from the template at project creation and from that moment belongs to the project, forever** — the torchio DEC-18 rule generalized. The template never touches it after creation: collision resolved by construction.
+- **New SIGILED rule**: *close coherent work → add an entry on top of the operational log*.
+- **Honest hint**: `close` answers with `log_operativo_touched: false` when the file was not modified — a mirror, not enforcement.
 
-## 3. Template versioning — il recepimento sale di livello
+## 3. Template versioning — adoption moves up a level
 
-La meccanica di torchio DEC-17, applicata a vm-tmpl:
+The torchio DEC-17 mechanics, applied to vm-tmpl:
 
-- **vm-tmpl versionato**: tag semver + CHANGELOG.
-- **Pin alla creazione**: `sigiled.toml` on master guadagna `template = "vm-tmpl@x.y.z"` — casa naturale, è già il file che SIGILED legge.
-- **Recepimento**: allowlist di path SIGILED-owned + `sync` script + **drift detection** (se hai toccato file SIGILED-owned, si ferma e segnala). Rollback = `git revert` o re-pin al tag precedente.
-- **Mai auto-update** — simmetria con torchio DEC-07: SIGILED non riscrive mai i repo dei progetti di propria iniziativa. Sync v1 in sessione (close = imbragatura), v2 come job.
-- **Visibilità**: `status` mostra `template_behind: true` accanto a `needs_merge`.
-- **Il contratto servito dal motore**: **`GET /sigiled/contract`** — il testo SIGILED canonico, versionato. Con `healthz.version` già esistente, ogni driver può verificare la freschezza della propria skill e rigenerarla (l'Appendix A lo prescrive; ora diventa meccanico).
+- **vm-tmpl versioned**: semver tags + CHANGELOG.
+- **Pin at creation**: `sigiled.toml` on master gains `template = "vm-tmpl@x.y.z"` — its natural home, it is already the file SIGILED reads.
+- **Adoption**: allowlist of SIGILED-owned paths + `sync` script + **drift detection** (if you touched SIGILED-owned files, it stops and reports). Rollback = `git revert` or re-pin to the previous tag.
+- **Never auto-update** — symmetry with torchio DEC-07: SIGILED never rewrites project repos on its own initiative. Sync v1 in-session (close = the harness), v2 as a job.
+- **Visibility**: `status` shows `template_behind: true` next to `needs_merge`.
+- **The contract served by the engine**: **`GET /sigiled/contract`** — the canonical SIGILED text, versioned. With the already-existing `healthz.version`, every driver can verify the freshness of its own skill and regenerate it (now mechanical via `GET /skill/{driver}`, DEC-24).
 
-### 3.1 Il workspace v2 — immagine base + ext per linguaggio (ratificato 2026-08-02)
+### 3.1 The v2 workspace — base image + per-language ext (ratified 2026-08-02)
 
-Fatto emerso leggendo il vm-tmpl v1: ogni progetto vendorizza `server/` + `ext/` + `build-ext.sh` + lo stage cargo del `Dockerfile`, e ricompila vm-base a ogni build (con `COPY . .` che sbatte la cache a ogni commit). La v2 lo ribalta:
+A fact surfaced reading vm-tmpl v1: every project vendors `server/` + `ext/` + `build-ext.sh` + the cargo stage of the `Dockerfile`, and recompiles vm-base on every build (with `COPY . .` busting the cache on every commit). v2 flips it:
 
-- **Immagine base pre-buildata per tag**: vm-base è pubblicata come immagine taggata (`vm-base:x.y.z`, registry dello stack). Il Dockerfile del progetto si riduce a `FROM vm-base:x.y.z` + i layer di toolchain del progetto (python, go, …). Il recepimento dell'agent diventa **bump del tag** (punto esatto del pin — Dockerfile o `sigiled.toml` — da fissare in implementazione). Dai repo dei progetti spariscono `server/`, `ext/` vendored, `build-ext.sh` e lo stage cargo: con loro muore la ricompilazione a ogni build.
-- **Ext per linguaggio**: il punto di estensione si generalizza in `ext-<lang>/`:
-  - `ext-rust/` — la convenzione attuale: crate compilate **dentro** vm-base (statico, zero runtime aggiuntivo);
-  - `ext-py/`, `ext-go/`, … — processi locali supervisionati nel container; vm-base fa reverse-proxy su porta/socket.
-  - Contratto unico invariato: HTTP montato a **`/x/<nome>`**, dentro lo stesso token gate. La toolchain segue l'ext: un progetto con `ext-py/` porta python nell'immagine via layer progetto.
-- **vm-tmpl v2** di conseguenza: Dockerfile sottile (FROM + hook toolchain), `docs/` skeleton (incl. log-operativo), `sigiled.toml` commentato, `ext-rust/` di esempio vuota. L'allowlist SIGILED-owned si riduce quasi a zero — scheletro docs e poco più: il grosso del recepimento viaggia sul tag dell'immagine.
+- **Pre-built base image per tag**: vm-base is published as a tagged image (`vm-base:x.y.z`, stack registry). The project Dockerfile shrinks to `FROM vm-base:x.y.z` + the project's toolchain layers (python, go, …). Agent adoption becomes a **tag bump** (the exact pin point — Dockerfile or `sigiled.toml` — fixed at implementation). From the project repos disappear `server/`, vendored `ext/`, `build-ext.sh` and the cargo stage: with them dies the per-build recompilation.
+- **Per-language ext**: the extension point generalizes to `ext-<lang>/`:
+  - `ext-rust/` — the current convention: crates compiled **inside** vm-base (static, zero extra runtime);
+  - `ext-py/`, `ext-go/`, … — local supervised processes in the container; vm-base reverse-proxies to port/socket.
+  - Single contract unchanged: HTTP mounted at **`/x/<name>`**, inside the same token gate. The toolchain follows the ext: a project with `ext-py/` brings python into the image via a project layer.
+- **vm-tmpl v2** accordingly: thin Dockerfile (FROM + toolchain hook), `docs/` skeleton (incl. log-operativo), commented `sigiled.toml`, empty example `ext-rust/`. The SIGILED-owned allowlist shrinks almost to zero — docs skeleton and little more: the bulk of adoption travels on the image tag.
 
-## 4. Concorrenza — da esclusione a riconciliazione
+## 4. Concurrency — from exclusion to reconciliation
 
-### 4.1 Il cambio strutturale
+### 4.1 The structural change
 
-Il lock non sparisce: **si restringe da tutta la vita della sessione a una sezione critica di pochi secondi al merge**. Si paga il costo della coordinazione solo quando i conflitti esistono davvero, e git è costruito per minimizzarli.
+The lock does not disappear: **it shrinks from the whole life of the session to a critical section of a few seconds at merge time**. Coordination is paid for only when conflicts actually exist, and git is built to minimize them.
 
-1. `open` → branch `session/{id}` da master corrente. **Niente più 409**: N sessioni concorrenti, N container isolati, N token per-sessione (il modello a token già lo supporta, non cambia nulla).
-2. Lavoro, commit, push automatico — identico a oggi.
-3. `close` → SIGILED acquisisce il merge-lock del progetto (secondi) e tenta in sequenza: **fast-forward** (master fermo: caso comune) → **merge a tre vie** (master mosso ma cambi disgiunti: git fonde da solo) → **conflitto**.
-4. Close simultanee: la sezione critica le serializza — una vince, l'altra vede master mosso e va nel ramo merge.
+1. `open` → branch `session/{id}` from current master. **No more 409**: N concurrent sessions, N isolated containers, N per-session tokens (the token model already supports it, nothing changes).
+2. Work, commit, automatic push — identical to today.
+3. `close` → SIGILED acquires the project's merge-lock (seconds) and tries in sequence: **fast-forward** (master unmoved: the common case) → **three-way merge** (master moved but disjoint changes: git merges alone) → **conflict**.
+4. Simultaneous closes: the critical section serializes them — one wins, the other sees master moved and takes the merge path.
 
 ### 4.2 Merge debt
 
-Al conflitto: master resta dov'è, il branch resta, e SIGILED registra il pacchetto di contesto — perché chi risolverà **non ha scritto nessuna delle due metà**:
+On conflict: master stays where it is, the branch stays, and SIGILED records the context package — because whoever resolves it **wrote neither of the two halves**:
 
 ```json
 merge_debt: {
@@ -153,99 +155,98 @@ merge_debt: {
 }
 ```
 
-I commit message intent-carrying (regola 2) si pagano qui la seconda volta: sono il contesto per decidere.
+Intent-carrying commit messages (rule 2) pay off here a second time: they are the context for deciding.
 
-- **`open` su progetto con debt** → `merge_debt` in cima alla risposta, urlato.
-- **Regola dura**: *risolvi il merge debt PRIMA di qualsiasi altro lavoro, quale che sia il modello che ti guida.*
-- **Protocollo di risoluzione**: il container parte dal branch in debt col merge in corso e i marker nei file → leggi i commit message dei due lati → risolvi → verifica → committa spiegando *cosa hai tenuto e perché* → chiudi. **Se non sai decidere: chiedi all'operatore, non indovinare.**
-- **Merge commit, non rebase**: registrano il confine di sessione e chi ha fuso. La linearità è estetica; quella traccia è memoria.
-- Il layer macchina del log registra fallimento e risoluzione; `status` mostra la coda di debt per progetto.
+- **`open` on a project with debt** → `merge_debt` at the top of the response, shouted.
+- **Hard rule**: *resolve the merge debt BEFORE any other work, whatever model is driving you.*
+- **Resolution protocol**: the container starts from the indebted branch with the merge in progress and the markers in the files → read both sides' commit messages → resolve → verify → commit explaining *what you kept and why* → close. **If you cannot decide: ask the operator, do not guess.**
+- **Merge commits, not rebase**: they record the session boundary and who merged. Linearity is aesthetics; that trace is memory.
+- The log's machine layer records failure and resolution; `status` shows the debt queue per project.
 
-### 4.3 Conflitti semantici — la compilazione di scrupolo
+### 4.3 Semantic conflicts — the scruple build
 
-Git può fondere pulito e produrre un risultato rotto (due sessioni toccano parti diverse di codice interdipendente). Regola:
+Git can merge clean and produce a broken result (two sessions touch different parts of interdependent code). Rule:
 
-> Una sessione che nota **merge multipli nella storia recente** del progetto esegue la **compilazione di scrupolo** (build/test se il repo li ha; riesame di coerenza dei documenti se è un repo di soli doc). **Se è rotta: DEVE sistemare prima di procedere.**
+> A session that notices **multiple merges in the project's recent history** runs the **scruple build** (build/test if the repo has them; a coherence re-read of the documents if it is a docs-only repo). **If it is broken: it MUST be fixed before proceeding.**
 
-Futuro (gancio, non v1): hook post-merge opzionale dichiarato in `sigiled.toml` per automatizzare il check.
+Future (hook, not v1): optional post-merge hook declared in `sigiled.toml` to automate the check.
 
-### 4.4 Le regole riscritte
+### 4.4 The rewritten rules
 
-- **Regola 4** — da «un workload per progetto» a: **un branch per workload; master è l'arbitro al close.** Il 409 sulle sessioni sparisce; resta il divieto di retry-hammer su lock di merge.
-- **Regola 7** — da «master si muove solo via close (fast-forward)» a: **master si muove solo via close (FF preferito, merge altrimenti).** I job branch restano append-only e non fanno mai merge. L'invariante che conta — master si muove solo via close — è intatto.
-
----
-
-## 5. Sequenza di attuazione candidata
-
-1. `GET /sigiled/contract` + tag di vm-tmpl + pin in `sigiled.toml` (sblocca tutto, costo basso)
-2. Log operativo: layer macchina + skeleton nel template + hint di close
-3. Auth: provider Authentik `sigiled-*`, dual-auth, actor nei record, morte del bearer
-4. Recepimento: sync script + drift detection + `template_behind`
-5. Concorrenza: merge-lock, merge al close, merge debt, regole 4/7 nuove
-
-Sequenza alternativa: auth prima, se il dolore della chiave unica in giro per le skill diventa prioritario.
+- **Rule 4** — from "one workload per project" to: **one branch per workload; master is the arbiter at close.** The 409 on sessions disappears; the ban on retry-hammering the merge lock stays.
+- **Rule 7** — from "master moves only via close (fast-forward)" to: **master moves only via close (FF preferred, merge otherwise).** Job branches remain append-only and never merge. The invariant that matters — master moves only via close — is intact.
 
 ---
 
-## 6. Questioni aperte
+## 5. Implementation sequence
 
-1. **Scope auth v1**: solo operatore + agenti LLM; il lattice di gruppi umani (family/friends) arriva al primo use case vero.
-2. ~~Il repo di SIGILED stesso è SIGILED-registrato?~~ **Risolta 2026-08-02: sì — §7, DEC-11…15.** La piattaforma v2 si chiama SIGILED; la resurrezione è affidata a `sigiled-supervisor`.
-3. Claim di gruppo nei token via property mapping — da verificare su Authentik 2026.5.6.
-4. Lista definitiva delle operazioni che richiedono approval (candidati: `projects new`, apps verbs; da ratificare).
-5. Soglia di merge debt oltre la quale `status` urla (candidata: 1 — qualunque debt è urlato).
-6. Durate definitive dei token (proposte: access driver breve ~1h auto-mintato; approval 12h; refresh 30d).
-7. ~~Toolchain del workspace~~ **Risolta 2026-08-02: immagine base per tag + ext per linguaggio — §3.1, DEC-17/18.**
+*(Executed 2026-08-02/03 — see `v2-build-plan.md` and the operational log; kept for the record.)*
+
+1. `GET /sigiled/contract` + vm-tmpl tag + pin in `sigiled.toml` (unlocks everything, low cost)
+2. Operational log: machine layer + skeleton in the template + close hint
+3. Auth: Authentik `sigiled-*` providers, dual-auth, actor on the records, death of the bearer
+4. Adoption: sync script + drift detection + `template_behind`
+5. Concurrency: merge-lock, merge at close, merge debt, new rules 4/7
+
+## 6. Open questions
+
+1. **Auth v1 scope**: operator + LLM agents only; the human group lattice (family/friends) arrives with the first real use case.
+2. ~~Is SIGILED's own repo SIGILED-registered?~~ **Resolved 2026-08-02: yes — §7, DEC-11…15.**
+3. Group claims in tokens via property mapping — verified on Authentik 2026.5.6.
+4. Definitive list of approval-gated operations — ratified: `projects new`, apps verbs, skill render (DEC-24), sessions on platform projects (DEC-15).
+5. Merge-debt threshold above which `status` shouts (candidate: 1 — any debt is shouted).
+6. Definitive token durations (proposals: short auto-minted driver access ~1 h; approval 12 h; refresh 30 d).
+7. ~~Workspace toolchain~~ **Resolved 2026-08-02: base image per tag + per-language ext — §3.1, DEC-17/18.**
 
 ---
 
-## 7. Autogestione — SIGILED è SIGILED-registrato (ratificato 2026-08-02)
+## 7. Self-management — SIGILED is SIGILED-registered (ratified 2026-08-02)
 
-La piattaforma si chiama **SIGILED** (nata «SIGILED v2» → «SIGILED», rinominata 2026-08-03): progetto e codice in `ivan-saorin/sigiled`; il contratto di guida resta **SIGILED**. La frase incisa: **SIGILED gestisce tutto di sé tranne la propria resurrezione.**
+The platform is called **SIGILED**: project and code in `ivan-saorin/sigiled`; the driving contract remains **SIGILED**. The engraved sentence: **SIGILED manages everything about itself except its own resurrection.**
 
-| Cosa | Dove vive | Chi lo muove |
+| What | Where it lives | Who moves it |
 |---|---|---|
-| Codice di SIGILED | repo `ivan-saorin/sigiled` (storia da `ivan-saorin/sigiled`) | sessioni SIGILED, come tutti i progetti |
-| Contratto SIGILED | `docs/` di questo repo | sessioni; servito da `GET /sigiled/contract` allo sha deployato |
-| Servizio in esecuzione | box, sha pinnato | deploy out-of-band via **sigiled-supervisor** — mai SIGILED su SIGILED |
-| Stato runtime | DB sul box (+ backup) | SIGILED; migrazioni expand-contract |
-| Resurrezione | `sigiled-supervisor` | API propria: chiamarla restarta sigiled |
+| SIGILED's code | repo `ivan-saorin/sigiled` | SIGILED sessions, like every project |
+| The SIGILED contract | `docs/` of this repo | sessions; served by `GET /sigiled/contract` at the deployed sha |
+| The running service | the box, pinned sha | out-of-band deploy via **sigiled-supervisor** — never SIGILED on SIGILED |
+| Runtime state | DB on the box (+ backup) | SIGILED; expand-contract migrations |
+| Resurrection | `sigiled-supervisor` | its own API: calling it restarts sigiled |
 
-Regole specifiche:
+Specific rules:
 
-- **sigiled-supervisor**: supervisor esterno minimale (~100 righe — se cresce, sta sbagliando), repo proprio `ivan-saorin/sigiled-supervisor`, deploy indipendente da SIGILED (sul box, **mai come `[app]` di SIGILED**: è nel percorso di resurrezione, non può dipendere da ciò che resuscita). Espone una sua API: chiamarla = restart di sigiled (pull allo sha pinnato → build → restart → health check → report). Endpoint protetto e loggato; deve restare raggiungibile a stack mezzo morto, quindi auth propria e semplice, non OIDC.
-- **Bootstrap di piattaforma**: progetti creati freschi, il codice entra via prima sessione — si aggira il 503 di session-start sui progetti adottati (bug noto da sistemare).
-- **Approval obbligatoria**: sessioni su `sigiled` e `sigiled-supervisor` richiedono approval valida (DEC-02/03) — il repo che governa tutti i repo richiede l'operatore presente.
-- **Mai auto-deploy al close**: master si muove via close; il deploy resta atto separato e umano.
-- **Runbook di rollback** in `docs/runbook-deploy.md` — leggibile da GitHub anche a SIGILED morto; da scrivere insieme al primo deploy.
+- **sigiled-supervisor**: minimal external supervisor (~100 lines — if it grows, it is doing it wrong), its own repo `ivan-saorin/sigiled-supervisor`, deployed independently of SIGILED (on the box, **never as a SIGILED `[app]`**: it is on the resurrection path, it cannot depend on what it resurrects). It exposes its own API: calling it = restart of sigiled (pull at the pinned sha → build → restart → health check → report). Protected and logged endpoint; it must remain reachable with the stack half dead, hence its own simple auth, not OIDC.
+- **Platform bootstrap**: projects created fresh, code enters via the first session — works around the session-start 503 on adopted projects (known bug).
+- **Mandatory approval**: sessions on `sigiled` and `sigiled-supervisor` require a valid approval (DEC-02/03) — the repo that governs all repos requires the operator present.
+- **Never auto-deploy at close**: master moves via close; deploy remains a separate, human act.
+- **Rollback runbook** in `docs/runbook-deploy.md` — readable from GitHub even with SIGILED dead.
 
 ---
 
-## 8. Registro delle decisioni
+## 8. Decision register
 
-| # | Decisione |
+| # | Decision |
 |---|---|
-| DEC-01 | Auth a due gambe: `client_credentials` per-driver (macchina) + device flow con approval umana (umano). Il bearer unico muore dopo una finestra dual-auth. **Ratificata 2026-08-03.** |
-| DEC-02 | Custodia dei token umani **lato SIGILED** (DB + auto-refresh serializzato); mai nelle skill, mai nei transcript. Nelle skill solo `client_id`/`client_secret` del driver. **Ratificata 2026-08-03.** |
-| DEC-03 | `actor` a due componenti `{driver, approval}` su sessioni e job; capability map SIGILED-locale secondo la dottrina «IdP membership-only». **Ratificata 2026-08-03.** |
-| DEC-04 | Log operativo a due layer: macchina via API dal DB di SIGILED; narrativo `docs/log-operativo.md` dal template, project-owned per sempre. Regola SIGILED: chiudi lavoro coerente → voce in cima. **Ratificata 2026-08-03.** |
-| DEC-05 | Template versioning con pin `template = "vm-tmpl@x.y.z"` in `sigiled.toml`, recepimento on-demand con drift detection; **mai auto-update**. **Ratificata 2026-08-03.** |
-| DEC-06 | Il motore serve il proprio contratto: `GET /sigiled/contract`, versionato; le skill si auto-verificano contro `healthz.version`. **Ratificata 2026-08-03.** |
-| DEC-07 | Concorrenza a riconciliazione: un branch per workload, lock solo nella sezione critica di merge; niente più 409 su open. **Ratificata 2026-08-03.** |
-| DEC-08 | Merge debt con pacchetto di contesto; risoluzione **obbligatoria prima di qualsiasi altro lavoro, quale che sia il modello**; se incerto, chiedi all'operatore. **Ratificata 2026-08-03.** |
-| DEC-09 | Merge commit, non rebase: la traccia del confine di sessione è memoria. **Ratificata 2026-08-03.** |
-| DEC-10 | Conflitti semantici: dopo merge multipli recenti, compilazione di scrupolo obbligatoria; se rotta, DEVE essere sistemata prima di procedere. **Ratificata 2026-08-03.** |
-| DEC-11 | SIGILED è SIGILED-registrato (autogestione): il codice della piattaforma vive nel repo del progetto; il servizio è una deployment a sha pinnato; SIGILED gestisce tutto di sé tranne la propria resurrezione (§7). **Ratificata 2026-08-02.** |
-| DEC-12 | ~~Naming v2: SIGILED~~ **Emendata 2026-08-03: la piattaforma si chiama SIGILED.** Domini `sigiled.dev` + `sigilled.dev` (guardiano ortografico) acquistati dal Re; il progetto continua in `ivan-saorin/sigiled`; questo repo è archiviato come fondazione. |
-| DEC-13 | La resurrezione è un servizio: `sigiled-supervisor`, ~100 righe, repo e deploy propri (mai `[app]` di SIGILED), API autonoma con auth semplice — chiamarla restarta sigiled. **Ratificata 2026-08-02.** |
-| DEC-14 | Bootstrap dei progetti di piattaforma: creazione fresca, codice via prima sessione (niente adozione; il 503 di session-start su adottati resta bug noto). **Ratificata 2026-08-02.** |
-| DEC-15 | Sessioni su `sigiled` (nato `sigiled`) e `sigiled-supervisor` richiedono approval valida: la gamba umana è obbligatoria per il control plane. **Ratificata 2026-08-02; nome progetto aggiornato 2026-08-03.** |
-| DEC-16 | Linguaggio del control plane: **Rust** — conferma la realtà esistente (l'agent dei workspace `vm-base` è già un server axum; `ext/` sono crate Rust) e la estende a sigiled e sigiled-supervisor. **Ratificata 2026-08-02.** |
-| DEC-17 | Workspace v2 = **immagine base pre-buildata per tag**: `FROM vm-base:x.y.z` + layer di toolchain del progetto. Fine del vendoring di `server/`+`ext/`+`build-ext.sh` nei repo e della ricompilazione a ogni build (§3.1). **Ratificata 2026-08-02.** |
-| DEC-18 | Ext per linguaggio: `ext-rust/` (compiled-in, come oggi), `ext-py/`, `ext-go/` come processi locali supervisionati proxati da vm-base; contratto unico HTTP a `/x/<nome>` dentro il token gate (§3.1). **Ratificata 2026-08-02.** |
-| DEC-19 | SIGILED v2 sarà **open source al 100%**, con landing GitHub Pages esplicativa. Il repo si scrive da subito come pubblico: igiene dei segreti sulla storia, commit message pubblicabili, stack-specifics estratti in config. Preparazione «flip-ready» nella sessione 1b del build plan. **Ratificata 2026-08-02.** |
-| DEC-20 | Le immagini base `vm-base:x.y.z` sono pubblicate **pubbliche** su ghcr (`ghcr.io/ivan-saorin/vm-base`): pull senza credenziali dal box e da chiunque self-hosti; PAT solo per il push. Il pin (template Dockerfile e script) usa il nome completo. Nessun segreto vive nelle immagini per costruzione (regola 8). **Ratificata 2026-08-02.** |
-| DEC-21 | Nome pubblico = **sigiled**, confermato dalla verifica collisioni (sessione 1b, 2026-08-02): sulle ricerche web «sigiled» esiste solo come aggettivo (carte Magic, un campione di Raid Shadow Legends, prosa Raku) — nessun progetto software, libreria, azienda o prodotto. Le collisioni pesanti che motivavano la verifica riguardavano il nome di battesimo, già eradicato con DEC-12 emendata. Tagline disambiguante sulla landing; nessuna nuova decisione richiesta al Re — registrazione dell'esito. |
-| DEC-22 | La sigla dell'orchestratore v1 **scompare dal repo**: il nome è SIGILED ovunque — verbi a `/sigiled/*` (es. `GET /sigiled/contract`), manifest `sigiled.toml` (la v2 lo legge con fallback sul nome v1 per i repo nati prima), provider OAuth2 `sigiled-*`, design doc `sigiled-v2.md`. Due eccezioni operative, non negoziabili coi fatti: il manifest di **radice** conserva il nome file v1 finché l'orchestratore v1 costruisce le sessioni di questo repo (cade al cutover), e `mgr-smoke` resta nel registry v1 come lapide (nessun delete verb). La v1 in produzione risponde a `/mgr` fino al cutover: fuori repo, non rinominabile da qui. **Ratificata 2026-08-02 (in chat).** |
-| DEC-23 | Licenza: **MIT** (`LICENSE` alla radice, campo `license` nei crate). Proposta Apache-2.0 della sessione 1b scartata dal Re: semplicità sopra il patent grant. **Ratificata 2026-08-02 (in chat).** |
+| DEC-01 | Two-legged auth: per-driver `client_credentials` (machine) + device flow with human approval (human). The single bearer dies after a dual-auth window. **Ratified 2026-08-03.** |
+| DEC-02 | Custody of human tokens **on the SIGILED side** (DB + serialized auto-refresh); never in the skills, never in transcripts. In the skills only the driver's `client_id`/`client_secret`. **Ratified 2026-08-03.** |
+| DEC-03 | Two-component `actor` `{driver, approval}` on sessions and jobs; SIGILED-local capability map per the "IdP membership-only" doctrine. **Ratified 2026-08-03.** |
+| DEC-04 | Two-layer operational log: machine via API from SIGILED's DB; narrative `docs/log-operativo.md` from the template, project-owned forever. SIGILED rule: close coherent work → entry on top. **Ratified 2026-08-03.** |
+| DEC-05 | Template versioning with pin `template = "vm-tmpl@x.y.z"` in `sigiled.toml`, on-demand adoption with drift detection; **never auto-update**. **Ratified 2026-08-03.** |
+| DEC-06 | The engine serves its own contract: `GET /sigiled/contract`, versioned; skills self-verify against `healthz.version`. **Ratified 2026-08-03.** |
+| DEC-07 | Reconciliation concurrency: one branch per workload, lock only in the merge critical section; no more 409 on open. **Ratified 2026-08-03.** |
+| DEC-08 | Merge debt with context package; resolution **mandatory before any other work, whatever the model**; if uncertain, ask the operator. **Ratified 2026-08-03.** |
+| DEC-09 | Merge commits, not rebase: the session-boundary trace is memory. **Ratified 2026-08-03.** |
+| DEC-10 | Semantic conflicts: after recent multiple merges, mandatory scruple build; if broken, it MUST be fixed before proceeding. **Ratified 2026-08-03.** |
+| DEC-11 | SIGILED is SIGILED-registered (self-management): the platform's code lives in the project's repo; the service is a pinned-sha deployment; SIGILED manages everything about itself except its own resurrection (§7). **Ratified 2026-08-02.** |
+| DEC-12 | ~~v2 naming~~ **Amended 2026-08-03: the platform is called SIGILED.** Domains `sigiled.dev` + `sigilled.dev` (spelling guardian) purchased by il Re; the project continues in `ivan-saorin/sigiled`; the previous repo is archived as the foundation. |
+| DEC-13 | Resurrection is a service: `sigiled-supervisor`, ~100 lines, its own repo and deploy (never a SIGILED `[app]`), autonomous API with simple auth — calling it restarts sigiled. **Ratified 2026-08-02.** |
+| DEC-14 | Platform-project bootstrap: fresh creation, code via the first session (no adoption; the session-start 503 on adopted repos remains a known bug). **Ratified 2026-08-02.** |
+| DEC-15 | Sessions on `sigiled` and `sigiled-supervisor` require a valid approval: the human leg is mandatory for the control plane. **Ratified 2026-08-02; project name updated 2026-08-03.** |
+| DEC-16 | Control-plane language: **Rust** — confirms the existing reality (the workspace agent `vm-base` is already an axum server; `ext/` are Rust crates) and extends it to sigiled and sigiled-supervisor. **Ratified 2026-08-02.** |
+| DEC-17 | Workspace v2 = **pre-built base image per tag**: `FROM vm-base:x.y.z` + project toolchain layers. End of vendoring `server/`+`ext/`+`build-ext.sh` in the repos and of per-build recompilation (§3.1). **Ratified 2026-08-02.** |
+| DEC-18 | Per-language ext: `ext-rust/` (compiled-in, as today), `ext-py/`, `ext-go/` as local supervised processes proxied by vm-base; single HTTP contract at `/x/<name>` inside the token gate (§3.1). **Ratified 2026-08-02.** |
+| DEC-19 | SIGILED v2 will be **100% open source**, with an explanatory GitHub Pages landing. The repo is written as public from the start: secrets hygiene over the history, publishable commit messages, stack-specifics extracted into config. "Flip-ready" preparation in build-plan session 1b. **Ratified 2026-08-02.** |
+| DEC-20 | The base images `vm-base:x.y.z` are published **public** on ghcr (`ghcr.io/ivan-saorin/vm-base`): pull without credentials from the box and by any self-hoster; PAT only for the push. The pin (template Dockerfile and scripts) uses the full name. No secret lives in the images by construction (rule 8). **Ratified 2026-08-02.** |
+| DEC-21 | Public name = **sigiled**, confirmed by the collision check (session 1b, 2026-08-02): on web searches "sigiled" exists only as an adjective (Magic cards, a Raid Shadow Legends champion, Raku prose) — no software project, library, company or product. The heavy collisions that motivated the check concerned the platform's birth name, already eradicated with DEC-12 as amended. Disambiguating tagline on the landing; no new decision required of il Re — outcome registration. |
+| DEC-22 | The v1 orchestrator's short name **disappears from the repo**: the name is SIGILED everywhere — verbs at `/sigiled/*` (e.g. `GET /sigiled/contract`), manifest `sigiled.toml` (v2 reads it with fallback to the v1 name for repos born earlier), OAuth2 providers `sigiled-*`, design doc `sigiled-v2.md`. Two operational exceptions, non-negotiable with the facts: the **root** manifest keeps the v1 filename as long as the v1 orchestrator builds this repo's sessions (falls at cutover), and `mgr-smoke` stays in the v1 registry as a tombstone (no delete verb). The production v1 answers on `/mgr` until cutover: outside this repo, not renameable from here. **Ratified 2026-08-02 (in chat).** |
+| DEC-23 | License: **MIT** (`LICENSE` at root, `license` field in the crates). Session 1b's Apache-2.0 proposal discarded by il Re: simplicity over the patent grant. **Ratified 2026-08-02 (in chat).** |
+| DEC-24 | The per-instance driver skill is **generated, never hand-edited**: `GET /sigiled/skill/{driver}` renders `docs/skill-template.md` with the instance's values (domain, IdP base, driver identity); the `client_secret` is filled live from the IdP admin API when `AUTHENTIK_API_TOKEN` is configured, otherwise a copy-it-yourself placeholder. Approval-gated (capability row next to projects-new): the response can carry a credential. Requested by il Re and registered in chat, 2026-08-03. |

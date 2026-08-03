@@ -43,9 +43,10 @@ by design, the two things a new driver must read first.
   Dockerfile (`FROM vm-base`), docs skeleton (log-operativo), commented
   `sigiled.toml` with template pin, empty `ext-rust/` example.
 - `images/` — image build scripts (`build-vm-base.sh`).
-- `docs/` — design (`sigiled-v2.md`, DEC-01…22), build plan, the canonical
-  contract (`sigiled-contract.md`), deploy runbook, and the narrative
-  `log-operativo.md`.
+- `docs/` — design (`sigiled-v2.md`, DEC-01…24), build plan, the canonical
+  contract (`sigiled-contract.md`), deploy runbook + `deploy/` examples, the
+  per-driver skill template (`skill-template.md`), and the narrative
+  `log-operativo.md`. Italian originals are preserved as `*_it.md`.
 - `Dockerfile` (root) — session image of this repo under SIGILED v1 (compat until
   cutover) and source of `vm-base:x.y.z`.
 - `index.html` + `CNAME` — the landing page ([sigiled.dev]), served by
@@ -63,19 +64,25 @@ ssh, no host.
 
 ## Self-hosting
 
-Everything stack-specific is env/config with documented defaults: base-image
-registry (`VM_BASE_REGISTRY`), git identity of session commits
-(`GIT_AUTHOR_*`/`GIT_COMMITTER_*`). See
-[docs/runbook-deploy.md](docs/runbook-deploy.md). A proper quickstart lands
-with the v2 cutover.
+Everything stack-specific is env/config — and instance identity (`DOMAIN`,
+`GITHUB_OWNER`) is **required, never defaulted**: a forgotten env var fails
+the boot loudly instead of silently pointing at the reference instance.
+[docs/runbook-deploy.md](docs/runbook-deploy.md) walks the five subsystems
+(runtime, edge, IdP, GitHub, control plane) as *contract vs reference
+implementation*, with copyable examples under `deploy/`. Driver credentials
+are never hand-edited into skills: `GET /skill/{driver}` renders the
+per-instance skill, secret included when the IdP admin token is configured
+(DEC-24).
 
 ## A note on language
 
-The code, the contract and this README are English. The design docs and the
-operational log are **Italian** — they are the project's living memory,
-written in the language of its operator ("il Re", the ratifier of the DEC
-decision records you'll find in `docs/sigiled-v2.md`). Translate nothing;
-`git log` speaks both.
+**English is the project's primary language**: code, contract, README,
+design doc and runbooks. The Italian originals — the language of the
+project's operator ("il Re", the ratifier of the DEC decision records in
+`docs/sigiled-v2.md`) — are preserved as `*_it.md`, still authoritative on
+ratification history. `docs/log-operativo.md`, the living operational log,
+stays Italian by design: it is working memory, not documentation. `git log`
+speaks both.
 
 ## License
 
