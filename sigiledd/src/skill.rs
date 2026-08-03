@@ -132,6 +132,12 @@ mod tests {
         assert!(out.contains("client_id=sigiled-claude"));
         assert!(out.contains("client_secret=s3cret"));
         assert!(out.contains("GET https://api.example.com/sigiled/contract"));
+        // Skill loaders require YAML frontmatter: the rendered file must
+        // open with it, name stable across drivers.
+        assert!(out.starts_with("---
+name: sigil
+"), "missing frontmatter:
+{out}");
     }
 
     #[test]
