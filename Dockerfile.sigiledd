@@ -11,7 +11,11 @@ FROM debian:13.6-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -u 1000 -m sigiled
+    && useradd -u 1000 -m sigiled \
+    # /data pre-creata e di sigiled: un named volume fresco ne eredita
+    # l'ownership — senza, il persist fallisce con EACCES (visto dal vivo
+    # sul canary: il volume nasceva root, il processo gira 1000).
+    && mkdir -p /data && chown 1000:1000 /data
 COPY --from=build /src/target/release/sigiledd /usr/local/bin/sigiledd
 USER 1000:1000
 EXPOSE 8080
