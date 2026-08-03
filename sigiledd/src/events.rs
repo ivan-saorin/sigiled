@@ -46,6 +46,12 @@ pub enum Event {
         branch: String,
         state: String,
     },
+    /// POST /projects (session 5): born from the template, or adopted as an
+    /// existing repo (key + register, nothing written).
+    ProjectCreated {
+        repo: String,
+        adopted: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +129,12 @@ fn render_markdown(project: &str, entries: &[LogEntry]) -> String {
             Event::V1Session { session_id, branch, state } => format!(
                 "- [{}] v1 session `{}` on `{}` — {}",
                 e.at_epoch, session_id, branch, state
+            ),
+            Event::ProjectCreated { repo, adopted } => format!(
+                "- [{}] project {} (`{}`)",
+                e.at_epoch,
+                if *adopted { "adopted" } else { "created from template" },
+                repo
             ),
         };
         out.push_str(&line);

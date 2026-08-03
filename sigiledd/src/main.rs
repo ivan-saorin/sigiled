@@ -4,10 +4,12 @@
 // (GET /sigiled/projects/{p}/log) and template_behind. Session 3 adds the
 // two-legged auth (design §1): bootstrap bearer OR IdP JWT, capability map,
 // device-flow approvals. Session 4 brings the verbs that consume them.
+// Session 5 adds POST /projects (github.rs): create-from-template or adopt.
 mod apps;
 mod auth;
 mod contract;
 mod events;
+mod github;
 mod manifest;
 mod merge;
 mod import;
@@ -30,6 +32,9 @@ pub struct AppState {
     pub sessions: sessions::SessionState,
     pub apps: apps::AppsState,
     pub store: store::Store,
+    /// Some only when GITHUB_PAT is configured: POST /projects needs it,
+    /// nothing else does.
+    pub github: Option<github::GitHub>,
 }
 
 impl AppState {
@@ -78,7 +83,7 @@ fn sigiled_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/contract", get(contract::serve))
-        .route("/projects", get(project::list))
+        .route("/projects", get(project::list).post(project::create))
         .route("/projects/{project}/log", get(events::project_log))
         .route("/projects/{project}/sessions", post(sessions::open))
         .route("/sessions/{session_id}/close", post(sessions::close))
@@ -130,6 +135,7 @@ async fn main() {
         sessions: sessions::SessionState::default(),
         apps: apps::AppsState::default(),
         store: store::Store::from_env(),
+        github: github::GitHub::from_env(),
     };
     state.hydrate_from_disk();
     axum::serve(listener, app(state)).await.expect("serve");

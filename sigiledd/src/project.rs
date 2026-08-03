@@ -2,11 +2,16 @@
 // template_version (DEC-05) behind GET /sigiled/projects, over an in-memory
 // store. Session 2 adds template_behind (design §3: status shows it next to
 // needs_merge) computed against the latest published template version.
-// Persistence and the v1-registry import arrive with later sessions and the
-// cutover.
+// Session 5 adds POST /projects (create-from-template or adopt, deploy key,
+// registration) — the verb that retires the v1 fallback and its re-import
+// ritual for good.
 use crate::manifest::Manifest;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::Serialize;
+use serde_json::json;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -53,6 +58,16 @@ fn semver_lt(a: &str, b: &str) -> bool {
         )
     }
     triple(a) < triple(b)
+}
+
+/// v1 NAME_RE, kept verbatim: lowercase alnum + dashes, 2-39 chars, letter
+/// first. The GitHub repo name and the container DNS name both ride on it.
+pub fn valid_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    (2..=39).contains(&b.len())
+        && b[0].is_ascii_lowercase()
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
 #[derive(Default, Clone)]
@@ -106,9 +121,90 @@ pub async fn list(
     axum::Json(serde_json::Value::Array(enriched))
 }
 
+#[derive(serde::Deserialize)]
+pub struct NewProject {
+    pub name: String,
+}
+
+/// POST /sigiled/projects — create from the vm-tmpl template, or adopt an
+/// existing repo of that name (key + register, nothing written). Drivers
+/// need a live approval (Action::ProjectsNew); there is no delete verb —
+/// projects are permanent.
+pub async fn create(
+    actor: crate::auth::Actor,
+    State(state): State<crate::AppState>,
+    Json(body): Json<NewProject>,
+) -> Response {
+    fn err(status: StatusCode, detail: impl Into<String>) -> Response {
+        (status, Json(json!({ "detail": detail.into() }))).into_response()
+    }
+    if let Err(denial) = crate::auth::authorize(
+        &actor,
+        crate::auth::Action::ProjectsNew,
+        Some(&body.name),
+        &state.auth.approvals,
+        crate::auth::now_epoch(),
+    ) {
+        return err(StatusCode::FORBIDDEN, denial.0);
+    }
+    if !valid_name(&body.name) {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "name: lowercase alnum + dashes, 2-39 chars, letter first",
+        );
+    }
+    if state.registry.contains(&body.name) {
+        return err(
+            StatusCode::CONFLICT,
+            format!("project '{}' already registered", body.name),
+        );
+    }
+    let Some(gh) = &state.github else {
+        return err(StatusCode::SERVICE_UNAVAILABLE, "GITHUB_PAT not configured");
+    };
+    // Order is the v1's: repo first (create or adopt), then the key pair,
+    // then the key on the repo, registration last — a failure anywhere
+    // leaves nothing registered, and the verb can simply be retried.
+    let http = reqwest::Client::new();
+    let (repo_full, adopted) = match gh.create_or_adopt(&http, &body.name).await {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, e),
+    };
+    let pubkey = match gh.generate_deploy_key(&body.name) {
+        Ok(k) => k,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    if let Err(e) = gh.add_deploy_key(&http, &body.name, &pubkey).await {
+        return err(StatusCode::BAD_GATEWAY, e);
+    }
+    // template_version stays null at birth, like every imported record: the
+    // pin is read from sigiled.toml on master by the flows that fetch it.
+    let record = ProjectRecord {
+        name: body.name.clone(),
+        template_version: None,
+        template_behind: false,
+        needs_merge: false,
+    };
+    state.registry.insert(record.clone());
+    state.events.record(
+        &body.name,
+        crate::auth::now_epoch(),
+        crate::events::Event::ProjectCreated { repo: repo_full.clone(), adopted },
+    );
+    state.persist();
+    tracing::info!(project = %body.name, %repo_full, adopted, "project registered");
+    let mut resp = serde_json::to_value(&record).unwrap();
+    resp["repo"] = json!(repo_full);
+    resp["adopted"] = json!(adopted);
+    (StatusCode::CREATED, Json(resp)).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
 
     #[test]
     fn record_exposes_template_version_from_manifest() {
@@ -149,5 +245,251 @@ mod tests {
         assert!(semver_lt("0.9.0", "0.10.0"));
         assert!(!semver_lt("0.10.0", "0.9.0"));
         assert!(semver_lt("1.2.3", "2.0.0"));
+    }
+
+    // --- POST /projects (session 5) -----------------------------------------
+
+    fn admin() -> crate::auth::Actor {
+        crate::auth::Actor {
+            driver: "bootstrap".into(),
+            role: crate::auth::Role::Admin,
+            approval: None,
+        }
+    }
+    fn driver() -> crate::auth::Actor {
+        crate::auth::Actor {
+            driver: "sigiled-claude".into(),
+            role: crate::auth::Role::Driver,
+            approval: None,
+        }
+    }
+
+    async fn body_json(resp: Response) -> (StatusCode, serde_json::Value) {
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn tmp_keys(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sigil-newproj-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// A local GitHub double: template generate (201 or a canned 422),
+    /// repo probe, deploy-key capture. What POST /projects talks to in
+    /// tests instead of the real API.
+    async fn mock_github(
+        generate_status: u16,
+        probe_status: u16,
+    ) -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
+        use axum::extract::Path as AxPath;
+        use axum::routing::{get, post};
+        let keys: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let captured = keys.clone();
+        let app = axum::Router::new()
+            .route(
+                "/repos/{owner}/{repo}/generate",
+                post(move |Json(body): Json<serde_json::Value>| async move {
+                    if generate_status == 201 {
+                        (
+                            StatusCode::CREATED,
+                            Json(json!({
+                                "full_name":
+                                    format!("ivan-saorin/{}", body["name"].as_str().unwrap())
+                            })),
+                        )
+                            .into_response()
+                    } else {
+                        (
+                            StatusCode::from_u16(generate_status).unwrap(),
+                            Json(json!({ "message": "Could not clone: Name already exists" })),
+                        )
+                            .into_response()
+                    }
+                }),
+            )
+            .route(
+                "/repos/{owner}/{repo}",
+                get(move |AxPath((_o, _r)): AxPath<(String, String)>| async move {
+                    StatusCode::from_u16(probe_status).unwrap()
+                }),
+            )
+            .route(
+                "/repos/{owner}/{repo}/keys",
+                post(
+                    move |AxPath((_o, repo)): AxPath<(String, String)>,
+                          Json(body): Json<serde_json::Value>| {
+                        let captured = captured.clone();
+                        async move {
+                            captured
+                                .lock()
+                                .unwrap()
+                                .push(json!({ "repo": repo, "body": body }));
+                            StatusCode::CREATED
+                        }
+                    },
+                ),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, keys)
+    }
+
+    fn state_with_github(base: &str, keys_dir: PathBuf) -> crate::AppState {
+        crate::AppState {
+            github: Some(crate::github::GitHub {
+                api_base: base.to_string(),
+                pat: "test-pat".into(),
+                owner: "ivan-saorin".into(),
+                template: "vm-tmpl".into(),
+                keys_dir,
+            }),
+            ..crate::AppState::default()
+        }
+    }
+
+    #[test]
+    fn name_rules_are_the_v1_rules() {
+        for good in ["ab", "reddit-mine", "a2", "smoke-2026"] {
+            assert!(valid_name(good), "{good} should be valid");
+        }
+        for bad in ["a", "9abc", "Abc", "a_b", "-ab", "ab cd", ""] {
+            assert!(!valid_name(bad), "{bad} should be invalid");
+        }
+        assert!(valid_name(&("a".repeat(39))));
+        assert!(!valid_name(&("a".repeat(40))));
+    }
+
+    #[tokio::test]
+    async fn create_invalid_name_is_422() {
+        let state = crate::AppState::default();
+        let (status, body) = body_json(
+            create(admin(), State(state), Json(NewProject { name: "Bad_Name".into() })).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body["detail"].as_str().unwrap().contains("lowercase"));
+    }
+
+    #[tokio::test]
+    async fn create_duplicate_is_409() {
+        let state = crate::AppState::default();
+        state.registry.insert(ProjectRecord {
+            name: "torchio".into(),
+            template_version: None,
+            template_behind: false,
+            needs_merge: false,
+        });
+        let (status, body) = body_json(
+            create(admin(), State(state), Json(NewProject { name: "torchio".into() })).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["detail"].as_str().unwrap().contains("torchio"));
+    }
+
+    #[tokio::test]
+    async fn create_without_pat_is_503() {
+        // github: None (no GITHUB_PAT in the environment of this state).
+        let state = crate::AppState::default();
+        let (status, body) = body_json(
+            create(admin(), State(state), Json(NewProject { name: "fresh-proj".into() })).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body["detail"].as_str().unwrap().contains("GITHUB_PAT"));
+    }
+
+    #[tokio::test]
+    async fn driver_without_approval_cannot_create() {
+        let state = crate::AppState::default();
+        let (status, body) = body_json(
+            create(driver(), State(state), Json(NewProject { name: "fresh-proj".into() })).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body["detail"].as_str().unwrap().contains("approval"));
+    }
+
+    #[tokio::test]
+    async fn create_generates_repo_key_record_and_event() {
+        let (base, captured) = mock_github(201, 404).await;
+        let keys_dir = tmp_keys("create");
+        let state = state_with_github(&base, keys_dir.clone());
+        let (status, body) = body_json(
+            create(
+                admin(),
+                State(state.clone()),
+                Json(NewProject { name: "smoke-new".into() }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+        assert_eq!(body["name"], "smoke-new");
+        assert_eq!(body["adopted"], false);
+        assert_eq!(body["repo"], "ivan-saorin/smoke-new");
+        assert!(body["template_version"].is_null());
+        // Registered, key on disk in the runtime's layout, key sent to GitHub.
+        assert!(state.registry.contains("smoke-new"));
+        assert!(keys_dir.join("smoke-new").join("id_ed25519").exists());
+        let sent = captured.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["repo"], "smoke-new");
+        assert!(sent[0]["body"]["key"]
+            .as_str()
+            .unwrap()
+            .starts_with("ssh-ed25519 "));
+        assert_eq!(sent[0]["body"]["read_only"], false);
+        // The machine log knows (design §2).
+        let events = state.events.for_project("smoke-new");
+        assert_eq!(events.len(), 1);
+        let ev = serde_json::to_value(&events[0]).unwrap();
+        assert_eq!(ev["kind"], "project_created");
+        assert_eq!(ev["adopted"], false);
+    }
+
+    #[tokio::test]
+    async fn existing_repo_is_adopted_not_failed() {
+        // generate 422 + probe 200 = the v1 §7.8 adoption path.
+        let (base, captured) = mock_github(422, 200).await;
+        let state = state_with_github(&base, tmp_keys("adopt"));
+        let (status, body) = body_json(
+            create(
+                admin(),
+                State(state.clone()),
+                Json(NewProject { name: "legacy-repo".into() }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+        assert_eq!(body["adopted"], true);
+        assert!(state.registry.contains("legacy-repo"));
+        // Adoption still keys the repo: sessions need the deploy key.
+        assert_eq!(captured.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn generate_rejection_without_repo_stays_loud() {
+        // 422 from generate but the repo does NOT exist: a genuine
+        // validation error must never silently register a phantom project.
+        let (base, _) = mock_github(422, 404).await;
+        let state = state_with_github(&base, tmp_keys("phantom"));
+        let (status, body) = body_json(
+            create(
+                admin(),
+                State(state.clone()),
+                Json(NewProject { name: "phantom-proj".into() }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "body: {body}");
+        assert!(!state.registry.contains("phantom-proj"));
     }
 }
