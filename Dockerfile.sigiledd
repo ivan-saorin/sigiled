@@ -1,0 +1,18 @@
+# Dockerfile.sigiledd — l'immagine del control plane v2 (canary e oltre).
+# Il Dockerfile di root resta quello dei workspace v1/vm-base (dual role);
+# questo è ciò che il supervisor builda al restart (docker-compose.yml).
+FROM rust:1.97.1-slim AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked -p sigiledd
+
+FROM debian:13.6-slim
+# git: il motore di merge del close lavora sui repo di SIGILED_REPOS_DIR.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -u 1000 -m sigiled
+COPY --from=build /src/target/release/sigiledd /usr/local/bin/sigiledd
+USER 1000:1000
+EXPOSE 8080
+CMD ["sigiledd"]

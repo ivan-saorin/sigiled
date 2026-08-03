@@ -1,0 +1,16 @@
+# Compose del canary v2: esattamente ciò che il supervisor lancia al restart
+# (default SUPERVISOR_RESTART_CMD = `docker compose up -d --build sigiled`,
+# eseguito in SIGILED_REPO_DIR = questo checkout).
+# Le env vive stanno in un `.env` accanto a questo file, MAI in git:
+#   SIGILED_BOOTSTRAP_BEARER=...   # bearer legacy: apre la finestra dual-auth
+#   SIGILED_OIDC_BASE=https://auth.016180.xyz
+services:
+  sigiled:
+    build:
+      context: .
+      dockerfile: Dockerfile.sigiledd
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    restart: unless-stopped
