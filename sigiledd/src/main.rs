@@ -10,6 +10,7 @@ mod events;
 mod manifest;
 mod merge;
 mod project;
+mod runtime;
 mod sessions;
 mod store;
 

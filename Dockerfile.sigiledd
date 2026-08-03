@@ -7,9 +7,12 @@ COPY . .
 RUN cargo build --release --locked -p sigiledd
 
 FROM debian:13.6-slim
-# git: il motore di merge del close lavora sui repo di SIGILED_REPOS_DIR.
+# git: il motore di merge del close lavora sui mirror di SIGILED_REPOS_DIR.
+# docker-cli: il runtime dei workspace parla col daemon del box via socket
+# montato (nessun daemon qui dentro). openssh-client: chiavi deploy per
+# clone/push dei mirror.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates docker-cli openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -u 1000 -m sigiled \
     # /data pre-creata e di sigiled: un named volume fresco ne eredita

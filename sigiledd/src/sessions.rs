@@ -29,6 +29,11 @@ pub struct SessionRecord {
     pub head: String,
     pub stale: bool,
     pub actor: Actor,
+    /// The workspace token, kept so close can flush through the agent. It
+    /// lives in the 0600 state file (as v1's registry did) and never in an
+    /// API response other than the open that minted it.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -36,6 +41,11 @@ pub struct SessionState {
     /// Root of the project repos this control plane arbitrates. None = the
     /// verbs answer 503 (dev run without a repo store).
     pub repos_dir: Option<PathBuf>,
+    /// Some = real workspaces (containers, deploy keys, mirrors). None =
+    /// branch-only path: the verbs still arbitrate master, they just don't
+    /// rent a container. Tests and dev runs live here.
+    pub runtime: Option<crate::runtime::Runtime>,
+    http: reqwest::Client,
     records: Arc<RwLock<HashMap<String, SessionRecord>>>,
     debts: Arc<RwLock<HashMap<String, Vec<MergeDebt>>>>,
     merge_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
@@ -43,8 +53,14 @@ pub struct SessionState {
 
 impl Default for SessionState {
     fn default() -> Self {
+        let runtime = crate::runtime::Runtime::from_env();
         SessionState {
-            repos_dir: std::env::var("SIGILED_REPOS_DIR").ok().map(PathBuf::from),
+            repos_dir: std::env::var("SIGILED_REPOS_DIR")
+                .ok()
+                .map(PathBuf::from)
+                .or_else(|| runtime.as_ref().map(|r| r.repos_dir.clone())),
+            runtime,
+            http: reqwest::Client::new(),
             records: Arc::default(),
             debts: Arc::default(),
             merge_locks: Arc::default(),
@@ -54,7 +70,7 @@ impl Default for SessionState {
 
 impl SessionState {
     pub fn with_repos_dir(dir: PathBuf) -> Self {
-        SessionState { repos_dir: Some(dir), ..SessionState::default() }
+        SessionState { repos_dir: Some(dir), runtime: None, ..SessionState::default() }
     }
     pub fn debts_for(&self, project: &str) -> Vec<MergeDebt> {
         self.debts.read().unwrap().get(project).cloned().unwrap_or_default()
@@ -115,14 +131,7 @@ pub async fn open(
     State(state): State<crate::AppState>,
     AxPath(project): AxPath<String>,
 ) -> Response {
-    let Some(repos) = state.sessions.repos_dir.clone() else {
-        return err(StatusCode::SERVICE_UNAVAILABLE, "SIGILED_REPOS_DIR not configured");
-    };
-    let repo = repos.join(&project);
-    if !repo.join(".git").exists() {
-        return err(StatusCode::NOT_FOUND, format!("unknown project: {project}"));
-    }
-    // The session-3 policy, finally consumed by a verb (DEC-15).
+    // The session-3 policy, consumed by the verb (DEC-15).
     if let Err(denial) = authorize(
         &actor,
         Action::OpenSession,
@@ -135,10 +144,48 @@ pub async fn open(
 
     let id = SessionState::session_id();
     let branch = format!("session/{id}");
-    if let Err(e) = git(&repo, &["branch", &branch, "master"]) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, e);
-    }
-    let head = git(&repo, &["rev-parse", "master"]).unwrap_or_default();
+
+    // Two paths, one contract. With a runtime: mirror + container + the
+    // branch cut inside the workspace and pushed at once. Without: the
+    // branch only, on the local repo (dev/tests).
+    let (head, token, endpoint) = match &state.sessions.runtime {
+        Some(rt) => {
+            if let Err(e) = rt.ensure_mirror(&project) {
+                return err(StatusCode::NOT_FOUND, e);
+            }
+            let tok = mint_token();
+            if let Err(e) = rt.create_container(&project, &id, &tok) {
+                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+            }
+            if let Err(e) = rt.wait_healthy(&state.sessions.http, &project, &tok).await {
+                rt.destroy(&project);
+                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+            }
+            match rt
+                .boot_workspace(&state.sessions.http, &project, &tok, &branch, false)
+                .await
+            {
+                Ok(head) => (head, Some(tok), Some(rt.endpoint(&project))),
+                Err(e) => {
+                    rt.destroy(&project);
+                    return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+                }
+            }
+        }
+        None => {
+            let Some(repos) = state.sessions.repos_dir.clone() else {
+                return err(StatusCode::SERVICE_UNAVAILABLE, "SIGILED_REPOS_DIR not configured");
+            };
+            let repo = repos.join(&project);
+            if !repo.join(".git").exists() {
+                return err(StatusCode::NOT_FOUND, format!("unknown project: {project}"));
+            }
+            if let Err(e) = git(&repo, &["branch", &branch, "master"]) {
+                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+            }
+            (git(&repo, &["rev-parse", "master"]).unwrap_or_default(), None, None)
+        }
+    };
 
     let record = SessionRecord {
         session_id: id.clone(),
@@ -147,6 +194,7 @@ pub async fn open(
         head: head.clone(),
         stale: false,
         actor: actor.clone(),
+        token: token.clone(),
     };
     state.sessions.records.write().unwrap().insert(id.clone(), record);
     state.events.record(
@@ -163,13 +211,28 @@ pub async fn open(
         StatusCode::CREATED,
         Json(json!({
             "session_id": id, "project": project, "branch": branch,
-            "token": null, "endpoint": null,      // container runtime = cutover
+            "token": token, "endpoint": endpoint,
             "head": head, "stale": false, "last_commit": null,
             "merge_debt": debts.first(),
             "actor": actor,
         })),
     )
         .into_response()
+}
+
+fn mint_token() -> String {
+    // 24 bytes of entropy, hex — same shape as the v1 token the edge and
+    // the agent already expect. Sourced from the OS via getrandom-through-
+    // std: no crypto dependency for a value that is only ever compared.
+    use std::hash::{BuildHasher, Hasher, RandomState};
+    let mut out = String::with_capacity(48);
+    while out.len() < 48 {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u64(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos() as u64);
+        out.push_str(&format!("{:016x}", h.finish()));
+    }
+    out.truncate(48);
+    out
 }
 
 pub async fn close(
@@ -189,6 +252,19 @@ pub async fn close(
     ) {
         return err(StatusCode::FORBIDDEN, denial.0);
     }
+    // With a runtime: flush the workspace first (its commits must exist
+    // before we merge), then arbitrate on the refreshed mirror.
+    let mut flushed = true;
+    if let Some(rt) = &state.sessions.runtime {
+        if let Some(tok) = &record.token {
+            flushed = rt
+                .flush(&state.sessions.http, &record.project, tok, "session close")
+                .await;
+        }
+        if let Err(e) = rt.ensure_mirror(&record.project) {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+        }
+    }
     let repos = state.sessions.repos_dir.clone().expect("open required repos_dir");
     let repo = repos.join(&record.project);
 
@@ -197,6 +273,12 @@ pub async fn close(
     // other sees a moved master and takes the merge path.
     let lock = state.sessions.merge_lock(&record.project);
     let _guard = lock.lock().await;
+
+    // With a runtime the branch lives on the remote: give the mirror a
+    // local ref to merge from.
+    if state.sessions.runtime.is_some() {
+        let _ = git(&repo, &["fetch", "origin", &format!("{0}:{0}", record.branch)]);
+    }
 
     let touched = changed_paths(&repo, &record.branch)
         .map(|p| log_operativo_touched(&p))
@@ -217,8 +299,17 @@ pub async fn close(
 
     match &debt {
         None => {
-            // Clean close: the branch merged, its debt (if it was a debtor
-            // being resolved) is paid, the record goes away.
+            // Clean close: publish the merged master, then drop the branch
+            // here and on the remote; the debt (if this was a debtor being
+            // resolved) is paid.
+            if let Some(rt) = &state.sessions.runtime {
+                if let Err(e) = rt.push(&record.project, "master") {
+                    // Master moved under us between merge and push: the work
+                    // is safe on the branch, the next close re-arbitrates.
+                    return err(StatusCode::CONFLICT, format!("push master: {e}"));
+                }
+                let _ = rt.push(&record.project, &format!(":{}", record.branch));
+            }
             let _ = git(&repo, &["branch", "-D", &record.branch]);
             state.sessions.clear_debt(&record.project, &record.branch);
         }
@@ -227,6 +318,9 @@ pub async fn close(
             // debtor, the queue inherits the package.
             state.sessions.push_debt(&record.project, d.clone());
         }
+    }
+    if let Some(rt) = &state.sessions.runtime {
+        rt.destroy(&record.project);
     }
     state.sessions.records.write().unwrap().remove(&session_id);
     state.events.record(
@@ -243,7 +337,7 @@ pub async fn close(
     state.persist();
 
     Json(json!({
-        "closed": true, "merge": merge_kind, "sha": sha, "flushed": true,
+        "closed": true, "merge": merge_kind, "sha": sha, "flushed": flushed,
         "log_operativo_touched": touched, "merge_debt": debt,
     }))
     .into_response()

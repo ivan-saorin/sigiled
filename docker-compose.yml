@@ -15,10 +15,24 @@ services:
       - .env
     environment:
       SIGILED_STATE_DIR: /data
+      # Runtime dei workspace: attivalo (SIGILED_RUNTIME=docker) solo quando
+      # il canary deve affittare container veri — serve il socket qui sotto,
+      # la rete dello stack e le deploy key in /data/keys.
+      SIGILED_RUNTIME: ${SIGILED_RUNTIME:-}
+      SIGILED_NETWORK: ${SIGILED_NETWORK:-mgr-net}
     volumes:
       - sigiled-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    # group_add 988 = gruppo docker del box: il processo gira 1000, non root.
+    group_add: ["988"]
+    networks: [default, mgr-net]
     restart: unless-stopped
 
 volumes:
   sigiled-data:
     name: sigiled-data
+
+networks:
+  mgr-net:
+    external: true
+    name: mgr-net
