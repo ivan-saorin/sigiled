@@ -4,6 +4,7 @@
 // (GET /sigiled/projects/{p}/log) and template_behind. Session 3 adds the
 // two-legged auth (design §1): bootstrap bearer OR IdP JWT, capability map,
 // device-flow approvals. Session 4 brings the verbs that consume them.
+mod apps;
 mod auth;
 mod contract;
 mod events;
@@ -27,6 +28,7 @@ pub struct AppState {
     pub events: events::EventLog,
     pub auth: auth::AuthState,
     pub sessions: sessions::SessionState,
+    pub apps: apps::AppsState,
     pub store: store::Store,
 }
 
@@ -41,6 +43,7 @@ impl AppState {
             debts: self.sessions.dump_debts(),
             approvals: self.auth.approvals.dump(),
             sessions: self.sessions.dump_records(),
+            apps: self.apps.dump(),
         });
     }
 
@@ -51,6 +54,7 @@ impl AppState {
             self.events.hydrate(snap.events);
             self.sessions.hydrate(snap.debts, snap.sessions);
             self.auth.approvals.hydrate(snap.approvals);
+            self.apps.hydrate(snap.apps);
             tracing::info!("state hydrated from disk");
         }
     }
@@ -80,6 +84,8 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/sessions/{session_id}/close", post(sessions::close))
         .route("/auth/elevate", post(auth::elevate))
         .route("/auth/approvals", get(auth::approvals))
+        .route("/apps/{app}", get(apps::status))
+        .route("/apps/{app}/{action}", post(apps::action))
         .with_state(state)
 }
 
@@ -122,6 +128,7 @@ async fn main() {
         events: events::EventLog::default(),
         auth: auth::AuthState::default(),
         sessions: sessions::SessionState::default(),
+        apps: apps::AppsState::default(),
         store: store::Store::from_env(),
     };
     state.hydrate_from_disk();

@@ -13,6 +13,7 @@ pub struct TemplateRef {
 pub enum ManifestError {
     Toml(String),
     BadTemplateRef(String),
+    BadApp(String),
 }
 
 impl std::fmt::Display for ManifestError {
@@ -22,6 +23,7 @@ impl std::fmt::Display for ManifestError {
             ManifestError::BadTemplateRef(s) => {
                 write!(f, "bad template ref {s:?}: expected \"<name>@<x.y.z>\"")
             }
+            ManifestError::BadApp(s) => write!(f, "bad [app]: {s}"),
         }
     }
 }
@@ -47,6 +49,65 @@ impl TemplateRef {
 #[derive(Debug, Deserialize)]
 struct RawManifest {
     template: Option<String>,
+    app: Option<RawApp>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawApp {
+    name: String,
+    dockerfile: Option<String>,
+    #[serde(default)]
+    volumes: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    secrets: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    requires: Vec<String>,
+}
+
+/// The resident app of a project (contract §7): at most ONE `[app]` per repo
+/// (singular table, enforced by the TOML shape), no `image` key by design —
+/// the repo IS the filesystem, the image is built from it at master.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct AppManifest {
+    /// Container name = DNS name on the stack network: the edge routes it.
+    pub name: String,
+    pub dockerfile: String,
+    /// named volume → "/abs/target:ro|rw"
+    pub volumes: std::collections::HashMap<String, String>,
+    /// container env ← stack env, resolved at creation (rule 8)
+    pub secrets: std::collections::HashMap<String, String>,
+    pub requires: Vec<String>,
+}
+
+impl AppManifest {
+    fn validate(raw: RawApp) -> Result<Self, ManifestError> {
+        let name_ok = !raw.name.is_empty()
+            && raw.name.starts_with(|c: char| c.is_ascii_lowercase())
+            && raw
+                .name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !name_ok {
+            return Err(ManifestError::BadApp(format!("bad app name {:?}", raw.name)));
+        }
+        for (vol, target) in &raw.volumes {
+            let ok = target.starts_with('/')
+                && (target.ends_with(":ro") || target.ends_with(":rw"))
+                && target.len() > 4;
+            if !ok {
+                return Err(ManifestError::BadApp(format!(
+                    "volume {vol}: expected \"/abs/target:ro|rw\", got {target:?}"
+                )));
+            }
+        }
+        Ok(AppManifest {
+            name: raw.name,
+            dockerfile: raw.dockerfile.unwrap_or_else(|| "Dockerfile".into()),
+            volumes: raw.volumes,
+            secrets: raw.secrets,
+            requires: raw.requires,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -54,6 +115,7 @@ pub struct Manifest {
     /// The vm-tmpl pin. None on pre-v2 repos that never adopted the pin —
     /// legal: template_version simply stays null in the project record.
     pub template: Option<TemplateRef>,
+    pub app: Option<AppManifest>,
 }
 
 impl Manifest {
@@ -61,7 +123,8 @@ impl Manifest {
         let raw: RawManifest =
             toml::from_str(text).map_err(|e| ManifestError::Toml(e.to_string()))?;
         let template = raw.template.as_deref().map(TemplateRef::parse).transpose()?;
-        Ok(Manifest { template })
+        let app = raw.app.map(AppManifest::validate).transpose()?;
+        Ok(Manifest { template, app })
     }
 }
 
@@ -118,5 +181,46 @@ mod tests {
     #[test]
     fn broken_toml_is_a_toml_error() {
         assert!(matches!(Manifest::parse("class = "), Err(ManifestError::Toml(_))));
+    }
+
+    #[test]
+    fn app_table_parses_with_defaults() {
+        let m = Manifest::parse(
+            "[app]\nname = \"reddit-mine\"\n[app.volumes]\nreddit-mine-data = \"/data:rw\"\n[app.secrets]\nTZ = \"TZ\"\n",
+        )
+        .unwrap();
+        let a = m.app.unwrap();
+        assert_eq!(a.name, "reddit-mine");
+        assert_eq!(a.dockerfile, "Dockerfile"); // default
+        assert_eq!(a.volumes["reddit-mine-data"], "/data:rw");
+        assert_eq!(a.secrets["TZ"], "TZ");
+        assert!(a.requires.is_empty());
+    }
+
+    #[test]
+    fn app_without_table_is_none_and_bad_apps_are_loud() {
+        assert_eq!(Manifest::parse("class = \"session\"\n").unwrap().app, None);
+        // name rules
+        assert!(matches!(
+            Manifest::parse("[app]\nname = \"Bad_Name\"\n"),
+            Err(ManifestError::BadApp(_))
+        ));
+        // volume must be absolute with :ro|:rw
+        for v in ["data:rw", "/data", "/data:xx"] {
+            let text = format!("[app]\nname = \"x\"\n[app.volumes]\nd = \"{v}\"\n");
+            assert!(
+                matches!(Manifest::parse(&text), Err(ManifestError::BadApp(_))),
+                "{v} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn template_app_reference_table_still_parses() {
+        // The commented [app] reference in the shipped template must stay
+        // commented (parse → app None); if someone uncomments it, it must
+        // still be valid. Both invariants in one place.
+        let m = Manifest::parse(include_str!("../../template/sigiled.toml")).unwrap();
+        assert!(m.app.is_none(), "il template non deve dichiarare app di default");
     }
 }

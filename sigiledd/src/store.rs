@@ -24,6 +24,8 @@ pub struct StateSnapshot {
     pub approvals: HashMap<String, crate::auth::Approval>,
     #[serde(default)]
     pub sessions: HashMap<String, crate::sessions::SessionRecord>,
+    #[serde(default)]
+    pub apps: HashMap<String, crate::apps::AppRecord>,
 }
 
 #[derive(Clone, Default)]

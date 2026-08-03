@@ -139,6 +139,44 @@ impl Runtime {
         self.docker(&["rm", "-f", &Self::vm_name(project)]).is_ok()
     }
 
+    /// Public docker access for the apps engine (apps.rs) — same plumbing,
+    /// same error shape.
+    pub fn docker_pub(&self, args: &[&str]) -> Result<String, String> {
+        self.docker(args)
+    }
+
+    pub fn image_exists(&self, tag: &str) -> bool {
+        self.docker(&["image", "inspect", "--format", "ok", tag]).is_ok()
+    }
+
+    pub fn container_state(&self, name: &str) -> String {
+        self.docker(&["inspect", "--format", "{{.State.Status}}", name])
+            .unwrap_or_else(|_| "absent".into())
+    }
+
+    /// docker build from a mirror checkout at master — the log tail is the
+    /// build record's diagnosis in chat, same philosophy as the supervisor.
+    pub fn build_image(&self, tag: &str, dockerfile: &str, ctx: &Path) -> Result<String, String> {
+        let out = Command::new("docker")
+            .args(["build", "-f"])
+            .arg(ctx.join(dockerfile))
+            .args(["-t", tag])
+            .arg(ctx)
+            .output()
+            .map_err(|e| format!("spawn docker build: {e}"))?;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let tail: String = text.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+        if out.status.success() {
+            Ok(tail)
+        } else {
+            Err(tail)
+        }
+    }
+
     /// create → inject the deploy key → start. Mirrors the v1 order for the
     /// same reason: the key must be in place before the agent boots, and it
     /// must never transit through an image layer.
