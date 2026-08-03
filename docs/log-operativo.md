@@ -39,9 +39,9 @@ _aggiornato: 2026-08-03, sessione 3ace5bd7 (sessione 6 — recycle)_
 - **Dove eravamo**: POST /projects vivo e verificato dal vivo (progetto `sigiled-smoke` nato dal template, sessione aperta e chiusa sul neonato al primo colpo).
 - **Previsione**: recycle come composizione — flush/destroy/create_container/wait_healthy/boot_workspace esistono tutti dalla fase 2.2.
 - **Fatto**: `sessions::recycle` — 404 su sessione ignota, capability `Recycle` (nessuna approval: non è territorio piattaforma-only), flush **best-effort** (un container incastrato è metà del motivo del verbo: si procede e si riporta `flushed` onesto), destroy, recreate dal branch con `boot_workspace(resume=true)` e token fresco, swap del token nel record persistito, `Event::SessionRecycled`. Il contratto §5 era già giusto: `{token, endpoint, sha_at_recycle}`. TDD: 2 test rossi visti fallire, poi verdi — 69 totali.
-- **Scarti**: nessuno.
-- **Stato a fine sessione**: master verde; verifica live (recycle reale con lavoro non committato che sopravvive) da fare post-merge.
-- **Prossimo passo previsto**: deploy + verifica live, poi sessione 7: reaper + resume.
+- **Scarti**: la prima verifica live ha trovato un bug **latente dalla 2.2**: `/exec` non ha l'identità git neutra che l'agent inietta solo sul suo `/git` surface — autosave su albero sporco morto con `Author identity unknown` (128), lavoro non committato perso col container. Mai morso prima perché i close live avevano sempre l'albero pulito. Fix (sessione 6844706a, TDD): `autosave_cmd` estratta pura e autosufficiente (`-c user.name/email` neutri, che perdono apposta contro l'env del container). 70 test.
+- **Stato a fine sessione**: master verde col fix; ri-verifica live del recycle su albero sporco da fare post-deploy (l'esito va nella voce della sessione 7).
+- **Prossimo passo previsto**: deploy + ri-verifica, poi sessione 7: reaper + resume.
 
 ### 2026-08-03 · sessione 5 — POST /projects: i progetti nascono nel v2, il re-import muore — driver: Claude (sessione 0a4ec01a)
 
