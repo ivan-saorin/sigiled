@@ -8,7 +8,7 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-03, sessione 0a4ec01a (sessione 5 — POST /projects, via il rituale re-import)_
+_aggiornato: 2026-08-03, sessione 3ace5bd7 (sessione 6 — recycle)_
 
 - **Su master**: docs (`sigiled-v2.md`, `v2-build-plan.md`, `sigiled-contract.md` 2.0.0-draft, questo log) + codice sessione 1: workspace cargo con `sigiledd/` (ex `seald/` — healthz, `GET /sigiled/contract`, `GET /sigiled/projects` con `template_version`; 7 unit test) e `vm-base/` (port del server v1, build-ext.sh su `ext-rust/`), `template/` (vm-tmpl v2), `images/build-vm-base.sh`, `tools/dev-toolchain.sh`, `CNAME` (`sigiled.dev`) + `index.html` (landing Pages).
 - **RINOMINA COMPLETATA.** Per ordine diretto del Re («eradica completamente la stringa seal») il repo non contiene più alcuna occorrenza di «seal» in nessuna forma: codice (crate `sigiledd`, env `SIGILED_BUILD_SHA`, header `x-sigiled-version`), documenti, contratto, template, commenti, **voci storiche di questo log comprese**. La storia vera (la piattaforma è nata sotto due nomi precedenti, entrambi eradicati dal testo) è preservata dalla storia git. Compilazione di scrupolo eseguita dopo lo sweep: `cargo build --workspace` verde (sigiledd + vm-base). Push del Re verificato: `ivan-saorin/sigiled` master = 2ab8f43, storia completa.
@@ -27,11 +27,21 @@ _aggiornato: 2026-08-03, sessione 0a4ec01a (sessione 5 — POST /projects, via i
 - **Fase 2.3 (import v1→v2) ESEGUITA (2026-08-03)**: `docker run … sigiledd import /v1` sul box — **10 progetti** importati (needs_merge conservato), lapidi `seal`/`seal-supervisor` saltate, **100 sessioni v1** nel log macchina (le altre: lapidi + `mgr-smoke` congelato dall'idempotenza, che è anche il motivo degli 0 job run: erano tutti suoi), **9 chiavi** copiate + 1 già presente; un resume pendente segnalato: `oannes-one` branch `session/206f26ec` (da chiudere in v1 o riprendere post-switch). Verificato: `GET /projects` idrata i 10, il log macchina di `torchio` mostra le sue 5 sessioni v1 con epoch giusti.
 - **Fase 2.4 (apps engine v2 puro) su master**: decreto del Re — *le app tutte v2 pure, niente v1 convertite; una migrazione per sessione*. `[app]` nel manifest del progetto (nome=DNS, niente `image:` per costruzione), `upgrade` = sha → build `{nome}:{sha12}` in background (202+build record) → recreate coi secrets risolti dallo stack env; `start` non ricrea mai; verbi gated dalla capability map. 58 test.
 - **Sessione 5 (POST /projects) su master**: `github.rs` — il github.py della v1 portato in Rust e ristretto al verbo: generate da `vm-tmpl` (o **adozione** su 422 + probe del repo: un 422 di validazione vera resta un errore, niente progetti fantasma), deploy key ed25519 generata con `ssh-keygen` nel layout che `runtime.rs` già legge, chiave sul repo via API, registrazione per ultima (fallimento a metà = stato pulito, verbo ritentabile). `GITHUB_PAT` nello `.env` del canary accende il verbo (assente = 503 onesto); `GITHUB_API_BASE` overridabile per i test (mock axum locale, zero rete). `Event::ProjectCreated` nel log macchina. 67 test. **Il rituale re-import è morto**: i progetti nascono direttamente nel v2.
-- **Prossimo passo previsto**: recycle (`POST /sessions/{id}/recycle` — composizione di flush/destroy/create già nel runtime), poi reaper + resume (loop tokio su idle_secs, autosave, riapertura stale del branch — banco di prova: `oannes-one` session/206f26ec), poi jobs engine (`[jobs.*]` in sigiled.toml, scheduler cron, run su branch `job-*`). A feature verificate: purga v1 dalla skill sigil e spegnimento v1 (stop stack-mgr-1, via `/mgr/*` dal Caddyfile — `/s/{project}` resta). Dal Re: DEC-01…10. Dall'operatore: package `vm-base` → Public, Pages + DNS per il flip, client_secret dei driver nelle skill.
+- **Sessione 6 (recycle) su master**: `POST /sessions/{id}/recycle` — flush best-effort col token custodito, destroy, recreate dal branch della sessione (`boot_workspace` resume=true) con token fresco; swap persistito nel record (il vecchio token muore lì), `Event::SessionRecycled` nel log macchina, branch-only path onesto per dev/test. 69 test.
+- **Prossimo passo previsto**: reaper + resume (loop tokio su idle_secs, autosave, riapertura stale del branch — banco di prova: `oannes-one` session/206f26ec), poi jobs engine (`[jobs.*]` in sigiled.toml, scheduler cron, run su branch `job-*`). A feature verificate: purga v1 dalla skill sigil e spegnimento v1 (stop stack-mgr-1, via `/mgr/*` dal Caddyfile — `/s/{project}` resta). Dal Re: DEC-01…10. Dall'operatore: package `vm-base` → Public, Pages + DNS per il flip, client_secret dei driver nelle skill.
 
 ---
 
 ## Voci
+
+### 2026-08-03 · sessione 6 — recycle: il passaggio di mano diventa un verbo — driver: Claude (sessione 3ace5bd7)
+
+- **Dove eravamo**: POST /projects vivo e verificato dal vivo (progetto `sigiled-smoke` nato dal template, sessione aperta e chiusa sul neonato al primo colpo).
+- **Previsione**: recycle come composizione — flush/destroy/create_container/wait_healthy/boot_workspace esistono tutti dalla fase 2.2.
+- **Fatto**: `sessions::recycle` — 404 su sessione ignota, capability `Recycle` (nessuna approval: non è territorio piattaforma-only), flush **best-effort** (un container incastrato è metà del motivo del verbo: si procede e si riporta `flushed` onesto), destroy, recreate dal branch con `boot_workspace(resume=true)` e token fresco, swap del token nel record persistito, `Event::SessionRecycled`. Il contratto §5 era già giusto: `{token, endpoint, sha_at_recycle}`. TDD: 2 test rossi visti fallire, poi verdi — 69 totali.
+- **Scarti**: nessuno.
+- **Stato a fine sessione**: master verde; verifica live (recycle reale con lavoro non committato che sopravvive) da fare post-merge.
+- **Prossimo passo previsto**: deploy + verifica live, poi sessione 7: reaper + resume.
 
 ### 2026-08-03 · sessione 5 — POST /projects: i progetti nascono nel v2, il re-import muore — driver: Claude (sessione 0a4ec01a)
 
