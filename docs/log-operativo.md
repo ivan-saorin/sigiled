@@ -39,6 +39,13 @@ _aggiornato: 2026-08-03, sessione 286d2d6b (sessione 1b eseguita — flip-ready,
 
 ## Voci
 
+### 2026-08-03 · fix: frontmatter YAML nella skill generata — driver: sigiled-claude, approval dell'operatore (sessione fafd0f9d)
+
+- **Dove eravamo**: flip open-source eseguito dall'operatore e verificato (repo public, Pages+DNS vivi, ghcr anonimo, canary su master 1b); `GET /skill/{driver}` provato e2e col secret vero (primo token IdP scaduto → 403 → sostituito con API Token admin non-expiring).
+- **Fatto**: il Re nota che le skill generate non hanno frontmatter — i loader di skill indicizzano su quello, senza non si registrano. `docs/skill-template.md` ora apre con frontmatter YAML (`name: sigil` stabile fra i driver, description di triggering con driver e istanza renderizzati); il test di render asserisce che il file generato inizi col frontmatter. 87 test verdi (scruple build sul box).
+- **Stato**: su master al close; il canary serve il template nuovo dopo il redeploy dell'operatore.
+- **Prossimo passo previsto**: operatore — redeploy canary, rigenerare le skill dei driver da `GET /skill/{driver}`.
+
 ### 2026-08-03 · sessione 1b — open source flip-ready, inglese primario, la skill si genera da sola — driver: sigiled-claude, approval dell'operatore (sessione 286d2d6b)
 
 - **Dove eravamo**: cutover auth chiuso (contratto 2.0.0, bearer morto, v1 spenta); la 1b del build plan era l'ultima sessione mai eseguita. Il Re in chat: eseguirla, con tre aggiunte — un'API che genera la skill per-istanza dai valori custoditi, il runbook del setup del box, inglese lingua primaria coi doc italiani rinominati `*_it`.
