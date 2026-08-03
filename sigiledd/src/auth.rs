@@ -102,13 +102,15 @@ pub enum Action {
     JobRecap,
     ProjectsNew,
     AppVerb,
+    /// GET /skill/{driver} — renders a skill that can carry a credential.
+    SkillRender,
 }
 
 /// The rows of the capability map where `stack:drivers` needs a live human
 /// approval. Everything else is open to both groups.
 pub fn requires_approval(action: Action, project: Option<&str>) -> bool {
     match action {
-        Action::ProjectsNew | Action::AppVerb => true,
+        Action::ProjectsNew | Action::AppVerb | Action::SkillRender => true,
         Action::OpenSession => {
             project.is_some_and(|p| PLATFORM_PROJECTS.contains(&p))
         }

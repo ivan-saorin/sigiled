@@ -18,6 +18,7 @@ mod project;
 mod reaper;
 mod runtime;
 mod sessions;
+mod skill;
 mod store;
 
 use axum::{
@@ -98,6 +99,7 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/sessions/{session_id}/recycle", post(sessions::recycle))
         .route("/auth/elevate", post(auth::elevate))
         .route("/auth/approvals", get(auth::approvals))
+        .route("/skill/{driver}", get(skill::serve))
         .route("/apps/{app}", get(apps::status))
         .route("/apps/{app}/{action}", post(apps::action))
         .with_state(state)
