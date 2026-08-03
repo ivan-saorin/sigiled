@@ -102,6 +102,24 @@ fn now_epoch() -> u64 {
     crate::auth::now_epoch()
 }
 
+/// The final verdict of a run from its raw outcome. A failed leftovers
+/// flush does not fail the run — the command did what it did — but it must
+/// never be silent: the testimony is missing and the detail says so
+/// (lesson from the first live run, where a clean-looking flush hid an
+/// ignored output file).
+pub fn run_verdict(timed_out: bool, exit: Option<i64>, flushed: bool) -> (String, Option<String>) {
+    let state = if timed_out {
+        "timeout"
+    } else if exit == Some(0) {
+        "succeeded"
+    } else {
+        "failed"
+    };
+    let detail =
+        (!flushed).then(|| "leftovers flush failed — run output not committed".to_string());
+    (state.to_string(), detail)
+}
+
 fn err(status: StatusCode, detail: impl Into<String>) -> Response {
     (status, Json(json!({ "detail": detail.into() }))).into_response()
 }
@@ -295,7 +313,7 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
     let container = crate::runtime::Runtime::job_container(&project, &jm.name);
     let http = state.sessions.http().clone();
     let mut exit: Option<i64> = None;
-    let outcome: Result<String, String> = async {
+    let outcome: Result<(String, Option<String>), String> = async {
         let mut extra: Vec<(String, String)> = Vec::new();
         for (env_name, stack_var) in &jm.secrets {
             let v = std::env::var(stack_var)
@@ -310,19 +328,13 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
         let r = rt.exec(&http, &container, &tok, &jm.command, jm.timeout_minutes * 60).await?;
         exit = r["exit"].as_i64();
         let timed_out = r["timed_out"].as_bool().unwrap_or(false);
-        rt.flush(&http, &container, &tok, &format!("job {}", jm.name)).await;
-        Ok(if timed_out {
-            "timeout".to_string()
-        } else if exit == Some(0) {
-            "succeeded".to_string()
-        } else {
-            "failed".to_string()
-        })
+        let flushed = rt.flush(&http, &container, &tok, &format!("job {}", jm.name)).await;
+        Ok(run_verdict(timed_out, exit, flushed))
     }
     .await;
     rt.destroy(&container);
     let (final_state, detail) = match outcome {
-        Ok(s) => (s, None),
+        Ok((s, d)) => (s, d),
         Err(e) => ("error".to_string(), Some(e)),
     };
     // hc_ping is a STACK-ENV REF (rule 8): resolved here, success pings the
@@ -407,6 +419,20 @@ mod tests {
             exit: None,
             detail: None,
         }
+    }
+
+    #[test]
+    fn run_verdict_never_hides_a_failed_flush() {
+        assert_eq!(run_verdict(false, Some(0), true), ("succeeded".into(), None));
+        assert_eq!(run_verdict(false, Some(2), true), ("failed".into(), None));
+        let (s, d) = run_verdict(true, None, true);
+        assert_eq!(s, "timeout");
+        assert!(d.is_none());
+        // The command succeeded but the testimony is missing: state stays
+        // honest AND the detail shouts.
+        let (s, d) = run_verdict(false, Some(0), false);
+        assert_eq!(s, "succeeded");
+        assert!(d.unwrap().contains("flush"), "flush failure must be visible");
     }
 
     #[test]
