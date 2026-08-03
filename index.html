@@ -66,7 +66,8 @@
     <p>The driving rules are not docs <em>about</em> the platform — they are its
        API surface. The orchestrator serves its own canonical contract, at the
        exact sha it is running:</p>
-    <pre>GET /sigiled/contract   <span class="c"># any LLM that speaks HTTPS can start driving</span></pre>
+    <pre>GET /sigiled/contract       <span class="c"># any LLM that speaks HTTPS can start driving</span>
+GET /sigiled/skill/{driver} <span class="c"># your instance renders each driver's skill itself</span></pre>
   </section>
 
   <section>
@@ -89,15 +90,19 @@
 
   <section>
     <h2>Self-host</h2>
-    <p>Rust end to end, one base image, everything stack-specific is env with
-       documented defaults:</p>
+    <p>Rust end to end, one base image, everything stack-specific is env —
+       and instance identity is <em>required, never defaulted</em>: forget it
+       and the boot fails loudly. Five subsystems, each documented as
+       <em>contract vs reference implementation</em> in the runbook:</p>
     <pre>docker pull ghcr.io/ivan-saorin/vm-base:0.1.0   <span class="c"># public, no credentials</span>
-PUSH=1 images/build-vm-base.sh                  <span class="c"># or build your own</span></pre>
+cp deploy/.env.example .env                     <span class="c"># fill in DOMAIN, GITHUB_OWNER, ...</span>
+docker compose up -d --build sigiled            <span class="c"># the runbook does the rest</span></pre>
   </section>
 
   <nav>
     <a href="https://github.com/ivan-saorin/sigiled">github</a>
     <a href="https://github.com/ivan-saorin/sigiled/blob/master/docs/sigiled-v2.md">design</a>
+    <a href="https://github.com/ivan-saorin/sigiled/blob/master/docs/runbook-deploy.md">self-host</a>
     <a href="https://github.com/ivan-saorin/sigiled/blob/master/docs/log-operativo.md">log</a>
   </nav>
 
