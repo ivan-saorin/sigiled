@@ -10,6 +10,7 @@ mod auth;
 mod contract;
 mod events;
 mod github;
+mod jobs;
 mod manifest;
 mod merge;
 mod import;
@@ -32,6 +33,7 @@ pub struct AppState {
     pub auth: auth::AuthState,
     pub sessions: sessions::SessionState,
     pub apps: apps::AppsState,
+    pub jobs: jobs::JobsState,
     pub store: store::Store,
     /// Some only when GITHUB_PAT is configured: POST /projects needs it,
     /// nothing else does.
@@ -50,6 +52,7 @@ impl AppState {
             approvals: self.auth.approvals.dump(),
             sessions: self.sessions.dump_records(),
             apps: self.apps.dump(),
+            job_runs: self.jobs.dump(),
         });
     }
 
@@ -61,6 +64,7 @@ impl AppState {
             self.sessions.hydrate(snap.debts, snap.sessions);
             self.auth.approvals.hydrate(snap.approvals);
             self.apps.hydrate(snap.apps);
+            self.jobs.hydrate(snap.job_runs);
             tracing::info!("state hydrated from disk");
         }
     }
@@ -86,6 +90,9 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/contract", get(contract::serve))
         .route("/projects", get(project::list).post(project::create))
         .route("/projects/{project}/log", get(events::project_log))
+        .route("/projects/{project}/branches", get(project::branches))
+        .route("/projects/{project}/jobs/{job}/run", post(jobs::run))
+        .route("/projects/{project}/jobs/{job}/runs", get(jobs::runs))
         .route("/projects/{project}/sessions", post(sessions::open))
         .route("/sessions/{session_id}/close", post(sessions::close))
         .route("/sessions/{session_id}/recycle", post(sessions::recycle))
@@ -136,13 +143,15 @@ async fn main() {
         auth: auth::AuthState::default(),
         sessions: sessions::SessionState::default(),
         apps: apps::AppsState::default(),
+        jobs: jobs::JobsState::default(),
         store: store::Store::from_env(),
         github: github::GitHub::from_env(),
     };
     state.hydrate_from_disk();
-    // The reaper patrols only where containers exist (contract rule 6).
+    // The reaper and the jobs scheduler patrol only where containers exist.
     if state.sessions.runtime.is_some() {
         tokio::spawn(reaper::run(state.clone()));
+        tokio::spawn(jobs::scheduler(state.clone()));
     }
     axum::serve(listener, app(state)).await.expect("serve");
 }

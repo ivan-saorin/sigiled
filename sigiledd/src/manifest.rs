@@ -14,6 +14,7 @@ pub enum ManifestError {
     Toml(String),
     BadTemplateRef(String),
     BadApp(String),
+    BadJob(String),
 }
 
 impl std::fmt::Display for ManifestError {
@@ -24,6 +25,7 @@ impl std::fmt::Display for ManifestError {
                 write!(f, "bad template ref {s:?}: expected \"<name>@<x.y.z>\"")
             }
             ManifestError::BadApp(s) => write!(f, "bad [app]: {s}"),
+            ManifestError::BadJob(s) => write!(f, "bad [jobs]: {s}"),
         }
     }
 }
@@ -50,6 +52,73 @@ impl TemplateRef {
 struct RawManifest {
     template: Option<String>,
     app: Option<RawApp>,
+    jobs: Option<std::collections::HashMap<String, RawJob>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawJob {
+    cron: String,
+    command: String,
+    timeout_minutes: Option<u64>,
+    hc_ping: Option<String>,
+    #[serde(default)]
+    secrets: std::collections::HashMap<String, String>,
+}
+
+/// One `[jobs.<name>]` entry (contract §7): classic 5-field cron evaluated
+/// in the control plane's local TZ, a command run in a fresh workspace born
+/// from master on an append-only `job-*` branch, a hard wall clock.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct JobManifest {
+    pub name: String,
+    /// The raw 5-field expression, validated at parse.
+    pub cron: String,
+    pub command: String,
+    /// 1..=60, default 30 — the exec wall clock.
+    pub timeout_minutes: u64,
+    /// Optional STACK-ENV REF (never a URL in the repo): resolved at ping.
+    pub hc_ping: Option<String>,
+    /// container env ← stack env, resolved at creation (rule 8)
+    pub secrets: std::collections::HashMap<String, String>,
+}
+
+impl JobManifest {
+    fn validate(name: &str, raw: RawJob) -> Result<Self, ManifestError> {
+        let bad = ManifestError::BadJob;
+        let name_ok = !name.is_empty()
+            && name.starts_with(|c: char| c.is_ascii_lowercase())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !name_ok {
+            return Err(bad(format!("bad job name {name:?}")));
+        }
+        // The contract speaks classic 5-field cron; the cron crate wants a
+        // seconds field — pinned to 0 here, never author-visible.
+        if raw.cron.split_whitespace().count() != 5 {
+            return Err(bad(format!(
+                "{name}: cron must be the classic 5 fields, got {:?}",
+                raw.cron
+            )));
+        }
+        use std::str::FromStr;
+        cron::Schedule::from_str(&format!("0 {}", raw.cron))
+            .map_err(|e| bad(format!("{name}: bad cron {:?}: {e}", raw.cron)))?;
+        let timeout = raw.timeout_minutes.unwrap_or(30);
+        if !(1..=60).contains(&timeout) {
+            return Err(bad(format!(
+                "{name}: timeout_minutes must be 1..=60, got {timeout}"
+            )));
+        }
+        Ok(JobManifest {
+            name: name.to_string(),
+            cron: raw.cron,
+            command: raw.command,
+            timeout_minutes: timeout,
+            hc_ping: raw.hc_ping,
+            secrets: raw.secrets,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +185,9 @@ pub struct Manifest {
     /// legal: template_version simply stays null in the project record.
     pub template: Option<TemplateRef>,
     pub app: Option<AppManifest>,
+    /// The `[jobs.*]` table, sorted by name for determinism. Empty when the
+    /// repo declares none.
+    pub jobs: Vec<JobManifest>,
 }
 
 impl Manifest {
@@ -124,7 +196,14 @@ impl Manifest {
             toml::from_str(text).map_err(|e| ManifestError::Toml(e.to_string()))?;
         let template = raw.template.as_deref().map(TemplateRef::parse).transpose()?;
         let app = raw.app.map(AppManifest::validate).transpose()?;
-        Ok(Manifest { template, app })
+        let mut jobs = raw
+            .jobs
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, j)| JobManifest::validate(&name, j))
+            .collect::<Result<Vec<_>, _>>()?;
+        jobs.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(Manifest { template, app, jobs })
     }
 }
 
@@ -213,6 +292,49 @@ mod tests {
                 "{v} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn jobs_table_parses_with_defaults() {
+        let m = Manifest::parse(
+            "[jobs.mine]\ncron = \"30 3 * * *\"\ncommand = \"./jobs/mine.sh\"\n[jobs.mine.secrets]\nKEY = \"STACK_KEY\"\n",
+        )
+        .unwrap();
+        assert_eq!(m.jobs.len(), 1);
+        let j = &m.jobs[0];
+        assert_eq!(j.name, "mine");
+        assert_eq!(j.cron, "30 3 * * *");
+        assert_eq!(j.command, "./jobs/mine.sh");
+        assert_eq!(j.timeout_minutes, 30); // default
+        assert_eq!(j.hc_ping, None);
+        assert_eq!(j.secrets["KEY"], "STACK_KEY");
+    }
+
+    #[test]
+    fn no_jobs_table_is_an_empty_list() {
+        assert!(Manifest::parse("class = \"session\"\n").unwrap().jobs.is_empty());
+    }
+
+    #[test]
+    fn bad_jobs_are_loud() {
+        // Cron must be the classic 5 fields and must parse; timeout must be
+        // 1..=60; the job name follows project-name rules.
+        let cases = [
+            "[jobs.x]\ncron = \"not a cron\"\ncommand = \"c\"\n",
+            "[jobs.x]\ncron = \"0 30 3 * * *\"\ncommand = \"c\"\n", // 6 fields
+            "[jobs.x]\ncron = \"90 3 * * *\"\ncommand = \"c\"\n",   // minute 90
+            "[jobs.x]\ncron = \"30 3 * * *\"\ncommand = \"c\"\ntimeout_minutes = 0\n",
+            "[jobs.x]\ncron = \"30 3 * * *\"\ncommand = \"c\"\ntimeout_minutes = 61\n",
+            "[jobs.\"Bad_Name\"]\ncron = \"30 3 * * *\"\ncommand = \"c\"\n",
+        ];
+        for text in cases {
+            assert!(
+                matches!(Manifest::parse(text), Err(ManifestError::BadJob(_))),
+                "{text} should be rejected as BadJob"
+            );
+        }
+        // A missing command is a TOML-shape error, equally loud.
+        assert!(Manifest::parse("[jobs.x]\ncron = \"30 3 * * *\"\n").is_err());
     }
 
     #[test]

@@ -13,6 +13,10 @@ description = "SIGILED v2 orchestrator — the control plane"
 # reqwest (rustls, no default tls): JWKS fetch + device flow against the IdP —
 #   the only outbound HTTP the control plane performs.
 [dependencies]
+# cron+chrono: the jobs scheduler (session 8) evaluates the classic 5-field
+# cron of [jobs.*] in the control plane's local TZ (contract §7).
+cron = "0.12"
+chrono = "0.4"
 axum = "0.8.9"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 serde = { version = "1.0.229", features = ["derive"] }

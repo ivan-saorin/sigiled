@@ -26,6 +26,8 @@ pub struct StateSnapshot {
     pub sessions: HashMap<String, crate::sessions::SessionRecord>,
     #[serde(default)]
     pub apps: HashMap<String, crate::apps::AppRecord>,
+    #[serde(default)]
+    pub job_runs: HashMap<String, Vec<crate::jobs::JobRunRecord>>,
 }
 
 #[derive(Clone, Default)]

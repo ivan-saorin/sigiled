@@ -227,21 +227,22 @@ pub async fn open(
                     (id, branch, false)
                 }
             };
+            let vm = crate::runtime::Runtime::vm_name(&project);
             let tok = mint_token();
-            if let Err(e) = rt.create_container(&project, &id, &tok) {
+            if let Err(e) = rt.create_container(&vm, &project, "session", &id, &tok, &[]) {
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
-            if let Err(e) = rt.wait_healthy(&state.sessions.http, &project, &tok).await {
-                rt.destroy(&project);
+            if let Err(e) = rt.wait_healthy(&state.sessions.http, &vm, &tok).await {
+                rt.destroy(&vm);
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
             match rt
-                .boot_workspace(&state.sessions.http, &project, &tok, &branch, resume)
+                .boot_workspace(&state.sessions.http, &vm, &project, &tok, &branch, resume)
                 .await
             {
                 Ok(head) => (id, branch, resume, head, Some(tok), Some(rt.endpoint(&project))),
                 Err(e) => {
-                    rt.destroy(&project);
+                    rt.destroy(&vm);
                     return err(StatusCode::INTERNAL_SERVER_ERROR, e);
                 }
             }
@@ -308,7 +309,7 @@ pub async fn open(
         .into_response()
 }
 
-fn mint_token() -> String {
+pub(crate) fn mint_token() -> String {
     // 24 bytes of entropy, hex — same shape as the v1 token the edge and
     // the agent already expect. Sourced from the OS via getrandom-through-
     // std: no crypto dependency for a value that is only ever compared.
@@ -345,8 +346,9 @@ pub async fn close(
     let mut flushed = true;
     if let Some(rt) = &state.sessions.runtime {
         if let Some(tok) = &record.token {
+            let vm = crate::runtime::Runtime::vm_name(&record.project);
             flushed = rt
-                .flush(&state.sessions.http, &record.project, tok, "session close")
+                .flush(&state.sessions.http, &vm, tok, "session close")
                 .await;
         }
         if let Err(e) = rt.ensure_mirror(&record.project) {
@@ -408,7 +410,7 @@ pub async fn close(
         }
     }
     if let Some(rt) = &state.sessions.runtime {
-        rt.destroy(&record.project);
+        rt.destroy(&crate::runtime::Runtime::vm_name(&record.project));
     }
     state.sessions.records.write().unwrap().remove(&session_id);
     state.events.record(
@@ -458,29 +460,32 @@ pub async fn recycle(
     let mut flushed = true;
     let (head, token, endpoint) = match &state.sessions.runtime {
         Some(rt) => {
+            let vm = crate::runtime::Runtime::vm_name(&record.project);
             if let Some(tok) = &record.token {
                 flushed = rt
-                    .flush(&state.sessions.http, &record.project, tok, "session recycle")
+                    .flush(&state.sessions.http, &vm, tok, "session recycle")
                     .await;
             }
-            rt.destroy(&record.project);
+            rt.destroy(&vm);
             let tok = mint_token();
-            if let Err(e) = rt.create_container(&record.project, &session_id, &tok) {
+            if let Err(e) =
+                rt.create_container(&vm, &record.project, "session", &session_id, &tok, &[])
+            {
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
-            if let Err(e) = rt.wait_healthy(&state.sessions.http, &record.project, &tok).await {
-                rt.destroy(&record.project);
+            if let Err(e) = rt.wait_healthy(&state.sessions.http, &vm, &tok).await {
+                rt.destroy(&vm);
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
             // resume=true: the branch already exists on the remote — the
             // fresh container checks it out instead of cutting a new one.
             match rt
-                .boot_workspace(&state.sessions.http, &record.project, &tok, &record.branch, true)
+                .boot_workspace(&state.sessions.http, &vm, &record.project, &tok, &record.branch, true)
                 .await
             {
                 Ok(head) => (head, Some(tok), Some(rt.endpoint(&record.project))),
                 Err(e) => {
-                    rt.destroy(&record.project);
+                    rt.destroy(&vm);
                     return err(StatusCode::INTERNAL_SERVER_ERROR, e);
                 }
             }

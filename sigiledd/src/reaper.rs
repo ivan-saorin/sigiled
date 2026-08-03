@@ -35,7 +35,8 @@ pub async fn reap_pass(state: &crate::AppState, idle_max: u64) -> usize {
     let mut reaped = 0;
     for rec in state.sessions.live_records() {
         let Some(tok) = &rec.token else { continue };
-        match rt.idle_secs(state.sessions.http(), &rec.project, tok).await {
+        let vm = crate::runtime::Runtime::vm_name(&rec.project);
+        match rt.idle_secs(state.sessions.http(), &vm, tok).await {
             Ok(idle) if idle >= idle_max => {
                 reap(state, &rec.session_id, &format!("idle {idle}s")).await;
                 reaped += 1;
@@ -57,9 +58,10 @@ pub async fn reap_pass(state: &crate::AppState, idle_max: u64) -> usize {
 pub async fn reap(state: &crate::AppState, session_id: &str, reason: &str) {
     let Some(record) = state.sessions.record(session_id) else { return };
     if let Some(rt) = &state.sessions.runtime {
+        let vm = crate::runtime::Runtime::vm_name(&record.project);
         if let Some(tok) = &record.token {
             let flushed = rt
-                .flush(state.sessions.http(), &record.project, tok, &format!("reaper {reason}"))
+                .flush(state.sessions.http(), &vm, tok, &format!("reaper {reason}"))
                 .await;
             if !flushed {
                 tracing::warn!(
@@ -68,7 +70,7 @@ pub async fn reap(state: &crate::AppState, session_id: &str, reason: &str) {
                 );
             }
         }
-        rt.destroy(&record.project);
+        rt.destroy(&vm);
     }
     state.sessions.remove_record(session_id);
     state.events.record(

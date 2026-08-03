@@ -53,6 +53,12 @@ impl Runtime {
     pub fn vm_name(project: &str) -> String {
         format!("vm-{project}")
     }
+    /// Job containers carry their own name: sessions and jobs coexist in v2
+    /// (no project lock), so a job must NEVER wear vm-{project} — the
+    /// create-time `rm -f` of its own name would kill a live session.
+    pub fn job_container(project: &str, job: &str) -> String {
+        format!("vm-job-{project}-{job}")
+    }
     pub fn endpoint(&self, project: &str) -> String {
         format!("https://api.{}/s/{}/", self.domain, project)
     }
@@ -135,8 +141,9 @@ impl Runtime {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    pub fn destroy(&self, project: &str) -> bool {
-        self.docker(&["rm", "-f", &Self::vm_name(project)]).is_ok()
+    /// Remove a container by its full name (session vm-{p} or job vm-job-…).
+    pub fn destroy(&self, container: &str) -> bool {
+        self.docker(&["rm", "-f", container]).is_ok()
     }
 
     /// Public docker access for the apps engine (apps.rs) — same plumbing,
@@ -179,44 +186,58 @@ impl Runtime {
 
     /// create → inject the deploy key → start. Mirrors the v1 order for the
     /// same reason: the key must be in place before the agent boots, and it
-    /// must never transit through an image layer.
-    pub fn create_container(&self, project: &str, session_id: &str, token: &str) -> Result<(), String> {
-        self.destroy(project); // stale container safety, as v1
-        let name = Self::vm_name(project);
+    /// must never transit through an image layer. `extra_env` is where job
+    /// secrets ride (rule 8: resolved by the caller, container env only).
+    pub fn create_container(
+        &self,
+        container: &str,
+        project: &str,
+        kind: &str,
+        workload_id: &str,
+        token: &str,
+        extra_env: &[(String, String)],
+    ) -> Result<(), String> {
+        self.destroy(container); // stale container safety, as v1 — own name only
         let key = self.key_path(project);
         if !key.exists() {
             return Err(format!("deploy key missing for {project}: {}", key.display()));
         }
-        self.docker(&[
-            "create",
-            "--name", &name,
-            "--hostname", &name,
-            "--network", &self.network,
-            "--label", &format!("sigiled.kind=session"),
-            "--label", &format!("sigiled.project={project}"),
-            "--label", &format!("sigiled.workload={session_id}"),
-            "-e", &format!("SESSION_TOKEN={token}"),
-            "-e", "GIT_SSH_KEY=/secrets/deploy_key",
-            &self.image,
-        ])?;
-        self.docker(&["cp", &key.to_string_lossy(), &format!("{name}:/secrets/deploy_key")])?;
-        self.docker(&["start", &name])?;
+        let mut args: Vec<String> = vec![
+            "create".into(),
+            "--name".into(), container.into(),
+            "--hostname".into(), container.into(),
+            "--network".into(), self.network.clone(),
+            "--label".into(), format!("sigiled.kind={kind}"),
+            "--label".into(), format!("sigiled.project={project}"),
+            "--label".into(), format!("sigiled.workload={workload_id}"),
+            "-e".into(), format!("SESSION_TOKEN={token}"),
+            "-e".into(), "GIT_SSH_KEY=/secrets/deploy_key".into(),
+        ];
+        for (name, value) in extra_env {
+            args.push("-e".into());
+            args.push(format!("{name}={value}"));
+        }
+        args.push(self.image.clone());
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.docker(&arg_refs)?;
+        self.docker(&["cp", &key.to_string_lossy(), &format!("{container}:/secrets/deploy_key")])?;
+        self.docker(&["start", container])?;
         Ok(())
     }
 
     // --- workspace agent client --------------------------------------------
 
-    fn agent_url(&self, project: &str, path: &str) -> String {
-        format!("http://{}:8000{path}", Self::vm_name(project))
+    fn agent_url(&self, container: &str, path: &str) -> String {
+        format!("http://{container}:8000{path}")
     }
 
     pub async fn wait_healthy(
         &self,
         http: &reqwest::Client,
-        project: &str,
+        container: &str,
         token: &str,
     ) -> Result<(), String> {
-        let url = self.agent_url(project, "/health");
+        let url = self.agent_url(container, "/health");
         for _ in 0..30 {
             let ok = http
                 .get(&url)
@@ -231,7 +252,7 @@ impl Runtime {
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        Err(format!("{} not healthy after 30s", Self::vm_name(project)))
+        Err(format!("{container} not healthy after 30s"))
     }
 
     /// How long the workspace has been idle (its /health, which by contract
@@ -239,11 +260,11 @@ impl Runtime {
     pub async fn idle_secs(
         &self,
         http: &reqwest::Client,
-        project: &str,
+        container: &str,
         token: &str,
     ) -> Result<u64, String> {
         let r = http
-            .get(self.agent_url(project, "/health"))
+            .get(self.agent_url(container, "/health"))
             .bearer_auth(token)
             .timeout(std::time::Duration::from_secs(5))
             .send()
@@ -259,12 +280,12 @@ impl Runtime {
     pub async fn exec(
         &self,
         http: &reqwest::Client,
-        project: &str,
+        container: &str,
         token: &str,
         cmd: &str,
         timeout_secs: u64,
     ) -> Result<serde_json::Value, String> {
-        http.post(self.agent_url(project, "/exec"))
+        http.post(self.agent_url(container, "/exec"))
             .bearer_auth(token)
             .json(&serde_json::json!({ "cmd": cmd, "timeout_secs": timeout_secs }))
             .timeout(std::time::Duration::from_secs(timeout_secs + 10))
@@ -282,6 +303,7 @@ impl Runtime {
     pub async fn boot_workspace(
         &self,
         http: &reqwest::Client,
+        container: &str,
         project: &str,
         token: &str,
         branch: &str,
@@ -295,7 +317,7 @@ impl Runtime {
             format!("git checkout -b {branch} && git push -u origin {branch}")
         };
         let r = self
-            .exec(http, project, token, &format!("{clone} && {guard} && {branch_cmd}"), 300)
+            .exec(http, container, token, &format!("{clone} && {guard} && {branch_cmd}"), 300)
             .await?;
         match r["exit"].as_i64() {
             Some(0) => {}
@@ -308,17 +330,17 @@ impl Runtime {
                 ))
             }
         }
-        let head = self.exec(http, project, token, "git rev-parse HEAD", 30).await?;
+        let head = self.exec(http, container, token, "git rev-parse HEAD", 30).await?;
         Ok(head["stdout"].as_str().unwrap_or_default().trim().to_string())
     }
 
     /// Commit anything left uncommitted, else make sure HEAD is pushed.
     /// An unreachable container is not an error: push-early means only
     /// already-pushed work exists (the v1 learned this the hard way).
-    pub async fn flush(&self, http: &reqwest::Client, project: &str, token: &str, label: &str) -> bool {
+    pub async fn flush(&self, http: &reqwest::Client, container: &str, token: &str, label: &str) -> bool {
         let cmd = autosave_cmd(label);
         matches!(
-            self.exec(http, project, token, &cmd, 120).await,
+            self.exec(http, container, token, &cmd, 120).await,
             Ok(v) if v["exit"].as_i64() == Some(0)
         )
     }
@@ -367,7 +389,10 @@ mod tests {
         assert_eq!(Runtime::vm_name("torchio"), "vm-torchio");
         assert_eq!(rt().endpoint("torchio"), "https://api.016180.xyz/s/torchio/");
         assert_eq!(rt().repo_url("torchio"), "git@github.com:ivan-saorin/torchio.git");
-        assert_eq!(rt().agent_url("torchio", "/health"), "http://vm-torchio:8000/health");
+        assert_eq!(rt().agent_url("vm-torchio", "/health"), "http://vm-torchio:8000/health");
+        // Jobs never wear the session name: rm -f on create must not be
+        // able to kill a live session's container.
+        assert_eq!(Runtime::job_container("torchio", "nightly"), "vm-job-torchio-nightly");
     }
 
     #[test]

@@ -121,6 +121,68 @@ pub async fn list(
     axum::Json(serde_json::Value::Array(enriched))
 }
 
+/// GET /sigiled/projects/{p}/branches — `[{name, sha}]`, local and origin
+/// refs merged (local wins), the job-recap entry point (contract §7).
+pub async fn branches(
+    actor: crate::auth::Actor,
+    State(state): State<crate::AppState>,
+    axum::extract::Path(project): axum::extract::Path<String>,
+) -> Response {
+    fn err(status: StatusCode, detail: impl Into<String>) -> Response {
+        (status, Json(json!({ "detail": detail.into() }))).into_response()
+    }
+    if let Err(denial) = crate::auth::authorize(
+        &actor,
+        crate::auth::Action::JobRecap,
+        Some(&project),
+        &state.auth.approvals,
+        crate::auth::now_epoch(),
+    ) {
+        return err(StatusCode::FORBIDDEN, denial.0);
+    }
+    let repo = match &state.sessions.runtime {
+        Some(rt) => match rt.ensure_mirror(&project) {
+            Ok(p) => p,
+            Err(e) => return err(StatusCode::NOT_FOUND, e),
+        },
+        None => {
+            let Some(repos) = state.sessions.repos_dir.clone() else {
+                return err(StatusCode::SERVICE_UNAVAILABLE, "SIGILED_REPOS_DIR not configured");
+            };
+            let p = repos.join(&project);
+            if !p.join(".git").exists() {
+                return err(StatusCode::NOT_FOUND, format!("unknown project: {project}"));
+            }
+            p
+        }
+    };
+    let refs = match crate::merge::git(
+        &repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short) %(objectname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
+    ) {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let mut seen = std::collections::BTreeMap::new();
+    for line in refs.lines() {
+        let Some((name, sha)) = line.trim().rsplit_once(' ') else { continue };
+        let name = name.trim().trim_start_matches("origin/");
+        // `origin` alone is origin/HEAD's short name; skip the aliases.
+        if name.is_empty() || name == "HEAD" || name == "origin" {
+            continue;
+        }
+        seen.entry(name.to_string()).or_insert_with(|| sha.to_string());
+    }
+    let list: Vec<serde_json::Value> =
+        seen.into_iter().map(|(name, sha)| json!({ "name": name, "sha": sha })).collect();
+    Json(serde_json::Value::Array(list)).into_response()
+}
+
 #[derive(serde::Deserialize)]
 pub struct NewProject {
     pub name: String,
@@ -362,6 +424,39 @@ mod tests {
         }
         assert!(valid_name(&("a".repeat(39))));
         assert!(!valid_name(&("a".repeat(40))));
+    }
+
+    #[tokio::test]
+    async fn branches_lists_names_and_shas() {
+        let repo = crate::merge::tests::mk_repo("brl");
+        let repos_dir = repo.parent().unwrap().to_path_buf();
+        let renamed = repos_dir.join("brproj");
+        let _ = std::fs::remove_dir_all(&renamed);
+        std::fs::rename(&repo, &renamed).unwrap();
+        crate::merge::tests::sh(&renamed, &["branch", "job-x-20260803-000000"]);
+        crate::merge::tests::commit_on(
+            &renamed,
+            "job-x-20260803-000000",
+            "out.txt",
+            "o\n",
+            "job: out",
+        );
+        let state = crate::AppState {
+            sessions: crate::sessions::SessionState::with_repos_dir(repos_dir),
+            ..crate::AppState::default()
+        };
+        let (status, body) = body_json(
+            branches(admin(), State(state), axum::extract::Path("brproj".into())).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let list = body.as_array().unwrap();
+        let names: Vec<&str> = list.iter().map(|b| b["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"master"), "{names:?}");
+        assert!(names.contains(&"job-x-20260803-000000"), "{names:?}");
+        for b in list {
+            assert_eq!(b["sha"].as_str().unwrap().len(), 40);
+        }
     }
 
     #[tokio::test]
