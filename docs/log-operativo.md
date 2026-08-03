@@ -8,7 +8,9 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-03, sessione 286d2d6b (sessione 1b eseguita — flip-ready, inglese primario, DEC-24)_
+_aggiornato: 2026-08-04, sessione 2bc23b71 (pin-reader collegato al tick dello scheduler — template_version si popola davvero)_
+
+- **FIX PIN-READER (2026-08-04)**: `template_version` era null per sempre su ogni progetto — `ProjectRecord::new()` parsava il pin ma nessun flusso di produzione lo chiamava con un manifest vero. Ora il tick dello scheduler (che già rilegge i manifest da master ogni ~5 min) rideriva i campi del pin via `Registry::refresh` — `needs_merge` mai toccato, persistenza solo a cambiamento. 90 test. Nota operatore: `template_behind` richiede `SIGILED_TEMPLATE_LATEST` nell'env del canary.
 
 - **Su master**: docs (`sigiled-v2.md`, `v2-build-plan.md`, `sigiled-contract.md` 2.0.0-draft, questo log) + codice sessione 1: workspace cargo con `sigiledd/` (ex `seald/` — healthz, `GET /sigiled/contract`, `GET /sigiled/projects` con `template_version`; 7 unit test) e `vm-base/` (port del server v1, build-ext.sh su `ext-rust/`), `template/` (vm-tmpl v2), `images/build-vm-base.sh`, `tools/dev-toolchain.sh`, `CNAME` (`sigiled.dev`) + `index.html` (landing Pages).
 - **RINOMINA COMPLETATA.** Per ordine diretto del Re («eradica completamente la stringa seal») il repo non contiene più alcuna occorrenza di «seal» in nessuna forma: codice (crate `sigiledd`, env `SIGILED_BUILD_SHA`, header `x-sigiled-version`), documenti, contratto, template, commenti, **voci storiche di questo log comprese**. La storia vera (la piattaforma è nata sotto due nomi precedenti, entrambi eradicati dal testo) è preservata dalla storia git. Compilazione di scrupolo eseguita dopo lo sweep: `cargo build --workspace` verde (sigiledd + vm-base). Push del Re verificato: `ivan-saorin/sigiled` master = 2ab8f43, storia completa.
@@ -38,6 +40,14 @@ _aggiornato: 2026-08-03, sessione 286d2d6b (sessione 1b eseguita — flip-ready,
 ---
 
 ## Voci
+
+### 2026-08-04 · fix: il tick dello scheduler è il lettore del pin — template_version non era mai popolato — driver: sigiled-claude, approval dell'operatore (sessione 2bc23b71)
+
+- **Dove eravamo**: la sessione torchio (2026-08-04) osserva `template_version: null` su tutti i progetti anche dopo la finestra di refresh ~5 min; il sospetto era timing di deploy, la realtà più netta: il lettore del pin non era collegato a nulla.
+- **Fatto**: `ProjectRecord::new()` parsava il pin dalla sessione 1 (tre unit test lo coprono), ma nessun percorso di produzione lo chiamava con un manifest vero — le tre vie di creazione (POST /projects, import v1, jobs) fissano `template_version: None`, e il commento al sito di creazione prometteva un «flusso che lo legge» mai esistito. Ora quel flusso è il tick dello scheduler, che già rilegge ogni manifest da master: `jobs_of` si sdoppia in `manifest_of` (manifest intero) + mappa jobs; `Registry::refresh(name, &manifest)` rideriva `template_version`/`template_behind` in place sotto write lock — `needs_merge` appartiene alla macchina dei merge e non viene mai toccato, quindi nessuna race con un close concorrente — e riporta se qualcosa è mosso; il tick persiste una volta sola, solo a cambiamento. TDD rigoroso: red comportamentale visto sul test di tick (pin resta null) prima del wiring. 90 test verdi (3 nuovi: semantica refresh ×2, wiring a livello tick).
+- **Scarti**: nessuno sul codice. Due note operatore restano dal rilievo torchio: (a) `template_behind` richiede `SIGILED_TEMPLATE_LATEST` nell'env del canary (assente = mai behind, by design); (b) verificare il tag reale di vm-tmpl citato dai pin v1.
+- **Stato**: su master al close; il canary popola i pin entro ~5 min dal redeploy.
+- **Prossimo passo previsto**: operatore — redeploy del canary con `SIGILED_TEMPLATE_LATEST` valorizzato; poi `projects` deve mostrare i pin veri su tutta la flotta.
 
 ### 2026-08-03 · fix: frontmatter YAML nella skill generata — driver: sigiled-claude, approval dell'operatore (sessione fafd0f9d)
 
