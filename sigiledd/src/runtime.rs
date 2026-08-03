@@ -294,14 +294,27 @@ impl Runtime {
     /// An unreachable container is not an error: push-early means only
     /// already-pushed work exists (the v1 learned this the hard way).
     pub async fn flush(&self, http: &reqwest::Client, project: &str, token: &str, label: &str) -> bool {
-        let cmd = format!(
-            "git add -A && (git diff --cached --quiet || git commit -q -m 'wip: {label} autosave') && git push -q origin HEAD"
-        );
+        let cmd = autosave_cmd(label);
         matches!(
             self.exec(http, project, token, &cmd, 120).await,
             Ok(v) if v["exit"].as_i64() == Some(0)
         )
     }
+}
+
+/// The autosave flush() sends through /exec. exec runs bare bash: it does
+/// NOT inject the neutral git identity the agent's own /git surface has —
+/// a dirty-tree autosave died live with `Author identity unknown` (128)
+/// at the first real recycle. So the command must be self-sufficient.
+pub fn autosave_cmd(label: &str) -> String {
+    // Same neutral identity as the agent's /git surface defaults
+    // (vm-base git_api): -c loses to GIT_AUTHOR_* env by git's own
+    // precedence, so a container with a real identity keeps it.
+    format!(
+        "git add -A && (git diff --cached --quiet || \
+         git -c user.name=sigiled-session -c user.email=session@sigiled.dev \
+         commit -q -m 'wip: {label} autosave') && git push -q origin HEAD"
+    )
 }
 
 fn ssh_command(key: &Path) -> String {
@@ -340,6 +353,17 @@ mod tests {
         // The tests and any dev run must never try to talk to docker.
         std::env::remove_var("SIGILED_RUNTIME");
         assert!(Runtime::from_env().is_none());
+    }
+
+    #[test]
+    fn autosave_commit_is_identity_self_sufficient() {
+        // Live lesson (first real recycle): /exec has no neutral git
+        // identity, so the autosave commit must carry its own inline —
+        // container env (GIT_AUTHOR_NAME, …) still wins when set.
+        let cmd = autosave_cmd("session close");
+        assert!(cmd.contains("wip: session close autosave"));
+        assert!(cmd.contains("-c user.name="), "commit must carry identity: {cmd}");
+        assert!(cmd.contains("-c user.email="), "commit must carry identity: {cmd}");
     }
 
     #[test]
