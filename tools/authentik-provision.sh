@@ -1,30 +1,36 @@
 #!/bin/sh
-# authentik-provision.sh — crea i provider OAuth2 SIGILED sull'IdP di stack
-# (design §1.3-1.4): sigiled-device (device flow, gamba umana) e un provider
-# confidential per driver (client_credentials, gamba machine).
+# authentik-provision.sh — creates the SIGILED OAuth2 providers on the stack
+# IdP (design §1.3-1.4): sigiled-device (device flow, the human leg) and one
+# confidential provider per driver (client_credentials, the machine leg).
 #
-#   AUTHENTIK_API_TOKEN=<token admin> tools/authentik-provision.sh
-#   AUTHENTIK_URL=https://auth.example.com ... (default: IdP dello stack)
-#   DRIVERS="sigiled-claude sigiled-kimi" ...   (default: questi due)
+#   DOMAIN=example.com AUTHENTIK_API_TOKEN=<admin token> tools/authentik-provision.sh
+#   AUTHENTIK_URL=https://auth.example.com ...  (default: https://auth.$DOMAIN)
+#   SIGILED_API_BASE=https://api.example.com ... (default: https://api.$DOMAIN)
+#   DRIVERS="sigiled-claude sigiled-kimi" ...    (default: these two)
 #
-# Il token deve essere di un utente admin (Admin interface → Directory →
-# Tokens, intent «API Token»). Il token dell'outpost embedded NON basta:
-# legge filtrato e non può creare (verificato 2026-08-02, tutto 403/vuoto).
-# Idempotente: i provider esistenti vengono lasciati stare.
+# The token must belong to an admin user (Admin interface → Directory →
+# Tokens, intent "API Token"). The embedded outpost's token is NOT enough:
+# it reads filtered and cannot create (verified 2026-08-02, all 403/empty).
+# Idempotent: existing providers are left alone.
 #
-# Lezioni pagate col debugging (2026-08-02, authentik 2026.5.6):
-#   - `redirect_uris` è obbligatorio per schema anche dove non serve.
-#   - `grant_types` è una ALLOWLIST: vuota = ogni grant rifiutato con un
-#     invalid_grant SILENZIOSO (nessun evento). Va dichiarata per provider —
-#     ed è esattamente il «grant ristretto» che il design §1.8 chiede.
-#   - l'expression del mapping groups usa request.user.groups (ak_groups è
-#     deprecato e logga configuration_warning).
-#   - il service account ak-<provider>-client_credentials nasce al PRIMO
-#     mint riuscito: lo script lo "prima" e lo mette in stack:drivers.
+# Lessons paid for in debugging (2026-08-02, authentik 2026.5.6):
+#   - `redirect_uris` is schema-required even where unused.
+#   - `grant_types` is an ALLOWLIST: empty = every grant refused with a
+#     SILENT invalid_grant (no event). Declare it per provider — which is
+#     exactly the "narrow grant" design §1.8 asks for.
+#   - the groups mapping expression uses request.user.groups (ak_groups is
+#     deprecated and logs configuration_warning).
+#   - the service account ak-<provider>-client_credentials is born on the
+#     FIRST successful mint: the script "primes" it and adds it to
+#     stack:drivers.
 set -eu
 
-BASE="${AUTHENTIK_URL:-https://auth.016180.xyz}"
-TOKEN="${AUTHENTIK_API_TOKEN:?serve AUTHENTIK_API_TOKEN (admin)}"
+# Instance identity: DOMAIN drives both bases unless overridden explicitly.
+[ -n "${DOMAIN:-}" ] || [ -n "${AUTHENTIK_URL:-}" ] || {
+    echo "set DOMAIN (e.g. example.com) or AUTHENTIK_URL + SIGILED_API_BASE" >&2; exit 1; }
+BASE="${AUTHENTIK_URL:-https://auth.${DOMAIN}}"
+API_PUBLIC="${SIGILED_API_BASE:-https://api.${DOMAIN:?SIGILED_API_BASE needs DOMAIN when unset}}"
+TOKEN="${AUTHENTIK_API_TOKEN:?AUTHENTIK_API_TOKEN (admin) is required}"
 DRIVERS="${DRIVERS:-sigiled-claude sigiled-kimi}"
 API="$BASE/api/v3"
 auth="Authorization: Bearer $TOKEN"
@@ -68,7 +74,7 @@ mkprovider() { # $1=name $2=client_type $3=grant_types-json-array
         \"authorization_flow\": \"$AUTHZ_FLOW\", \"invalidation_flow\": \"$INVAL_FLOW\",
         \"signing_key\": \"$SIGN_KEY\",
         \"property_mappings\": [\"$GROUPS_MAPPING\", \"$PROFILE_MAPPING\"],
-        \"redirect_uris\": [{\"matching_mode\": \"strict\", \"url\": \"https://api.016180.xyz/sigiled/auth/callback\"}],
+        \"redirect_uris\": [{\"matching_mode\": \"strict\", \"url\": \"$API_PUBLIC/sigiled/auth/callback\"}],
         \"grant_types\": $3,
         \"sub_mode\": \"user_username\"
     }" >/dev/null

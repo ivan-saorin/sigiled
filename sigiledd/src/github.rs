@@ -25,7 +25,10 @@ impl GitHub {
             api_base: std::env::var("GITHUB_API_BASE")
                 .unwrap_or_else(|_| "https://api.github.com".into()),
             pat,
-            owner: std::env::var("GITHUB_OWNER").unwrap_or_else(|_| "ivan-saorin".into()),
+            // No default: repos must never land in the reference instance's
+            // account because a self-hoster forgot one env var.
+            owner: std::env::var("GITHUB_OWNER")
+                .expect("GITHUB_OWNER is required when GITHUB_PAT is set (your GitHub user/org)"),
             template: std::env::var("VM_TMPL_REPO").unwrap_or_else(|_| "vm-tmpl".into()),
             keys_dir: std::env::var("SIGILED_KEYS_DIR")
                 .unwrap_or_else(|_| format!("{state}/keys"))
@@ -164,7 +167,7 @@ mod tests {
         GitHub {
             api_base: "http://unused".into(),
             pat: "test-pat".into(),
-            owner: "ivan-saorin".into(),
+            owner: "example-org".into(),
             template: "vm-tmpl".into(),
             keys_dir,
         }

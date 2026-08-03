@@ -358,7 +358,7 @@ mod tests {
                             StatusCode::CREATED,
                             Json(json!({
                                 "full_name":
-                                    format!("ivan-saorin/{}", body["name"].as_str().unwrap())
+                                    format!("example-org/{}", body["name"].as_str().unwrap())
                             })),
                         )
                             .into_response()
@@ -406,7 +406,7 @@ mod tests {
             github: Some(crate::github::GitHub {
                 api_base: base.to_string(),
                 pat: "test-pat".into(),
-                owner: "ivan-saorin".into(),
+                owner: "example-org".into(),
                 template: "vm-tmpl".into(),
                 keys_dir,
             }),
@@ -527,7 +527,7 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "body: {body}");
         assert_eq!(body["name"], "smoke-new");
         assert_eq!(body["adopted"], false);
-        assert_eq!(body["repo"], "ivan-saorin/smoke-new");
+        assert_eq!(body["repo"], "example-org/smoke-new");
         assert!(body["template_version"].is_null());
         // Registered, key on disk in the runtime's layout, key sent to GitHub.
         assert!(state.registry.contains("smoke-new"));

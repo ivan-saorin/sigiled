@@ -39,8 +39,13 @@ impl Runtime {
             network: std::env::var("SIGILED_NETWORK").unwrap_or_else(|_| "mgr-net".into()),
             image: std::env::var("SIGILED_VM_IMAGE")
                 .unwrap_or_else(|_| "ghcr.io/ivan-saorin/vm-base:0.1.0".into()),
-            owner: std::env::var("GITHUB_OWNER").unwrap_or_else(|_| "ivan-saorin".into()),
-            domain: std::env::var("DOMAIN").unwrap_or_else(|_| "016180.xyz".into()),
+            // Instance identity has no default: a self-hoster who forgets
+            // these must fail at boot, not silently operate against the
+            // reference instance.
+            owner: std::env::var("GITHUB_OWNER")
+                .expect("GITHUB_OWNER is required when SIGILED_RUNTIME=docker (your GitHub user/org)"),
+            domain: std::env::var("DOMAIN")
+                .expect("DOMAIN is required when SIGILED_RUNTIME=docker (public base domain, e.g. example.com)"),
             repos_dir: std::env::var("SIGILED_REPOS_DIR")
                 .unwrap_or_else(|_| format!("{state}/repos"))
                 .into(),
@@ -375,9 +380,9 @@ mod tests {
     fn rt() -> Runtime {
         Runtime {
             network: "mgr-net".into(),
-            image: "ghcr.io/ivan-saorin/vm-base:0.1.0".into(),
-            owner: "ivan-saorin".into(),
-            domain: "016180.xyz".into(),
+            image: "ghcr.io/example-org/vm-base:0.1.0".into(),
+            owner: "example-org".into(),
+            domain: "example.com".into(),
             repos_dir: "/data/repos".into(),
             keys_dir: "/data/keys".into(),
         }
@@ -387,8 +392,8 @@ mod tests {
     fn names_and_urls_match_the_v1_routing_contract() {
         // Caddy's static rule depends on these exact shapes.
         assert_eq!(Runtime::vm_name("torchio"), "vm-torchio");
-        assert_eq!(rt().endpoint("torchio"), "https://api.016180.xyz/s/torchio/");
-        assert_eq!(rt().repo_url("torchio"), "git@github.com:ivan-saorin/torchio.git");
+        assert_eq!(rt().endpoint("torchio"), "https://api.example.com/s/torchio/");
+        assert_eq!(rt().repo_url("torchio"), "git@github.com:example-org/torchio.git");
         assert_eq!(rt().agent_url("vm-torchio", "/health"), "http://vm-torchio:8000/health");
         // Jobs never wear the session name: rm -f on create must not be
         // able to kill a live session's container.

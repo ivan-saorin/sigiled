@@ -1,9 +1,11 @@
-# Compose del canary v2: esattamente ciò che il supervisor lancia al restart
+# Control-plane compose: exactly what the supervisor launches on restart
 # (default SUPERVISOR_RESTART_CMD = `docker compose up -d --build sigiled`,
-# eseguito in SIGILED_REPO_DIR = questo checkout).
-# Le env vive stanno in un `.env` accanto a questo file, MAI in git:
-#   SIGILED_BOOTSTRAP_BEARER=...   # bearer legacy: apre la finestra dual-auth
-#   SIGILED_OIDC_BASE=https://auth.016180.xyz
+# executed in SIGILED_REPO_DIR = this checkout).
+# Live env lives in a `.env` next to this file, NEVER in git — see
+# deploy/.env.example for the full annotated list. Minimum:
+#   DOMAIN=example.com
+#   GITHUB_OWNER=your-github-user
+#   SIGILED_OIDC_BASE=https://auth.example.com
 services:
   sigiled:
     build:
@@ -23,8 +25,9 @@ services:
     volumes:
       - sigiled-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
-    # group_add 988 = gruppo docker del box: il processo gira 1000, non root.
-    group_add: ["988"]
+    # The box's docker group id — `getent group docker | cut -d: -f3` —
+    # so the process can drive the socket while running uid 1000, not root.
+    group_add: ["${DOCKER_GID:-988}"]
     networks: [default, mgr-net]
     restart: unless-stopped
 
