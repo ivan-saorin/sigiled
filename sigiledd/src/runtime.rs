@@ -67,10 +67,15 @@ impl Runtime {
     }
 
     /// The mirror sigiledd merges in. Cloned on first use, refreshed after:
-    /// it is a cache of GitHub, never the source of truth.
+    /// it is a cache of GitHub, never the source of truth. The deploy key is
+    /// baked into the mirror's core.sshCommand so EVERY later git op (the
+    /// refresh fetch, the branch fetch at close) authenticates by itself —
+    /// the first live close taught us what happens otherwise.
     pub fn ensure_mirror(&self, project: &str) -> Result<PathBuf, String> {
         let path = self.repo_path(project);
+        let key = self.key_path(project);
         if path.join(".git").exists() {
+            crate::merge::git(&path, &["config", "core.sshCommand", &ssh_command(&key)])?;
             crate::merge::git(&path, &["fetch", "--prune", "origin"])?;
             // Local master tracks origin: nothing but close moves it here.
             crate::merge::git(&path, &["checkout", "-f", "master"])?;
@@ -78,7 +83,6 @@ impl Runtime {
             return Ok(path);
         }
         std::fs::create_dir_all(&self.repos_dir).map_err(|e| format!("repos dir: {e}"))?;
-        let key = self.key_path(project);
         let out = Command::new("git")
             .args(["clone", &self.repo_url(project)])
             .arg(&path)
@@ -91,6 +95,7 @@ impl Runtime {
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
+        crate::merge::git(&path, &["config", "core.sshCommand", &ssh_command(&key)])?;
         Ok(path)
     }
 
