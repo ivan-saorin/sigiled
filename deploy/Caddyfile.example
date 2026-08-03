@@ -1,0 +1,36 @@
+# SIGILED edge — the two routes the contract (§1) requires, as the
+# reference instance runs them in Caddy. Any edge works if it honors the
+# same two contracts: forward /sigiled/* verbatim, and swap the session
+# token into Authorization on /s/. {$DOMAIN} comes from the edge's env.
+
+api.{$DOMAIN} {
+	# SIGILED control plane, forwarded VERBATIM (no strip, no edge gate):
+	# sigiledd is its own auth authority (bootstrap bearer or OIDC JWT);
+	# an edge-level bearer gate here would lock JWT drivers out.
+	handle /sigiled/* {
+		reverse_proxy sigiled:8080
+	}
+
+	# Session workspaces (contract §1): one static rule, dynamic upstream
+	# via docker DNS on the shared network. /s/{project}/rest →
+	# vm-{project}:8000/rest; the placeholder resolves per-request, so a
+	# new session never needs an edge reload. X-Session-Token is swapped
+	# into Authorization and the workspace agent validates it — the
+	# per-project token IS the auth; whatever Authorization the client
+	# sent is not inspected at this edge.
+	@session path_regexp s ^/s/([a-z][a-z0-9-]*)(/.*)$
+	handle @session {
+		route {
+			rewrite * {re.s.2}
+			request_header Authorization "Bearer {http.request.header.X-Session-Token}"
+			reverse_proxy vm-{re.s.1}:8000
+		}
+	}
+}
+
+auth.{$DOMAIN} {
+	# The IdP (authentik in the reference instance). No gate: authentik IS
+	# the auth layer, its login UI must be publicly reachable for the
+	# device flow (elevate) to work.
+	reverse_proxy authentik-server:9000
+}

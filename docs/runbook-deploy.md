@@ -1,134 +1,171 @@
-# Runbook — deploy, rollback, recovery (sessione 4)
+# Deploying SIGILED — self-host runbook
 
-Il percorso di vita di sigiledd sul box: deploy via supervisor, rollback via
-sha, recovery a stack morto. Le immagini base sono nella seconda metà.
+SIGILED assumes five subsystems. For each, this runbook states **what the
+contract requires** (satisfiable with any tool you like) and then **how the
+reference instance provides it** (the stack this repo is developed on — one
+Linux box, Caddy, Authentik, Docker). Files under `deploy/` are the
+reference implementation, extracted verbatim and genericized.
 
-## 1. Il supervisor (la resurrezione come servizio)
+The philosophy is the same as everywhere else in SIGILED: the contract is
+the product; the reference instance is one worked example, not a
+prescription.
 
-Codice: repo `sigiled-supervisor`, `supervisor/src/main.rs` (un file, un
-dovere — suoi requisiti DEC-01..07). Deploy **indipendente da SIGILED**:
-mai `[app]`, unit systemd o compose a mano sul box.
+## 0. What you need before starting
 
-### Prima installazione (operatore, sul box)
+- A Linux box with Docker + docker compose, reachable on 443.
+- A domain with DNS control: `api.<domain>` and `auth.<domain>` must
+  resolve to the box.
+- A GitHub account (or org) to own project repos, with a classic PAT
+  (repo scope).
+- ~30 minutes; the IdP provisioning is the only fiddly part.
 
-```sh
-git clone git@github.com:ivan-saorin/sigiled-supervisor.git /opt/sigiled-supervisor
-cd /opt/sigiled-supervisor/supervisor && cargo build --release
-install -m 755 target/release/sigiled-supervisor /usr/local/bin/
+## 1. Container runtime
+
+**Contract.** SIGILED drives Docker through the socket to rent workspace
+containers (`vm-{project}`), job containers (`vm-job-{project}-{job}`) and
+resident apps. All of them and the control plane share ONE Docker network,
+because the edge routes to containers by DNS name on that network.
+
+**Reference.**
+
+```bash
+docker network create mgr-net
+getent group docker | cut -d: -f3    # -> DOCKER_GID for .env
 ```
 
-Unit systemd (`/etc/systemd/system/sigiled-supervisor.service`):
+The control plane container mounts `/var/run/docker.sock` and joins the
+docker group via `group_add: ["${DOCKER_GID}"]` (see `docker-compose.yml`).
+It runs uid 1000, never root. Workspace containers pull the public base
+image `ghcr.io/ivan-saorin/vm-base:<version>` (no credentials needed,
+DEC-20) — or your own build via `SIGILED_VM_IMAGE` +
+`images/build-vm-base.sh`.
 
-```ini
-[Unit]
-Description=SIGILED resurrection service
-After=network.target
+## 2. The edge
 
-[Service]
-Environment=SUPERVISOR_TOKEN=<bearer statico, generato lungo>
-Environment=SIGILED_REPO_DIR=/opt/sigiled
-Environment=SIGILED_HEALTH_URL=http://localhost:8080/healthz
-Environment=SUPERVISOR_LOG=/var/log/sigiled-supervisor.log
-# default: docker compose up -d --build sigiled — override se serve:
-# Environment=SUPERVISOR_RESTART_CMD=systemctl restart sigiledd
-ExecStart=/usr/local/bin/sigiled-supervisor
-Restart=on-failure
+**Contract.** Two routes, nothing else:
 
-[Install]
-WantedBy=multi-user.target
+1. `api.<domain>/sigiled/*` → control plane port 8080, forwarded
+   **verbatim** — no path strip, no edge auth gate. sigiledd is its own
+   auth authority; an edge bearer gate would lock OIDC drivers out.
+2. `api.<domain>/s/{project}/rest` → `vm-{project}:8000/rest`, with the
+   `X-Session-Token` request header value rewritten into
+   `Authorization: Bearer …`. The per-session token IS the auth on this
+   surface; whatever Authorization the client sent is not inspected.
+
+Plus TLS for `api.` and `auth.` subdomains.
+
+**Reference.** `deploy/Caddyfile.example` — Caddy resolves `vm-{project}`
+per-request via Docker DNS on the shared network, so opening a session
+never reloads the edge. Caddy must join the same network:
+
+```yaml
+services:
+  caddy:
+    image: caddy:2
+    ports: ["80:80", "443:443"]
+    environment: { DOMAIN: "${DOMAIN}" }
+    volumes: [ "./Caddyfile:/etc/caddy/Caddyfile:ro" ]
+    networks: [ mgr-net ]
+networks:
+  mgr-net: { external: true }
 ```
 
-`systemctl enable --now sigiled-supervisor`. Vhost edge
-`supervisor.016180.xyz` → `localhost:9090` in Caddy (questione aperta §6.2
-del supervisor: esposto con auth, così i driver lo chiamano a sigiled morto).
+## 3. The IdP
 
-### Deploy di sigiledd
+**Contract.** An OIDC provider at `SIGILED_OIDC_BASE` with:
 
-```sh
-curl -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" \
-  https://supervisor.016180.xyz/sigiled/restart
+- one **confidential client per driver** (`client_credentials` grant) whose
+  access tokens carry a `groups` claim under scope `sigiled-groups`;
+- one **public device-flow client** (default client_id `sigiled-device`)
+  for human approvals (`elevate`);
+- two groups: `stack:admins` (operators) and `stack:drivers` (the
+  machine service-accounts).
+
+**Reference.** Authentik. `tools/authentik-provision.sh` creates all of it
+idempotently — providers, scope mapping, groups, and primes the service
+accounts:
+
+```bash
+DOMAIN=example.com AUTHENTIK_API_TOKEN=<admin token> \
+  DRIVERS="sigiled-claude sigiled-kimi" tools/authentik-provision.sh
 ```
 
-Senza body: checkout di `origin/master` → `SUPERVISOR_RESTART_CMD` → attesa
-health (fino a 60 s) → report `{previous_sha, new_sha, healthy,
-duration_secs, log_tail}`. Un secondo restart mentre uno è in corso → 409.
+Manual leftovers (once, in the Authentik UI): add your human user to
+`stack:admins`; check the brand has the device-code flow enabled. The
+script's header comments record the API pitfalls so you don't rediscover
+them.
 
-### Rollback
+## 4. GitHub
 
-```sh
-curl -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" \
-  -H "Content-Type: application/json" -d '{"sha": "<sha buono>"}' \
-  https://supervisor.016180.xyz/sigiled/restart
+**Contract.** An account/org (`GITHUB_OWNER`) owning one repo per project;
+a PAT able to create repos from a template and add deploy keys; a template
+repo (`VM_TMPL_REPO`, default `vm-tmpl`) that `POST /projects` scaffolds
+from. Per-project deploy keys are generated by SIGILED and live only in
+its state volume and on the repo — never in images or git.
+
+**Reference.** A classic PAT with `repo` scope in `.env` as `GITHUB_PAT`.
+The template repo: fork/copy `template/` from this repo into
+`<owner>/vm-tmpl` and mark it "Template repository" in settings.
+
+## 5. The control plane
+
+**Contract.** The `sigiledd` binary: stateless except for `/data` (state
+snapshot, deploy keys, repo mirrors), configured entirely by env, one
+port. `DOMAIN` and `GITHUB_OWNER` are required whenever their subsystem is
+active — there are no identity defaults; a misconfigured boot fails
+loudly.
+
+**Reference.**
+
+```bash
+git clone https://github.com/ivan-saorin/sigiled /opt/sigiled
+cd /opt/sigiled
+cp deploy/.env.example .env   # fill it — see the annotations
+docker compose up -d --build sigiled
+curl -s https://api.<domain>/sigiled/healthz
 ```
 
-Lo sha esplicito è il rollback (supervisor DEC-04): il `previous_sha` di un
-report andato male è il candidato naturale. Stato corrente:
-`GET /sigiled/status` → `{deployed_sha, healthy, last_restart}`.
+First boot: set `SIGILED_BOOTSTRAP_BEARER` in `.env` to a long random
+string — that bearer is a bootstrap admin, enough to drive everything
+while you provision the IdP (§3). When OIDC drivers work, remove the
+bearer from `.env` and restart: the legacy leg is off, two-legged auth
+only.
 
-### Recovery a stack morto
+Resurrection: the control plane deploys itself (it is a SIGILED project),
+but its own restart path must not depend on it — that is
+`sigiled-supervisor` (separate repo), a ~100-line external supervisor with
+its own simple auth, running directly on the box.
 
-In ordine di gravità:
+## 6. First driver
 
-1. **sigiledd morto, supervisor vivo**: `POST /sigiled/restart` (sopra).
-   È il caso per cui il supervisor esiste.
-2. **Anche il supervisor morto**: SSH sul box →
-   `systemctl restart sigiled-supervisor` → caso 1. Il suo log è
-   `/var/log/sigiled-supervisor.log`, append-only, leggibile anche a tutto
-   fermo.
-3. **Box irraggiungibile**: console fisica/provider. Dopo il boot: docker e
-   il supervisor partono da systemd; i workload SIGILED si riaprono con
-   sessioni normali — il repo è l'unica memoria, i container sono bestiame
-   (contratto, regole 3/5): non c'è stato da recuperare.
-
-Nessuna auto-remediation (supervisor DEC-05): il restart lo decide un
-umano — o un driver su suo ordine.
-
-## 2. Immagine base `vm-base` (DEC-17/20)
-
-L'immagine base dei workspace è pubblica su ghcr:
-`ghcr.io/ivan-saorin/vm-base:x.y.z`. Il pull non richiede credenziali — né
-dal box, né da chi self-hosta. Il PAT serve solo per il push.
-
-### Build + push (operatore, sul box o qualunque docker host)
-
-```sh
-# una tantum: login con PAT classic, scope write:packages
-docker login ghcr.io -u ivan-saorin
-
-# build (tag = ghcr.io/ivan-saorin/vm-base:<version da vm-base/Cargo.toml>)
-images/build-vm-base.sh
-
-# build + push
-PUSH=1 images/build-vm-base.sh
+```bash
+# as operator (admin JWT or bootstrap bearer):
+curl -s -H "Authorization: Bearer $TOK" \
+  https://api.<domain>/sigiled/skill/sigiled-claude
 ```
 
-### Rendere il package pubblico (una tantum per package)
+`GET /skill/{driver}` renders the per-instance driver skill — bases,
+identity, token-mint recipe — from `docs/skill-template.md`, with the
+driver's `client_secret` filled in live from the IdP when
+`AUTHENTIK_API_TOKEN` is configured. Hand the output to the driver (a
+Claude/Kimi/other-model skill file); the driver reads
+`GET /sigiled/contract` from the instance itself for everything else.
+Drivers can fetch their own skill too, but only with a live human
+approval standing next to them (`elevate`) — the response carries a
+credential.
 
-Il primo push crea il package **privato**. Per DEC-20 va reso pubblico:
+## 7. Smoke test
 
-1. GitHub → profilo `ivan-saorin` → **Packages** → `vm-base`.
-2. **Package settings** (colonna destra).
-3. **Danger Zone → Change visibility → Public** — digitare il nome del
-   package per confermare.
-4. Verifica da un host qualunque, senza login:
-   `docker pull ghcr.io/ivan-saorin/vm-base:0.1.0`.
+```bash
+TOK=$(curl -s -X POST https://auth.<domain>/application/o/token/ \
+  -d 'grant_type=client_credentials&client_id=<driver>&client_secret=<secret>&scope=sigiled-groups' \
+  | jq -r .access_token)
+curl -s -H "Authorization: Bearer $TOK" https://api.<domain>/sigiled/projects
+# create a project, open a session, read its log, close — the ritual:
+curl -s -X POST -H "Authorization: Bearer $TOK" -d '{"name":"smoke"}' \
+  -H 'Content-Type: application/json' https://api.<domain>/sigiled/projects
+```
 
-### Bump di versione (quando una sessione modifica l'agent)
-
-1. La sessione alza `version` in `vm-base/Cargo.toml` e aggiorna il pin
-   `FROM` in `template/Dockerfile` (+ il pin `template = "vm-tmpl@x.y.z"`
-   dove ricepito) — stesso commit.
-2. L'operatore esegue `PUSH=1 images/build-vm-base.sh` sul box.
-3. I progetti adottano il tag nuovo on demand (DEC-05): mai automaticamente.
-
-## 3. Self-host (chi non è lo stack di riferimento)
-
-- Registry proprio: `VM_BASE_REGISTRY=reg.example.com PUSH=1
-  images/build-vm-base.sh` e stesso valore nel `FROM` del template.
-- Identità git dei commit di sessione: env-driven (`GIT_AUTHOR_*` /
-  `GIT_COMMITTER_*`), default neutri compilati in vm-base.
-- Env di sigiledd, tutte con default documentati nel codice:
-  `SIGILED_BOOTSTRAP_BEARER`, `SIGILED_OIDC_BASE` (+ vedi
-  `authentik-setup.md`), `SIGILED_TEMPLATE_LATEST`, `SIGILED_REPOS_DIR`.
-- Supervisor: `SUPERVISOR_RESTART_CMD` adatta il restart a compose, systemd
-  o qualunque altra cosa (`{sha}` viene sostituito).
+If `open` → `git log` → `commit` → `close` round-trips green, the instance
+is alive. Register the operator ritual you just performed in your own
+docs; from here on, the drivers do the work.
