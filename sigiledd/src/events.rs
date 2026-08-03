@@ -38,6 +38,14 @@ pub enum Event {
         /// running · succeeded · failed · timeout · error · skipped_locked · aborted
         state: String,
     },
+    /// A session imported from the v1 registry (import.rs): the v1 did not
+    /// record merge outcome or touched paths per session, so the variant
+    /// carries only what was true — no fabricated fields.
+    V1Session {
+        session_id: String,
+        branch: String,
+        state: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +120,10 @@ fn render_markdown(project: &str, entries: &[LogEntry]) -> String {
             Event::JobRun { job, branch, state } => {
                 format!("- [{}] job `{}` run — {} (`{}`)", e.at_epoch, job, state, branch)
             }
+            Event::V1Session { session_id, branch, state } => format!(
+                "- [{}] v1 session `{}` on `{}` — {}",
+                e.at_epoch, session_id, branch, state
+            ),
         };
         out.push_str(&line);
         out.push('\n');

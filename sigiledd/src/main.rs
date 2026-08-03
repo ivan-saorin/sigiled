@@ -9,6 +9,7 @@ mod contract;
 mod events;
 mod manifest;
 mod merge;
+mod import;
 mod project;
 mod runtime;
 mod sessions;
@@ -93,6 +94,21 @@ pub fn app(state: AppState) -> Router {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_target(false).init();
+    // One-shot import mode (cutover §6.2): `sigiledd import /v1` — reads the
+    // v1 registry+keys from the given dir, merges into the v2 state, exits.
+    if std::env::args().nth(1).as_deref() == Some("import") {
+        let v1 = std::env::args().nth(2).unwrap_or_else(|| "/v1".into());
+        match import::run(std::path::Path::new(&v1)) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("import failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!(version = %version(), %addr, "sigiledd starting");
