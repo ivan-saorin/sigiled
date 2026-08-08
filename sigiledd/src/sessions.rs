@@ -214,7 +214,7 @@ pub async fn open(
         let branch = format!("session/{id}");
         (id, branch)
     }
-    let (id, branch, resume, head, token, endpoint) = match &state.sessions.runtime {
+    let (id, branch, resume, head, token, endpoint, image) = match &state.sessions.runtime {
         Some(rt) => {
             let mirror = match rt.ensure_mirror(&project) {
                 Ok(m) => m,
@@ -229,7 +229,20 @@ pub async fn open(
             };
             let vm = crate::runtime::Runtime::vm_name(&project);
             let tok = mint_token();
-            if let Err(e) = rt.create_container(&vm, &project, "session", &id, &tok, &[]) {
+            // DEC-25: the per-project session image, from [workspace] on
+            // master. The first open after a dockerfile edit pays a docker
+            // build (minutes) — off the async runtime. A failed build falls
+            // back to the base image with the shout in `image`.
+            let image = {
+                let (rt2, mirror2, p2) = (rt.clone(), mirror.clone(), project.clone());
+                match tokio::task::spawn_blocking(move || rt2.ensure_session_image(&p2, &mirror2))
+                    .await
+                {
+                    Ok(choice) => choice,
+                    Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("image resolve: {e}")),
+                }
+            };
+            if let Err(e) = rt.create_container(&vm, &project, "session", &id, &tok, &image.used, &[]) {
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
             if let Err(e) = rt.wait_healthy(&state.sessions.http, &vm, &tok).await {
@@ -240,7 +253,9 @@ pub async fn open(
                 .boot_workspace(&state.sessions.http, &vm, &project, &tok, &branch, resume)
                 .await
             {
-                Ok(head) => (id, branch, resume, head, Some(tok), Some(rt.endpoint(&project))),
+                Ok(head) => {
+                    (id, branch, resume, head, Some(tok), Some(rt.endpoint(&project)), Some(image))
+                }
                 Err(e) => {
                     rt.destroy(&vm);
                     return err(StatusCode::INTERNAL_SERVER_ERROR, e);
@@ -261,7 +276,7 @@ pub async fn open(
                         Ok(h) => h,
                         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
                     };
-                    (b.trim_start_matches("session/").to_string(), b, true, head, None, None)
+                    (b.trim_start_matches("session/").to_string(), b, true, head, None, None, None)
                 }
                 None => {
                     let (id, branch) = fresh_id_branch();
@@ -269,7 +284,7 @@ pub async fn open(
                         return err(StatusCode::INTERNAL_SERVER_ERROR, e);
                     }
                     let head = git(&repo, &["rev-parse", "master"]).unwrap_or_default();
-                    (id, branch, false, head, None, None)
+                    (id, branch, false, head, None, None, None)
                 }
             }
         }
@@ -303,6 +318,7 @@ pub async fn open(
             "head": head, "stale": resume,
             "last_commit": if resume { json!(head) } else { serde_json::Value::Null },
             "merge_debt": debts.first(),
+            "image": image,
             "actor": actor,
         })),
     )
@@ -458,7 +474,7 @@ pub async fn recycle(
     // reasons to recycle, and push-early means only unpushed leftovers are
     // at stake. The verb proceeds either way and reports honestly.
     let mut flushed = true;
-    let (head, token, endpoint) = match &state.sessions.runtime {
+    let (head, token, endpoint, image) = match &state.sessions.runtime {
         Some(rt) => {
             let vm = crate::runtime::Runtime::vm_name(&record.project);
             if let Some(tok) = &record.token {
@@ -468,9 +484,26 @@ pub async fn recycle(
             }
             rt.destroy(&vm);
             let tok = mint_token();
-            if let Err(e) =
-                rt.create_container(&vm, &record.project, "session", &session_id, &tok, &[])
-            {
+            // DEC-25: the fresh container rides the image master declares
+            // NOW — a recycle after a dockerfile fix is how a session picks
+            // up its repaired toolchain without dying.
+            let image = match rt.ensure_mirror(&record.project) {
+                Ok(mirror) => {
+                    let (rt2, p2) = (rt.clone(), record.project.clone());
+                    match tokio::task::spawn_blocking(move || rt2.ensure_session_image(&p2, &mirror))
+                        .await
+                    {
+                        Ok(choice) => choice,
+                        Err(e) => {
+                            return err(StatusCode::INTERNAL_SERVER_ERROR, format!("image resolve: {e}"))
+                        }
+                    }
+                }
+                Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+            };
+            if let Err(e) = rt.create_container(
+                &vm, &record.project, "session", &session_id, &tok, &image.used, &[],
+            ) {
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
             if let Err(e) = rt.wait_healthy(&state.sessions.http, &vm, &tok).await {
@@ -483,7 +516,7 @@ pub async fn recycle(
                 .boot_workspace(&state.sessions.http, &vm, &record.project, &tok, &record.branch, true)
                 .await
             {
-                Ok(head) => (head, Some(tok), Some(rt.endpoint(&record.project))),
+                Ok(head) => (head, Some(tok), Some(rt.endpoint(&record.project)), Some(image)),
                 Err(e) => {
                     rt.destroy(&vm);
                     return err(StatusCode::INTERNAL_SERVER_ERROR, e);
@@ -496,7 +529,7 @@ pub async fn recycle(
             };
             let repo = repos.join(&record.project);
             match git(&repo, &["rev-parse", &record.branch]) {
-                Ok(sha) => (sha, None, None),
+                Ok(sha) => (sha, None, None, None),
                 Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
             }
         }
@@ -519,6 +552,7 @@ pub async fn recycle(
     Json(json!({
         "session_id": session_id, "project": record.project, "branch": record.branch,
         "token": token, "endpoint": endpoint, "sha_at_recycle": head, "flushed": flushed,
+        "image": image,
     }))
     .into_response()
 }
@@ -563,6 +597,8 @@ mod tests {
         let (status, body) = body_json(resp).await;
         assert_eq!(status, StatusCode::CREATED);
         assert!(body["merge_debt"].is_null());
+        // Branch-only path rents no container: no image to report (DEC-25).
+        assert!(body["image"].is_null());
         let id = body["session_id"].as_str().unwrap().to_string();
         let branch = body["branch"].as_str().unwrap().to_string();
 

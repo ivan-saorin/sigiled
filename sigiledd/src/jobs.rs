@@ -332,9 +332,21 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
                 .map_err(|_| format!("secret {env_name}: stack env {stack_var} is not set"))?;
             extra.push((env_name.clone(), v));
         }
-        rt.ensure_mirror(&project)?;
+        let mirror = rt.ensure_mirror(&project)?;
+        // DEC-25: jobs ride the project's declared image too — but batch has
+        // no operator watching a shout, so a broken declaration FAILS the
+        // run: a nightly silently missing its declared toolchain would lie.
+        let image = {
+            let (rt2, p2) = (rt.clone(), project.clone());
+            tokio::task::spawn_blocking(move || rt2.ensure_session_image(&p2, &mirror))
+                .await
+                .map_err(|e| format!("image resolve: {e}"))?
+        };
+        if let Some(reason) = image.build_error {
+            return Err(format!("session image: {reason}"));
+        }
         let tok = crate::sessions::mint_token();
-        rt.create_container(&container, &project, "job", &jm.name, &tok, &extra)?;
+        rt.create_container(&container, &project, "job", &jm.name, &tok, &image.used, &extra)?;
         rt.wait_healthy(&http, &container, &tok).await?;
         rt.boot_workspace(&http, &container, &project, &tok, &branch, false).await?;
         let r = rt.exec(&http, &container, &tok, &jm.command, jm.timeout_minutes * 60).await?;

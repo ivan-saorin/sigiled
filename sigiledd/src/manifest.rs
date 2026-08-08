@@ -15,6 +15,7 @@ pub enum ManifestError {
     BadTemplateRef(String),
     BadApp(String),
     BadJob(String),
+    BadWorkspace(String),
 }
 
 impl std::fmt::Display for ManifestError {
@@ -26,6 +27,7 @@ impl std::fmt::Display for ManifestError {
             }
             ManifestError::BadApp(s) => write!(f, "bad [app]: {s}"),
             ManifestError::BadJob(s) => write!(f, "bad [jobs]: {s}"),
+            ManifestError::BadWorkspace(s) => write!(f, "bad [workspace]: {s}"),
         }
     }
 }
@@ -51,8 +53,34 @@ impl TemplateRef {
 #[derive(Debug, Deserialize)]
 struct RawManifest {
     template: Option<String>,
+    workspace: Option<RawWorkspace>,
     app: Option<RawApp>,
     jobs: Option<std::collections::HashMap<String, RawJob>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawWorkspace {
+    dockerfile: String,
+}
+
+/// `[workspace] dockerfile = "…"` — DEC-25: the pin point for the project's
+/// session image. Explicitly in the manifest, never a bare-filename
+/// convention: this very repo's root Dockerfile builds vm-base (DEC-17
+/// publisher role) and is NOT a session image — a convention would build
+/// the wrong thing. Absent table = the global base image, the pre-DEC-25
+/// behavior.
+fn validate_workspace_dockerfile(raw: RawWorkspace) -> Result<String, ManifestError> {
+    let bad = ManifestError::BadWorkspace;
+    let p = raw.dockerfile;
+    if p.is_empty() {
+        return Err(bad("dockerfile must not be empty".into()));
+    }
+    if p.starts_with('/') || p.contains('\\') || p.split('/').any(|seg| seg == "..") {
+        return Err(bad(format!(
+            "dockerfile must be a relative path inside the repo, got {p:?}"
+        )));
+    }
+    Ok(p)
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,6 +212,9 @@ pub struct Manifest {
     /// The vm-tmpl pin. None on pre-v2 repos that never adopted the pin —
     /// legal: template_version simply stays null in the project record.
     pub template: Option<TemplateRef>,
+    /// DEC-25: the session-image dockerfile, relative to the repo root on
+    /// master. None = the project rides the global base image.
+    pub workspace_dockerfile: Option<String>,
     pub app: Option<AppManifest>,
     /// The `[jobs.*]` table, sorted by name for determinism. Empty when the
     /// repo declares none.
@@ -195,6 +226,8 @@ impl Manifest {
         let raw: RawManifest =
             toml::from_str(text).map_err(|e| ManifestError::Toml(e.to_string()))?;
         let template = raw.template.as_deref().map(TemplateRef::parse).transpose()?;
+        let workspace_dockerfile =
+            raw.workspace.map(validate_workspace_dockerfile).transpose()?;
         let app = raw.app.map(AppManifest::validate).transpose()?;
         let mut jobs = raw
             .jobs
@@ -203,7 +236,21 @@ impl Manifest {
             .map(|(name, j)| JobManifest::validate(&name, j))
             .collect::<Result<Vec<_>, _>>()?;
         jobs.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Manifest { template, app, jobs })
+        Ok(Manifest { template, workspace_dockerfile, app, jobs })
+    }
+
+    /// The manifest of a repo checkout, probing the same filename pair every
+    /// other reader probes (DEC-22: `sigiled.toml`, `mgr.toml` fallback for
+    /// repos born under the v1 name). Ok(None) = no manifest file at all;
+    /// a file that exists but does not parse is loud, not invisible.
+    pub fn from_repo(repo: &std::path::Path) -> Result<Option<Self>, String> {
+        for f in ["sigiled.toml", "mgr.toml"] {
+            let path = repo.join(f);
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                return Manifest::parse(&text).map(Some).map_err(|e| format!("{f}: {e}"));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -335,6 +382,38 @@ mod tests {
         }
         // A missing command is a TOML-shape error, equally loud.
         assert!(Manifest::parse("[jobs.x]\ncron = \"30 3 * * *\"\n").is_err());
+    }
+
+    #[test]
+    fn workspace_dockerfile_parses_and_is_optional() {
+        let m = Manifest::parse("[workspace]\ndockerfile = \"Dockerfile.session\"\n").unwrap();
+        assert_eq!(m.workspace_dockerfile.as_deref(), Some("Dockerfile.session"));
+        // No [workspace] = the global base image (pre-DEC-25 behavior).
+        assert_eq!(Manifest::parse("class = \"session\"\n").unwrap().workspace_dockerfile, None);
+    }
+
+    #[test]
+    fn workspace_dockerfile_must_stay_inside_the_repo() {
+        // The path reaches `docker build -f` on the control plane's own
+        // mirror checkout: escaping the repo root must die at parse.
+        let bads = ["", "/etc/passwd", "../evil/Dockerfile", "a/../../b", "a\\b"];
+        for bad in bads {
+            let text = format!("[workspace]\ndockerfile = \"{}\"\n", bad.replace('\\', "\\\\"));
+            assert!(
+                matches!(Manifest::parse(&text), Err(ManifestError::BadWorkspace(_))),
+                "{bad:?} should be rejected"
+            );
+        }
+        // [workspace] without the key is a TOML-shape error, equally loud.
+        assert!(Manifest::parse("[workspace]\n").is_err());
+    }
+
+    #[test]
+    fn shipped_template_declares_its_session_image() {
+        // DEC-25: the hook exists from birth — the template pairs its thin
+        // Dockerfile with the [workspace] pin that makes sigiledd build it.
+        let m = Manifest::parse(include_str!("../../template/sigiled.toml")).unwrap();
+        assert_eq!(m.workspace_dockerfile.as_deref(), Some("Dockerfile"));
     }
 
     #[test]

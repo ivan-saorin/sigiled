@@ -12,6 +12,13 @@ source = "repo"
 # FROM vm-base tag.
 template = "vm-tmpl@0.1.0"
 
+# Session image (DEC-25): the dockerfile SIGILED builds this project's
+# workspace containers from — content-addressed on the file's git blob, so
+# only editing it triggers a rebuild (first open after the edit pays it).
+# Remove the table to ride the global base image instead.
+[workspace]
+dockerfile = "Dockerfile"
+
 # [jobs.<name>]                    # scheduled jobs — any number
 # cron = "30 3 * * *"              # required; container-local time (TZ)
 # command = "./jobs/recap.sh"      # required; bash -lc in /workspace

@@ -16,6 +16,28 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// What a workspace container will run on (DEC-25). Serialized into the
+/// open/recycle responses: a healthy resolve is just `{"used": …}`; a
+/// fallback carries `requested` (the tag that should have been) and
+/// `build_error` (the build log tail) — the shout.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ImageChoice {
+    pub used: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_error: Option<String>,
+}
+
+impl ImageChoice {
+    fn base(image: String) -> Self {
+        ImageChoice { used: image, requested: None, build_error: None }
+    }
+    fn built(tag: String) -> Self {
+        ImageChoice { used: tag, requested: None, build_error: None }
+    }
+}
+
 #[derive(Clone)]
 pub struct Runtime {
     pub network: String,
@@ -161,6 +183,65 @@ impl Runtime {
         self.docker(&["image", "inspect", "--format", "ok", tag]).is_ok()
     }
 
+    // --- session images (DEC-25) -------------------------------------------
+
+    /// Pure resolution of the per-project session image: the manifest's
+    /// `[workspace] dockerfile` on master → `vm-{p}:df-{blob12}`, the tag
+    /// content-addressed on the dockerfile's git blob. Master commits that
+    /// don't touch the dockerfile keep the tag (and the image cache); editing
+    /// it moves the tag and the next open rebuilds. `repo` is the mirror
+    /// checkout, which ensure_mirror has already reset to origin/master.
+    ///
+    /// Ok(None) = no declaration: the global base image, pre-DEC-25 behavior.
+    /// Err = the project DECLARED an image but the declaration is unusable
+    /// (broken manifest, dockerfile missing on master) — the caller decides
+    /// whether that is a shout (sessions) or a failure (jobs).
+    pub fn session_image_tag(
+        &self,
+        project: &str,
+        repo: &Path,
+    ) -> Result<Option<(String, String)>, String> {
+        let Some(manifest) = crate::manifest::Manifest::from_repo(repo)? else {
+            return Ok(None);
+        };
+        let Some(dockerfile) = manifest.workspace_dockerfile else {
+            return Ok(None);
+        };
+        let blob = crate::merge::git(repo, &["hash-object", "--", &dockerfile])
+            .map_err(|e| format!("[workspace] dockerfile {dockerfile:?}: {e}"))?;
+        let short = blob.get(..12).ok_or_else(|| format!("bad blob hash {blob:?}"))?;
+        Ok(Some((format!("{}:df-{short}", Self::vm_name(project)), dockerfile)))
+    }
+
+    /// Resolve and, when needed, build the session image. Never fails: a
+    /// declared image that cannot be built falls back to the global base
+    /// with the debt in the choice — the session is the repair tool for its
+    /// own dockerfile, so open must stay drivable (same philosophy as merge
+    /// debt: never block, surface loudly). Jobs treat build_error as fatal.
+    pub fn ensure_session_image(&self, project: &str, repo: &Path) -> ImageChoice {
+        match self.session_image_tag(project, repo) {
+            Ok(None) => ImageChoice::base(self.image.clone()),
+            Ok(Some((tag, dockerfile))) => {
+                if self.image_exists(&tag) {
+                    return ImageChoice::built(tag);
+                }
+                match self.build_image(&tag, &dockerfile, repo) {
+                    Ok(_) => ImageChoice::built(tag),
+                    Err(tail) => ImageChoice {
+                        used: self.image.clone(),
+                        requested: Some(tag),
+                        build_error: Some(tail),
+                    },
+                }
+            }
+            Err(e) => ImageChoice {
+                used: self.image.clone(),
+                requested: None,
+                build_error: Some(e),
+            },
+        }
+    }
+
     pub fn container_state(&self, name: &str) -> String {
         self.docker(&["inspect", "--format", "{{.State.Status}}", name])
             .unwrap_or_else(|_| "absent".into())
@@ -193,6 +274,8 @@ impl Runtime {
     /// same reason: the key must be in place before the agent boots, and it
     /// must never transit through an image layer. `extra_env` is where job
     /// secrets ride (rule 8: resolved by the caller, container env only).
+    /// `image` comes from ensure_session_image (DEC-25): per-project when
+    /// declared, the global base otherwise.
     pub fn create_container(
         &self,
         container: &str,
@@ -200,6 +283,7 @@ impl Runtime {
         kind: &str,
         workload_id: &str,
         token: &str,
+        image: &str,
         extra_env: &[(String, String)],
     ) -> Result<(), String> {
         self.destroy(container); // stale container safety, as v1 — own name only
@@ -222,7 +306,7 @@ impl Runtime {
             args.push("-e".into());
             args.push(format!("{name}={value}"));
         }
-        args.push(self.image.clone());
+        args.push(image.into());
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.docker(&arg_refs)?;
         self.docker(&["cp", &key.to_string_lossy(), &format!("{container}:/secrets/deploy_key")])?;
@@ -423,6 +507,70 @@ mod tests {
         let c = ssh_command(Path::new("/data/keys/torchio/id_ed25519"));
         assert!(c.contains("-i /data/keys/torchio/id_ed25519"));
         assert!(c.contains("IdentitiesOnly=yes"));
+    }
+
+    #[test]
+    fn session_image_is_manifest_driven_and_content_addressed() {
+        let repo = crate::merge::tests::mk_repo("img");
+        let rt = rt();
+        // No manifest, then a manifest without [workspace]: the global base.
+        assert_eq!(rt.session_image_tag("proj", &repo).unwrap(), None);
+        crate::merge::tests::commit_on(
+            &repo, "master", "sigiled.toml", "template = \"vm-tmpl@0.1.0\"\n", "chore: pin",
+        );
+        assert_eq!(rt.session_image_tag("proj", &repo).unwrap(), None);
+        // Declared: vm-{p}:df-{blob12}, stable under commits that don't
+        // touch the dockerfile — that stability IS the image cache key.
+        crate::merge::tests::commit_on(&repo, "master", "Dockerfile", "FROM scratch\n", "feat: df");
+        crate::merge::tests::commit_on(
+            &repo, "master", "sigiled.toml",
+            "template = \"vm-tmpl@0.1.0\"\n[workspace]\ndockerfile = \"Dockerfile\"\n",
+            "feat: session image",
+        );
+        let (tag, df) = rt.session_image_tag("proj", &repo).unwrap().unwrap();
+        assert_eq!(df, "Dockerfile");
+        assert!(tag.starts_with("vm-proj:df-"), "tag {tag}");
+        assert_eq!(tag.len(), "vm-proj:df-".len() + 12, "12-hex blob suffix: {tag}");
+        crate::merge::tests::commit_on(&repo, "master", "unrelated.txt", "x\n", "feat: other");
+        assert_eq!(rt.session_image_tag("proj", &repo).unwrap().unwrap().0, tag);
+        // Editing the dockerfile moves the tag: next open rebuilds.
+        crate::merge::tests::commit_on(
+            &repo, "master", "Dockerfile", "FROM scratch\nLABEL v=2\n", "feat: edit df",
+        );
+        assert_ne!(rt.session_image_tag("proj", &repo).unwrap().unwrap().0, tag);
+    }
+
+    #[test]
+    fn declared_but_unusable_image_is_loud_not_invisible() {
+        // A manifest that points at a dockerfile master doesn't have, or that
+        // doesn't parse, is an Err — sessions turn it into a shouted
+        // fallback, jobs into a failed run. Silence would run a workspace
+        // without the toolchain the project declared: today's exact bug.
+        let repo = crate::merge::tests::mk_repo("img-missing");
+        crate::merge::tests::commit_on(
+            &repo, "master", "sigiled.toml", "[workspace]\ndockerfile = \"Dockerfile.nope\"\n",
+            "feat: dangling pin",
+        );
+        let e = rt().session_image_tag("proj", &repo).unwrap_err();
+        assert!(e.contains("Dockerfile.nope"), "error names the file: {e}");
+        crate::merge::tests::commit_on(&repo, "master", "sigiled.toml", "class = ", "break: toml");
+        assert!(rt().session_image_tag("proj", &repo).is_err());
+    }
+
+    #[test]
+    fn image_choice_serializes_quiet_when_healthy_loud_on_fallback() {
+        // The open response carries this verbatim: healthy = just `used`,
+        // fallback = the full shout. Contract shape, pinned here.
+        let ok = serde_json::to_value(ImageChoice::built("vm-p:df-0123456789ab".into())).unwrap();
+        assert_eq!(ok, serde_json::json!({"used": "vm-p:df-0123456789ab"}));
+        let debt = serde_json::to_value(ImageChoice {
+            used: "ghcr.io/example-org/vm-base:0.1.0".into(),
+            requested: Some("vm-p:df-0123456789ab".into()),
+            build_error: Some("apt: package rust not found".into()),
+        })
+        .unwrap();
+        assert_eq!(debt["requested"], "vm-p:df-0123456789ab");
+        assert!(debt["build_error"].as_str().unwrap().contains("apt"));
     }
 
     #[test]

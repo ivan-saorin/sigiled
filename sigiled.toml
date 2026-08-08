@@ -1,0 +1,26 @@
+# SIGILED workload manifest of this repo. Renamed from the v1 name at the
+# DEC-22 sunset: the v1 orchestrator (which required `mgr.toml`) no longer
+# builds these sessions — the cutover condition fell on 2026-08-03. The v2
+# engine reads `sigiled.toml` first, `mgr.toml` as fallback for repos born
+# under v1. Reference schema: template/sigiled.toml.
+# class: session | job | app
+# source: repo | image
+
+class = "session"
+source = "repo"
+
+# Session image (DEC-25): sigiledd is a Rust workspace — its sessions need
+# cargo and a C toolchain, which the base image deliberately lacks. The
+# root Dockerfile is NOT this: it builds/publishes vm-base itself (DEC-17),
+# which is exactly why the pin is an explicit manifest key and not a
+# filename convention.
+[workspace]
+dockerfile = "Dockerfile.session"
+
+[volumes]
+# Declared mounts. ro is the default; rw must be explicit.
+# "volume-name" = "ro" | "rw"
+
+[secrets]
+# Secret refs resolved by SIGILED at container creation; values never in git.
+# ENV_NAME = "env-var-name-in-stack-env"

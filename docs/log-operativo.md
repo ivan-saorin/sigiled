@@ -8,8 +8,9 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-04, sessione 2bc23b71 (pin-reader collegato al tick dello scheduler — template_version si popola davvero)_
+_aggiornato: 2026-08-08, sessione f53cbce3 (DEC-25: immagini di sessione per-progetto — l'hook di DEC-17 esiste davvero)_
 
+- **IMMAGINI DI SESSIONE PER-PROGETTO (DEC-25, 2026-08-08)**: scoperto dal vivo che ogni workspace girava sulla vm-base globale — l'hook «FROM vm-base + layer progetto» di DEC-17 non era mai stato implementato (una sessione su QUESTO repo Rust non aveva né cargo né cc). Ora: `[workspace] dockerfile = "…"` in sigiled.toml → sigiledd builda `vm-{p}:df-{blob12}` dal mirror a master (content-addressed sul blob del dockerfile: ribuilda solo a edit, alla open successiva, sincrona); sessioni in fallback **urlato** (`image: {used, requested, build_error}` in open/recycle), job **fail-fast**. Template: `[workspace]` attivo di default accanto al Dockerfile sottile. Questo repo: `Dockerfile.session` (rust 1.97.1 + build-essential) e manifest di radice rinominato `mgr.toml` → `sigiled.toml` (la clausola DEC-22 «finché la v1 builda queste sessioni» è caduta al cutover). Contratto → **2.1.0**. Piano della sessione: `docs/plans/2026-08-08-per-project-session-images.md`. **Per l'operatore**: redeploy sigiledd, poi riaprire una sessione su `sigiled` e verificare `which cargo`. DEC-25 da ratificare.
 - **FIX PIN-READER (2026-08-04)**: `template_version` era null per sempre su ogni progetto — `ProjectRecord::new()` parsava il pin ma nessun flusso di produzione lo chiamava con un manifest vero. Ora il tick dello scheduler (che già rilegge i manifest da master ogni ~5 min) rideriva i campi del pin via `Registry::refresh` — `needs_merge` mai toccato, persistenza solo a cambiamento. 90 test. Nota operatore: `template_behind` richiede `SIGILED_TEMPLATE_LATEST` nell'env del canary.
 
 - **Su master**: docs (`sigiled-v2.md`, `v2-build-plan.md`, `sigiled-contract.md` 2.0.0-draft, questo log) + codice sessione 1: workspace cargo con `sigiledd/` (ex `seald/` — healthz, `GET /sigiled/contract`, `GET /sigiled/projects` con `template_version`; 7 unit test) e `vm-base/` (port del server v1, build-ext.sh su `ext-rust/`), `template/` (vm-tmpl v2), `images/build-vm-base.sh`, `tools/dev-toolchain.sh`, `CNAME` (`sigiled.dev`) + `index.html` (landing Pages).
@@ -40,6 +41,15 @@ _aggiornato: 2026-08-04, sessione 2bc23b71 (pin-reader collegato al tick dello s
 ---
 
 ## Voci
+
+### 2026-08-08 · DEC-25: immagini di sessione per-progetto — l'hook di DEC-17 esiste davvero — driver: sigiled-claude, approval dell'operatore (sessione f53cbce3)
+
+- **Dove eravamo**: sessione torchio del mattino (chat «Continuiamo») — confermato dal vivo che il container di sessione non ha né cargo né cc: TUTTE le sessioni giravano sulla vm-base globale (`SIGILED_VM_IMAGE`), il Dockerfile sottile che il template spedisce dal giorno di DEC-17 non era letto da nessuno. Handoff esplicito: sessione elevata su `sigiled` con piano proprio.
+- **Previsione**: piano + implementazione dell'hook in un'unica sessione elevata.
+- **Fatto**: piano in `docs/plans/2026-08-08-per-project-session-images.md`; DEC-25 registrata (EN+IT) — punto di pin `[workspace] dockerfile` nel manifest (mai convenzione sul nome file: il Dockerfile di radice di questo repo builda vm-base e NON è un'immagine di sessione), tag `vm-{p}:df-{blob12}` content-addressed sul blob git a master, build sincrona alla open, sessioni in fallback urlato / job fail-fast. Codice: `manifest.rs` (`[workspace]` validato + `Manifest::from_repo`), `runtime.rs` (`session_image_tag` puro + `ensure_session_image` + `create_container` con immagine esplicita), `sessions.rs` (open/recycle risolvono in spawn_blocking, campo `image` nelle risposte), `jobs.rs` (stessa immagine, build rotta = run error). Template: `[workspace]` attivo accanto al Dockerfile sottile. Questo repo: `Dockerfile.session` (rust 1.97.1 + build-essential su vm-base) e rinomina `mgr.toml` → `sigiled.toml` (clausola DEC-22 caduta al cutover). Contratto 2.0.0 → **2.1.0** (campo `image`, §7 job, §8 chiave manifest).
+- **Scarti**: nessuno di sostanza; la rinomina del manifest di radice non era nel piano del mattino ma è il debito DEC-22 che scadeva proprio con questa feature (il lettore v2 probe `sigiled.toml` per primo).
+- **Stato a fine sessione**: vedi «Stato attuale» sopra.
+- **Prossimo passo previsto**: operatore — redeploy sigiledd via supervisor; prova dal vivo: open su `sigiled` → build di `Dockerfile.session` → `which cargo` nel workspace; il Re ratifica DEC-25. Poi roadmap §8 passo 5 (ponte tomes-and-tales).
 
 ### 2026-08-04 · fix: il tick dello scheduler è il lettore del pin — template_version non era mai popolato — driver: sigiled-claude, approval dell'operatore (sessione 2bc23b71)
 

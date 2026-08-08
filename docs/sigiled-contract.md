@@ -4,7 +4,7 @@
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.0.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha.
+**Contract version:** 2.1.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8).
 **Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8); every verb below is implemented and live-verified. SIGILED is the only orchestrator of the stack.
 
 This is the complete operating contract for SIGILED (v2 of SIGILED). It is
@@ -172,7 +172,7 @@ need a live approval for `projects new`, app verbs, and any session on
 | `POST /projects/{p}/sessions` | 201 (§5; `merge_debt` on top when present) · 503 `{retry:true}` repo not ready — wait ~5 s, retry |
 | `GET /sessions/{id}` | session record minus token; plus `container` + `logs` while running |
 | `POST /sessions/{id}/close` | `{closed, merge: "ff"\|"merged"\|"debt", sha, flushed, log_operativo_touched}` |
-| `POST /sessions/{id}/recycle` | fresh `{token, endpoint, sha_at_recycle}` — old token dead |
+| `POST /sessions/{id}/recycle` | fresh `{token, endpoint, sha_at_recycle, image}` — old token dead |
 | `POST /projects/{p}/jobs/{j}/run` | 202 run record · 404 unknown job · 409 same job in flight · 422 broken `[jobs]` |
 | `GET /projects/{p}/jobs/{j}/runs` | last 20 run records, newest first |
 | `GET /apps/{a}` · `POST /apps/{a}/start\|stop\|restart\|upgrade` | app status / action — approval territory for drivers |
@@ -186,12 +186,23 @@ need a live approval for `projects new`, app verbs, and any session on
  "endpoint": "https://api.016180.xyz/s/{p}/", "head": "<sha>",
  "stale": false, "last_commit": null,
  "merge_debt": null,
+ "image": {"used": "vm-{p}:df-…"},
  "actor": {"driver": "sigiled-claude", "approval": null}}
 ```
 
 - `stale: true` — you are resuming an existing branch after an auto-close
   or a lost container; `last_commit` is its pushed head. Rule 1 applies
   double.
+- `image` — what the container runs on (DEC-25). A project that declares
+  `[workspace] dockerfile = "…"` in its sigiled.toml gets a per-project
+  image built from that file at master, content-addressed (only editing the
+  dockerfile rebuilds — the first open after an edit pays the build). A
+  failed build does NOT block the open: the session falls back to the
+  global base image and the field shouts —
+  `{"used": "<base>", "requested": "vm-{p}:df-…", "build_error": "<tail>"}`
+  — fixing the dockerfile is then that session's first job, and a
+  `recycle` picks the repaired image up. No `[workspace]` = the base
+  image, silently. Null on control planes without a container runtime.
 - `merge_debt` non-null — rule 9. The container starts from the debtor
   branch with the merge in progress and conflict markers in the files:
 
@@ -206,8 +217,11 @@ is read → edit → `exec` to build/test → `POST /git/commit`.
 
 **Recycle** (`POST /sigiled/sessions/{id}/recycle`): flush, destroy the
 container, recreate it **from your branch** with a freshly minted token.
-Use when handing the session to another provider or when the container is
-wedged. Replace your stored token with the returned one.
+Use when handing the session to another provider, when the container is
+wedged — or to pick up the project's session image after a dockerfile fix
+(the fresh container rides what master declares now; `image` in the
+response says what you got). Replace your stored token with the returned
+one.
 
 **Close** (`POST /sigiled/sessions/{id}/close`): flush, then under the
 project's merge lock (seconds): fast-forward if master has not moved,
@@ -266,6 +280,11 @@ pushed at creation → command → leftover output committed → destroyed.
 Run states: `running · succeeded · failed · timeout · error ·
 skipped_locked · aborted`.
 
+Job containers ride the project's session image (DEC-25, §5) — but where a
+session falls back with a shout, a job with an unbuildable image **errors
+the run** with the build tail as its detail: batch missing its declared
+toolchain must fail, not lie.
+
 **Recap flow** ("what did the jobs do last week"):
 1. `GET /sigiled/projects/{p}/jobs/{j}/runs` — outcome metadata.
 2. `GET /sigiled/projects/{p}/branches` — filter `job-*`, sort by stamp.
@@ -300,6 +319,10 @@ Project repos are born from **vm-tmpl v2** and pinned to it:
   record exposes `template_version` and `template_behind`.
 - The project Dockerfile is thin: `FROM vm-base:x.y.z` + the project's own
   toolchain layers (DEC-17). Adopting a new agent = bumping the tag.
+- `[workspace] dockerfile = "Dockerfile"` in sigiled.toml is what makes
+  SIGILED **build and use** that file for the project's session and job
+  containers (DEC-25, §5): path relative to the repo root, read on master.
+  Remove the table to ride the global base image.
 - `ext-<lang>/` is the extension point (DEC-18): `ext-rust/` crates are
   compiled into vm-base; `ext-py/`, `ext-go/`, … run as supervised local
   processes proxied at `/x/<name>` — one contract, same token gate.

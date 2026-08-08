@@ -1,0 +1,20 @@
+# Session image of the sigiled repo itself (DEC-25): the workspace that
+# develops sigiledd needs cargo + cc on top of the deliberately minimal
+# base. Pinned to the same toolchain the root Dockerfile builds vm-base
+# with — a session must be able to reproduce the release build.
+# System-wide rustup (the pattern of the official rust images): the agent
+# runs as uid 1000, so CARGO_HOME must be writable for the registry cache.
+FROM ghcr.io/ivan-saorin/vm-base:0.1.0
+
+USER root
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -sSf https://sh.rustup.rs \
+       | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.97.1 \
+    && chmod -R a+rX /usr/local/rustup \
+    && chmod -R a+w /usr/local/cargo
+USER 1000:1000
