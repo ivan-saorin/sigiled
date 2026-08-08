@@ -84,6 +84,10 @@ ratification history. `docs/log-operativo.md`, the living operational log,
 stays Italian by design: it is working memory, not documentation. `git log`
 speaks both.
 
+Formalized as a decision record: **DEC-26** (edict of 2026-08-09) —
+the rule above stands, with the explicit riders that chats may be Italian and
+names may be Italian (e.g. `spina`).
+
 ## License
 
 [MIT](LICENSE).

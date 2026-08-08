@@ -8,7 +8,10 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-09, sessione 46a94339 (nota di design: SIGILED come OS per agenti LLM — cattura, non ratifica)_
+_aggiornato: 2026-08-09, sessione b83823e4 (DEC-26 editto lingua + lettera alla prossima sessione: revisione anti-stale dei docs)_
+
+- **DEC-26 — EDITTO LINGUA (2026-08-09)**: i file nei repo sono English-primary; chat e nomi possono essere italiani (es. `spina`); copia italiana `*_it.md` ammessa, mai in sostituzione; carve-out standing preservati: log-operativo in italiano by design, `git log` bilingue. Eleva a DEC il decreto della sessione 1b (README, commit 83e4466). Acconto anti-stale: riga di stato del v2 corretta (contratto 2.0.0 → 2.1.0). Compito aperto per la prossima sessione: revisione anti-stale della documentazione — lettera nel log.
+
 
 - **NOTA DI DESIGN «SIGILED COME OS PER AGENTI LLM» (2026-08-09, NON ratificata)**: discussione in chat catturata in `docs/plans/2026-08-09-sigiled-as-agent-os.md` — mappatura dello stack su concetti OS (sessioni=processi, journal git=fs journaled, merge debt=fsck, elevate=sudo, searxng=NIC, folio=FPU, skill=binari, `GET /contract`=macchina autodescrittiva), modello a tre strati kernel/runtime/servizi (il runtime è il microcodice per le errata del processore LLM), otto direzioni candidate con le posizioni del Re annotate. Nessuna DEC proposta.
 
@@ -44,6 +47,15 @@ _aggiornato: 2026-08-09, sessione 46a94339 (nota di design: SIGILED come OS per 
 ---
 
 ## Voci
+
+### 2026-08-09 · Editto lingua (DEC-26) + lettera alla prossima sessione — driver: Kimi K3
+
+- **Dove eravamo**: nota «SIGILED come OS» salvata la stessa giornata (sessione 46a94339, ff su master); decreto lingua della sessione 1b (2026-08-03, commit 83e4466) vivo nel README ma mai elevato a DEC numerata.
+- **Previsione**: il Re emette l'Editto in lettere cubitali — i file nei repo sono in inglese come lingua primaria; le chat possono essere in italiano; i nomi possono essere italiani (es. spina); una copia in italiano può esistere — più un compito da consegnare alla prossima sessione.
+- **Fatto**: registrata **DEC-26** nella tavola di `docs/sigiled-v2.md` (riga di stato aggiornata con la ratifica; elevazione del decreto 2026-08-03 con carve-out standing preservati: `log-operativo.md` italiano by design come memoria di lavoro, `git log` bilingue); la nota lingua del README ora rimanda esplicitamente a DEC-26. Acconto sul compito anti-stale: la riga di stato del v2 citava contratto «2.0.0» — corretto a «2.1.0» (primo stale trovato e riparato).
+- **Scarti**: nessuno sul merito. Trasparenza interpretativa: l'Editto è stato codificato preservando i carve-out già ratificati (log-operativo italiano); se non conforme, il Re emenda — DEC-12 insegna.
+- **Stato a fine sessione**: DEC-26 su master; il compito è nella buca delle lettere (qui sotto).
+- **Prossimo passo previsto** — LETTERA PER LA PROSSIMA SESSIONE (dal Re): revisionare la documentazione contro l'implementazione e l'architettura correnti per eliminare informazioni stale. Primo esemplare già catturato (versione contratto nella riga di stato del v2). Candidati: `docs/sigiled-v2.md`, `docs/sigiled-contract.md`, `docs/runbook-deploy.md`, `README.md`, `docs/skill-template.md`, `template/`, `docs/plans/`.
 
 ### 2026-08-09 · SIGILED come OS per agenti LLM — cattura discussione — driver: Kimi K3
 
