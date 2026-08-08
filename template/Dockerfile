@@ -16,4 +16,9 @@ FROM ghcr.io/ivan-saorin/vm-base:0.1.0
 #
 # A project with ext-py/ or ext-go/ (DEC-18) brings the matching runtime in
 # these layers; ext-rust/ needs nothing here (compiled into vm-base).
+#
+# TRAP (learned live, DEC-25 first build): the workspace /exec surface runs
+# `bash -lc`, and /etc/profile RESETS PATH — toolchain paths set via ENV
+# vanish. Put them in /etc/profile.d/ instead, e.g.:
+#   RUN printf 'export PATH=/opt/mytool/bin:$PATH\n' > /etc/profile.d/mytool.sh
 # ---------------------------------------------------------------------------

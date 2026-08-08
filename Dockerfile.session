@@ -10,11 +10,17 @@ USER root
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
+# The workspace /exec surface runs `bash -lc`: /etc/profile RESETS PATH and
+# drops image ENV — learned live at the first open on this image (cargo
+# installed, `which cargo` empty). /etc/profile.d is what login shells
+# actually keep, so the toolchain env goes there too.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && curl -sSf https://sh.rustup.rs \
        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.97.1 \
     && chmod -R a+rX /usr/local/rustup \
-    && chmod -R a+w /usr/local/cargo
+    && chmod -R a+w /usr/local/cargo \
+    && printf 'export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo\nexport PATH=/usr/local/cargo/bin:$PATH\n' \
+       > /etc/profile.d/rust.sh
 USER 1000:1000
