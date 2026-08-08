@@ -8,7 +8,10 @@
 
 ## Stato attuale
 
-_aggiornato: 2026-08-08, sessione f53cbce3 (DEC-25: immagini di sessione per-progetto — l'hook di DEC-17 esiste davvero)_
+_aggiornato: 2026-08-09, sessione 46a94339 (nota di design: SIGILED come OS per agenti LLM — cattura, non ratifica)_
+
+- **NOTA DI DESIGN «SIGILED COME OS PER AGENTI LLM» (2026-08-09, NON ratificata)**: discussione in chat catturata in `docs/plans/2026-08-09-sigiled-as-agent-os.md` — mappatura dello stack su concetti OS (sessioni=processi, journal git=fs journaled, merge debt=fsck, elevate=sudo, searxng=NIC, folio=FPU, skill=binari, `GET /contract`=macchina autodescrittiva), modello a tre strati kernel/runtime/servizi (il runtime è il microcodice per le errata del processore LLM), otto direzioni candidate con le posizioni del Re annotate. Nessuna DEC proposta.
+
 
 - **IMMAGINI DI SESSIONE PER-PROGETTO (DEC-25, 2026-08-08)**: scoperto dal vivo che ogni workspace girava sulla vm-base globale — l'hook «FROM vm-base + layer progetto» di DEC-17 non era mai stato implementato (una sessione su QUESTO repo Rust non aveva né cargo né cc). Ora: `[workspace] dockerfile = "…"` in sigiled.toml → sigiledd builda `vm-{p}:df-{blob12}` dal mirror a master (content-addressed sul blob del dockerfile: ribuilda solo a edit, alla open successiva, sincrona); sessioni in fallback **urlato** (`image: {used, requested, build_error}` in open/recycle), job **fail-fast**. Template: `[workspace]` attivo di default accanto al Dockerfile sottile. Questo repo: `Dockerfile.session` (rust 1.97.1 + build-essential) e manifest di radice rinominato `mgr.toml` → `sigiled.toml` (la clausola DEC-22 «finché la v1 builda queste sessioni» è caduta al cutover). Contratto → **2.1.0**. Piano della sessione: `docs/plans/2026-08-08-per-project-session-images.md`. Redeploy eseguito in sessione (ff di `/opt/sigiled` + supervisor restart, 75s, healthy) e provato dal vivo: build alla open, rotazione tag all'edit, `cargo check --workspace` verde DENTRO il workspace (22s) — trovata e riparata dal vivo la trappola `bash -lc`/`/etc/profile` che resetta il PATH (fix: `/etc/profile.d/rust.sh`, commit 930bb22; trappola documentata nel template). **DEC-25 ratificata dal Re in chat (2026-08-08).** Immagini `df-*` orfane prunate sul box.
 - **FIX PIN-READER (2026-08-04)**: `template_version` era null per sempre su ogni progetto — `ProjectRecord::new()` parsava il pin ma nessun flusso di produzione lo chiamava con un manifest vero. Ora il tick dello scheduler (che già rilegge i manifest da master ogni ~5 min) rideriva i campi del pin via `Registry::refresh` — `needs_merge` mai toccato, persistenza solo a cambiamento. 90 test. Nota operatore: `template_behind` richiede `SIGILED_TEMPLATE_LATEST` nell'env del canary.
@@ -41,6 +44,15 @@ _aggiornato: 2026-08-08, sessione f53cbce3 (DEC-25: immagini di sessione per-pro
 ---
 
 ## Voci
+
+### 2026-08-09 · SIGILED come OS per agenti LLM — cattura discussione — driver: Kimi K3
+
+- **Dove eravamo**: DEC-25 ratificata il giorno prima (immagini di sessione per-progetto); contratto 2.1.0; stack vivo.
+- **Previsione**: nessuna — sessione nata da una domanda del Re in chat: «se sigilled è un embrione di sistema operativo per agenti LLM, cosa dovrebbe avere out of the box?» (oggi: searxng, vm+github, folio).
+- **Fatto**: discussione svolta e catturata in `docs/plans/2026-08-09-sigiled-as-agent-os.md` (inglese, da decreto lingua). Contenuto: (1) mappatura completa sigilled→OS; (2) il test del kernel corretto su osservazione del Re — tre strati (kernel / runtime sempre linkato / servizi), criterio del runtime «la sessione lo ri-derivrebbe male da sola?», runtime come microcodice per le errata del processore LLM (confabulazione→search, aritmetica→folio, amnesia→journal); (3) otto direzioni candidate, ciascuna con la posizione del Re registrata in chat (journal come IPC asincrono, timer da studiare, Authentik vs credenziali esterne, accounting deprioritizzato, package manager «this is good», compute nodes in futuro, object store via $ref+hash, ricette meta).
+- **Scarti**: due, entrambi guidati dal Re. (1) Scartata la mailbox/IPC live: le sessioni sono asincrone, basta un journal migliore — lettere, non telefonate; la sezione «open questions» del journal È la mailbox, il rituale di open è dove si legge la posta. (2) Scartato l'accounting da corporate (token/costi come sottosistema): OS personale — al massimo conteggi nelle voci di log, zero infrastruttura.
+- **Stato a fine sessione**: nota su master, marcata esplicitamente NON ratificata; nessuna DEC proposta.
+- **Prossimo passo previsto**: il Re decide se e cosa elevare a DEC; il candidato più economico è la convenzione sui tipi di voce del journal (punto 4.1 della nota) — nessuna macchina nuova, una convenzione, e ci poggiano sopra IPC asincrono, coda batch e memoria delle adjudicazioni.
 
 ### 2026-08-08 · DEC-25: immagini di sessione per-progetto — l'hook di DEC-17 esiste davvero — driver: sigiled-claude, approval dell'operatore (sessione f53cbce3)
 
