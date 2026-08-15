@@ -10,6 +10,11 @@
 # rustup home is a 593 MB copy). Until 2026-08-15 the profile was `minimal`
 # with nothing added, so `cargo fmt` and `cargo clippy` did not exist in any
 # sigiled session and the repo's own gate had never once been run against it.
+# The flag repeats per component: `--component rustfmt clippy` is rejected by
+# rustup-init with "unexpected argument 'clippy' found", which failed the build
+# and dropped that session onto the bare base image — no cargo at all. Cost a
+# close+reopen to discover, because [workspace] is read from master and a
+# dockerfile cannot be test-built from inside a session (rule 5, no docker).
 FROM ghcr.io/ivan-saorin/vm-base:0.1.0
 
 USER root
@@ -25,7 +30,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && curl -sSf https://sh.rustup.rs \
        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.97.1 \
-              --component rustfmt clippy \
+              --component rustfmt --component clippy \
     && chmod -R a+rX /usr/local/rustup \
     && chmod -R a+w /usr/local/cargo \
     && printf 'export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo\nexport PATH=/usr/local/cargo/bin:$PATH\n' \
