@@ -40,7 +40,7 @@
       "purpose": "Atomic models aggregator: {provider}/{size} slots route to configured local (llama.cpp) or external models.",
       "machine": { "base": "https://genie.016180.xyz", "gate": "stack-bearer" },
       "spec": "GET /openapi.json",
-      "status": "building",
+      "status": "live",
       "skill": null
     },
     {
@@ -48,7 +48,7 @@
       "purpose": "Divergent-ideation engine for agents: structured idea generation and scoring.",
       "machine": { "base": "https://adhd.016180.xyz", "gate": "stack-bearer" },
       "spec": "GET /openapi.json",
-      "status": "building",
+      "status": "live",
       "skill": null
     },
     {
