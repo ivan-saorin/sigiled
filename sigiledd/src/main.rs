@@ -108,7 +108,10 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/sessions/{session_id}/close", post(sessions::close))
         .route("/sessions/{session_id}/recycle", post(sessions::recycle))
         .route("/auth/elevate", post(auth::elevate))
-        .route("/auth/verify", post(auth::verify))
+        // GET *and* POST: Caddy's forward_auth issues a GET (it rewrites the
+        // method internally), while a human or a test reaches for POST. The
+        // handler reads only headers, so the verb carries no meaning here.
+        .route("/auth/verify", get(auth::verify).post(auth::verify))
         .route("/auth/approvals", get(auth::approvals))
         .route("/skill/{driver}", get(skill::serve))
         .route("/apps/{app}", get(apps::status))

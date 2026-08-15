@@ -41,15 +41,60 @@ auth.{$DOMAIN} {
 # stack bearer checked, spoofable identity headers scrubbed; anything
 # else is the human leg — authentik forward_auth, identity copied. A
 # machine with a wrong key gets a clean 401, never an HTML login page.
+#
+# The machine leg accepts TWO credentials during the migration to
+# identity-bearing tokens:
+#
+#   1. the static {$API_BEARER_KEY} — what the stack has always done. One
+#      shared secret per callee, no idea who presented it, rotation means
+#      editing env on every caller at once.
+#   2. an IdP-signed JWT, adjudicated by sigiledd at /sigiled/auth/verify.
+#      The caller is named, the grant is a group (svc:<service>) provisioned
+#      from the project's [compose] table, revocation is removing a group
+#      membership, and rotation is a token expiring in an hour.
+#
+# Both are accepted deliberately: flipping straight to (2) would break every
+# caller on the stack in the same instant, including the deployed apps that
+# have the static token in their env today. Drop the static arm — the
+# `handle @static` block — once nothing presents it any more.
+#
+# Static wins first on purpose: it costs no round trip, so the migration
+# never makes the hot path slower for callers that have not moved yet.
+#
+# Usage gains a second argument, the service's catalog name:
+#	import dual searxng:8080 search
+#
 (dual) {
 	@machine header_regexp Authorization ^Bearer\s
 	handle @machine {
-		@bad_bearer not header Authorization "Bearer {$API_BEARER_KEY}"
-		respond @bad_bearer 401
-		reverse_proxy {args[0]} {
-			header_up -X-Authentik-Username
-			header_up -X-Authentik-Groups
-			header_up -X-Authentik-Email
+		route {
+			@static header Authorization "Bearer {$API_BEARER_KEY}"
+			handle @static {
+				reverse_proxy {args[0]} {
+					header_up -X-Authentik-Username
+					header_up -X-Authentik-Groups
+					header_up -X-Authentik-Email
+					header_up -X-Sigiled-Caller
+				}
+			}
+			handle {
+				# 2xx = allow, anything else is returned to the caller as-is
+				# (401 unsigned/expired, 403 missing svc:<service>, 500 if
+				# this snippet was imported without its service argument).
+				# X-Sigiled-Service is set HERE, never read from the client:
+				# a caller that sends its own is overwritten, which is what
+				# makes the header trustworthy on the sigiledd side.
+				forward_auth sigiled:8080 {
+					uri /sigiled/auth/verify
+					header_up X-Sigiled-Service {args[1]}
+					copy_headers X-Sigiled-Caller
+				}
+				reverse_proxy {args[0]} {
+					header_up -X-Authentik-Username
+					header_up -X-Authentik-Groups
+					header_up -X-Authentik-Email
+				}
+			}
 		}
 	}
 	handle {
@@ -71,5 +116,26 @@ auth.{$DOMAIN} {
 # plain bearer gate + reverse_proxy:
 #
 #	search.{$DOMAIN} {
-#		import dual searxng:8080
+#		import dual searxng:8080 search
 #	}
+#
+# ── Applying this to a live edge ──────────────────────────────────────
+# This file is an EXAMPLE: the running Caddyfile lives on the host, which
+# no session container can reach (contract rule 5). Landing it here changes
+# nothing in production until the operator copies the (dual) snippet across
+# and reloads. Until then /sigiled/auth/verify simply sits there unasked,
+# which is why the endpoint could ship ahead of the edge.
+#
+# The reload is safe by construction: every caller presenting today's static
+# token keeps working (arm 1), and the new arm can only ever ADD an accepted
+# credential. To check it before trusting it, from a host with the stack
+# bearer:
+#
+#	curl -sS -o /dev/null -w '%{http_code}\n' \
+#	  -H "Authorization: Bearer $STACK_BEARER" https://search.{$DOMAIN}/
+#	# 200 — the static arm still answers
+#
+#	curl -sS -H "Authorization: Bearer <a driver JWT>" \
+#	  -H 'X-Sigiled-Service: search' https://api.{$DOMAIN}/sigiled/auth/verify
+#	# 403 + {"detail":"caller sigiled-claude lacks svc:search"} — the policy
+#	# is live and correctly refuses a driver that was granted nothing yet.

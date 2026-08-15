@@ -478,7 +478,7 @@ pub fn authorize_service_call(
     Err(Denial(format!("caller {} lacks {wanted}", claims.driver())))
 }
 
-/// `POST /sigiled/auth/verify` — the question the edge asks about every
+/// `GET|POST /sigiled/auth/verify` — the question the edge asks about every
 /// machine-leg request: *may this caller call this service?*
 ///
 /// Shaped for Caddy's `forward_auth`: **2xx = allow, anything else = deny**,
