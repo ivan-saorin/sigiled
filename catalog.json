@@ -15,7 +15,7 @@
       "purpose": "Academic paper search and aggregation (arXiv et al.). One job: find and aggregate papers.",
       "machine": { "base": "https://paper-api.016180.xyz", "gate": "service-token" },
       "human": { "base": "https://paper.016180.xyz", "gate": "sso" },
-      "spec": "GET /openapi.json",
+      "spec": null,
       "status": "live",
       "skill": null
     },
