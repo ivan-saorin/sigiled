@@ -7,6 +7,7 @@
 // Session 5 adds POST /projects (github.rs): create-from-template or adopt.
 mod apps;
 mod auth;
+mod catalog;
 mod contract;
 mod events;
 mod github;
@@ -84,11 +85,14 @@ async fn healthz() -> axum::Json<serde_json::Value> {
 }
 
 fn sigiled_router(state: AppState) -> Router {
-    // healthz and the contract are public by design (the contract is the
-    // product); everything else takes an Actor (auth.rs — dual-auth §1.7).
+    // healthz, the contract and the service catalog are public by design
+    // (the contract is the product; the catalog names capabilities and
+    // carries no secret); everything else takes an Actor (auth.rs —
+    // dual-auth §1.7).
     Router::new()
         .route("/healthz", get(healthz))
         .route("/contract", get(contract::serve))
+        .route("/services", get(catalog::serve))
         .route("/projects", get(project::list).post(project::create))
         .route("/projects/{project}/log", get(events::project_log))
         .route("/projects/{project}/branches", get(project::branches))
@@ -116,6 +120,8 @@ pub fn app(state: AppState) -> Router {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_target(false).init();
+    // DEC-27: a control plane with a broken service catalog must not boot.
+    catalog::assert_valid();
     // One-shot import mode (cutover §6.2): `sigiledd import /v1` — reads the
     // v1 registry+keys from the given dir, merges into the v2 state, exits.
     if std::env::args().nth(1).as_deref() == Some("import") {

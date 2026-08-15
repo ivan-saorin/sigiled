@@ -4,7 +4,7 @@
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.1.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8).
+**Contract version:** 2.2.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract.
 **Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8); every verb below is implemented and live-verified. SIGILED is the only orchestrator of the stack.
 
 This is the complete operating contract for SIGILED (v2 of SIGILED). It is
@@ -104,6 +104,7 @@ covered here falls through to the full API (§4, §6).
 | `apps <name> [action]` | `GET /apps/{a}` for status. `start`/`stop`/`restart`/`upgrade` require approval for `stack:drivers`. 202 `action=building` = background build: poll status, never re-fire the verb. |
 | `sync <project>` | Template recepimento (§8): run `tools/sync-template.sh` in a session; it stops on drift. Never auto-update. |
 | `search <query>` | `GET https://search.016180.xyz/search?q=<urlencoded>&format=json`; summarize `results[]`. |
+| `services [status]` | `GET /sigiled/services` (optional `?status=` filter: `live`, `building`, `planned`) — the stack service catalog: purpose, machine/human legs with gates, `spec`, per-service `skill`. When a service names a `skill`, prefer it over raw calls. |
 
 Coding-task ritual: `open` → merge debt? resolve first → git log → work/commit
 loop → **log operativo entry** → `recycle` or `close`. Never leave a session
@@ -163,6 +164,7 @@ need a live approval for `projects new`, app verbs, and any session on
 |---|---|
 | `GET /healthz` | `{status, version}` |
 | `GET /contract` | this document (markdown), at the deployed sha |
+| `GET /services` | the stack service catalog — `catalog.json` at the repo root, embedded at build, boot-validated; `{catalog_version, services[]}`, optional `?status=` filter (`live`, `building`, `planned`); public like the contract |
 | `POST /auth/elevate` | `{verification_uri, user_code, expires}` — device flow via the stack IdP |
 | `GET /auth/approvals` | live approvals `{human, driver, expires}` |
 | `POST /projects` `{name}` | 201 project record · 409 already registered · 422 bad name |

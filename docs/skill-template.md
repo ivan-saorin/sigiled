@@ -43,7 +43,23 @@ Platform projects and app verbs need a live human approval next to your
 identity: `POST /sigiled/auth/elevate`, relay URL + code to the operator,
 poll `GET /sigiled/auth/approvals`.
 
-## 3. The ritual, compressed
+## 3. Stack services
+
+Atomic stack services, always available:
+
+| service | purpose |
+|---|---|
+| search | internet meta-search (SearXNG) |
+| paper | academic paper search + aggregation |
+| folio | arbitrary-precision calculation |
+
+The full, growing catalog — bases, gates, specs, per-service skills — is
+`GET {{api_base}}/sigiled/services` (public; filter `?status=live`). Fetch
+it when a task could use a stack capability not listed here. When the
+catalog names a `skill` for a service, prefer that skill over raw calls.
+Same rule as the contract: any local table is a lossy cache.
+
+## 4. The ritual, compressed
 
 `open` → merge debt? resolve it FIRST → `GET /git/log?limit=15` →
 work/commit loop (intent-carrying messages; every commit pushes) →

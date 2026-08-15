@@ -34,3 +34,42 @@ auth.{$DOMAIN} {
 	# device flow (elevate) to work.
 	reverse_proxy authentik-server:9000
 }
+# ── The service method (DEC-27): one vhost, bearer split ──────────────
+# A stack service that is dual by nature (human UI + machine API on the
+# same upstream) keeps ONE name; how the client knocks decides the leg.
+# A request presenting `Authorization: Bearer` is the machine leg —
+# stack bearer checked, spoofable identity headers scrubbed; anything
+# else is the human leg — authentik forward_auth, identity copied. A
+# machine with a wrong key gets a clean 401, never an HTML login page.
+(dual) {
+	@machine header_regexp Authorization ^Bearer\s
+	handle @machine {
+		@bad_bearer not header Authorization "Bearer {$API_BEARER_KEY}"
+		respond @bad_bearer 401
+		reverse_proxy {args[0]} {
+			header_up -X-Authentik-Username
+			header_up -X-Authentik-Groups
+			header_up -X-Authentik-Email
+		}
+	}
+	handle {
+		route {
+			reverse_proxy /outpost.goauthentik.io/* authentik-server:9000
+			forward_auth authentik-server:9000 {
+				uri /outpost.goauthentik.io/auth/caddy
+				copy_headers X-Authentik-Username X-Authentik-Groups X-Authentik-Email
+				@err status 401
+				handle_response @err {
+					redir https://{http.request.host}/outpost.goauthentik.io/start?rd={http.request.uri}
+				}
+			}
+			reverse_proxy {args[0]}
+		}
+	}
+}
+# Usage — a dual service is two lines; machine-only services keep the
+# plain bearer gate + reverse_proxy:
+#
+#	search.{$DOMAIN} {
+#		import dual searxng:8080
+#	}
