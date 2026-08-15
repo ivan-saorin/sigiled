@@ -16,6 +16,7 @@ pub enum ManifestError {
     BadApp(String),
     BadJob(String),
     BadWorkspace(String),
+    BadCompose(String),
 }
 
 impl std::fmt::Display for ManifestError {
@@ -28,6 +29,7 @@ impl std::fmt::Display for ManifestError {
             ManifestError::BadApp(s) => write!(f, "bad [app]: {s}"),
             ManifestError::BadJob(s) => write!(f, "bad [jobs]: {s}"),
             ManifestError::BadWorkspace(s) => write!(f, "bad [workspace]: {s}"),
+            ManifestError::BadCompose(s) => write!(f, "bad [compose]: {s}"),
         }
     }
 }
@@ -63,6 +65,7 @@ struct RawManifest {
     workspace: Option<RawWorkspace>,
     app: Option<RawApp>,
     jobs: Option<std::collections::HashMap<String, RawJob>>,
+    compose: Option<RawCompose>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +91,57 @@ fn validate_workspace_dockerfile(raw: RawWorkspace) -> Result<String, ManifestEr
         )));
     }
     Ok(p)
+}
+
+#[derive(Debug, Deserialize)]
+struct RawCompose {
+    #[serde(default)]
+    services: Vec<String>,
+}
+
+/// `[compose] services = […]` — the declared dependency graph: which stack
+/// services this project's workloads may call. It is the **policy** layer,
+/// deliberately separate from the mechanism that carries the identity: it
+/// says which edges of the call graph exist, never how a caller proves who
+/// it is.
+///
+/// Absent table = the project composes nothing, which is exactly today's
+/// behavior for every repo that predates it — the declaration grants, it
+/// never revokes by omission on its own.
+///
+/// Names are validated for **shape** only, not against `catalog.json`. The
+/// manifest is read from a project's master and the catalog is embedded at
+/// the control plane's build: cross-checking here would make a project's
+/// manifest parse succeed or fail on the control plane's build date, which
+/// is the kind of spooky action `[app] requires` already declines to take.
+/// A name that no service answers to resolves to nothing at provisioning
+/// time, where the catalog is in hand and the report can be honest.
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
+pub struct ComposeManifest {
+    /// Sorted and deduplicated: this list becomes a set of group
+    /// memberships, and a set has no order. Determinism here means a
+    /// reordered manifest is not a diff downstream.
+    pub services: Vec<String>,
+}
+
+impl ComposeManifest {
+    fn validate(raw: RawCompose) -> Result<Self, ManifestError> {
+        let bad = ManifestError::BadCompose;
+        let mut services = Vec::with_capacity(raw.services.len());
+        for s in raw.services {
+            let ok = !s.is_empty()
+                && s.starts_with(|c: char| c.is_ascii_lowercase())
+                && s.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !ok {
+                return Err(bad(format!("bad service name {s:?}")));
+            }
+            services.push(s);
+        }
+        services.sort();
+        services.dedup();
+        Ok(ComposeManifest { services })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -229,6 +283,9 @@ pub struct Manifest {
     /// The `[jobs.*]` table, sorted by name for determinism. Empty when the
     /// repo declares none.
     pub jobs: Vec<JobManifest>,
+    /// The `[compose]` table — which stack services this project may call.
+    /// None = declares nothing, the pre-existing behavior.
+    pub compose: Option<ComposeManifest>,
 }
 
 impl Manifest {
@@ -252,12 +309,24 @@ impl Manifest {
             .map(|(name, j)| JobManifest::validate(&name, j))
             .collect::<Result<Vec<_>, _>>()?;
         jobs.sort_by(|a, b| a.name.cmp(&b.name));
+        let compose = raw.compose.map(ComposeManifest::validate).transpose()?;
         Ok(Manifest {
             template,
             workspace_dockerfile,
             app,
             jobs,
+            compose,
         })
+    }
+
+    /// The services this project declares, as a slice — empty when there is
+    /// no `[compose]` table at all, so callers never need to distinguish
+    /// "absent" from "declared empty": both mean *composes nothing*.
+    pub fn composed_services(&self) -> &[String] {
+        self.compose
+            .as_ref()
+            .map(|c| c.services.as_slice())
+            .unwrap_or(&[])
     }
 
     /// The manifest of a repo checkout, probing the same filename pair every
@@ -290,6 +359,72 @@ mod tests {
         let t = m.template.unwrap();
         assert_eq!(t.name, "vm-tmpl");
         assert_eq!(t.version, "0.1.0");
+    }
+
+    #[test]
+    fn compose_absent_means_composes_nothing() {
+        // The distinction that must NOT leak to callers: a repo with no
+        // [compose] table and a repo with an empty one are the same policy.
+        let absent = Manifest::parse("class = \"session\"\n").unwrap();
+        let empty = Manifest::parse("[compose]\nservices = []\n").unwrap();
+        assert_eq!(absent.compose, None);
+        assert_eq!(empty.compose, Some(ComposeManifest { services: vec![] }));
+        assert!(absent.composed_services().is_empty());
+        assert!(empty.composed_services().is_empty());
+    }
+
+    #[test]
+    fn compose_services_are_sorted_and_deduped() {
+        // Order and repetition are not policy: the list denotes a set, so a
+        // reshuffled manifest must not read as a changed declaration.
+        let a =
+            Manifest::parse("[compose]\nservices = [\"paper\", \"genie\", \"folio\", \"genie\"]\n")
+                .unwrap();
+        let b =
+            Manifest::parse("[compose]\nservices = [\"folio\", \"genie\", \"paper\"]\n").unwrap();
+        assert_eq!(a.composed_services(), ["folio", "genie", "paper"]);
+        assert_eq!(a.compose, b.compose);
+    }
+
+    #[test]
+    fn compose_rejects_names_no_service_could_have() {
+        // Same alphabet as project and app names. A bad name is refused at
+        // parse rather than silently provisioning a group nobody grants.
+        for bad in [
+            "",
+            "Genie",
+            "1genie",
+            "gen ie",
+            "genie/paper",
+            "-genie",
+            "genie_1",
+        ] {
+            let toml = format!("[compose]\nservices = [\"{bad}\"]\n");
+            assert!(
+                matches!(Manifest::parse(&toml), Err(ManifestError::BadCompose(_))),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn compose_coexists_with_the_other_tables() {
+        // [compose] is orthogonal to the workload tables: declaring it must
+        // not disturb the template pin, the session image or the jobs.
+        let m = Manifest::parse(
+            "template = \"vm-tmpl@0.1.0\"\n\
+             [workspace]\ndockerfile = \"Dockerfile.session\"\n\
+             [compose]\nservices = [\"genie\", \"paper\"]\n\
+             [jobs.nightly]\ncron = \"30 3 * * *\"\ncommand = \"./jobs/x.sh\"\n",
+        )
+        .unwrap();
+        assert_eq!(m.template.as_ref().unwrap().version, "0.1.0");
+        assert_eq!(
+            m.workspace_dockerfile.as_deref(),
+            Some("Dockerfile.session")
+        );
+        assert_eq!(m.composed_services(), ["genie", "paper"]);
+        assert_eq!(m.jobs.len(), 1);
     }
 
     #[test]

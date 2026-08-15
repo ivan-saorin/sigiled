@@ -92,7 +92,9 @@ fn sigiled_router(state: AppState) -> Router {
     // healthz, the contract and the service catalog are public by design
     // (the contract is the product; the catalog names capabilities and
     // carries no secret); everything else takes an Actor (auth.rs —
-    // dual-auth §1.7).
+    // dual-auth §1.7). One deliberate exception: /auth/verify takes no
+    // Actor because its callers are the edge and composed services, which
+    // are not drivers — it validates the token it is handed instead.
     Router::new()
         .route("/healthz", get(healthz))
         .route("/contract", get(contract::serve))
@@ -106,6 +108,7 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/sessions/{session_id}/close", post(sessions::close))
         .route("/sessions/{session_id}/recycle", post(sessions::recycle))
         .route("/auth/elevate", post(auth::elevate))
+        .route("/auth/verify", post(auth::verify))
         .route("/auth/approvals", get(auth::approvals))
         .route("/skill/{driver}", get(skill::serve))
         .route("/apps/{app}", get(apps::status))

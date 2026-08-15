@@ -42,6 +42,12 @@ pub struct AuthConfig {
     pub device_client_id: String,
     pub admin_group: String,
     pub driver_group: String,
+    /// Prefix of the per-callee group that authorizes a service-to-service
+    /// call: `svc:genie` says "may call genie". A group, not an audience,
+    /// because groups are what this IdP already emits (the `sigiled-groups`
+    /// scope mapping) and what `Claims` already carries — see
+    /// `docs/plans/2026-08-15-composed-service-auth.md`.
+    pub service_group_prefix: String,
 }
 
 impl AuthConfig {
@@ -55,7 +61,14 @@ impl AuthConfig {
                 .unwrap_or_else(|_| "stack:admins".into()),
             driver_group: std::env::var("SIGILED_DRIVER_GROUP")
                 .unwrap_or_else(|_| "stack:drivers".into()),
+            service_group_prefix: std::env::var("SIGILED_SERVICE_GROUP_PREFIX")
+                .unwrap_or_else(|_| "svc:".into()),
         }
+    }
+
+    /// The group that authorizes calling `service`.
+    pub fn service_group(&self, service: &str) -> String {
+        format!("{}{}", self.service_group_prefix, service)
     }
     /// No leg configured = auth off (alpha dev run): everything passes as a
     /// dev admin, loudly. A real deploy always configures at least one leg.
@@ -420,6 +433,119 @@ impl FromRequestParts<crate::AppState> for Actor {
     }
 }
 
+// --- service-to-service verification (the edge's forward_auth) --------------
+
+/// The header the edge sets to name the callee it is guarding. It is set by
+/// the Caddyfile per vhost, never copied from the client — a caller that
+/// sends its own `X-Sigiled-Service` is overwritten at the edge, which is
+/// why this endpoint can trust it and nothing else about the request.
+pub const SERVICE_HEADER: &str = "x-sigiled-service";
+/// Copied back onto the upstream request on a 200 (`copy_headers`), so the
+/// service behind the gate learns who called without parsing a JWT itself.
+pub const CALLER_HEADER: &str = "x-sigiled-caller";
+
+/// Why a policy decision came out the way it did — the reason travels to the
+/// caller in the body, because a composed service debugging a 403 at 3am
+/// should not have to guess which of six groups it is missing.
+#[derive(Serialize)]
+pub struct VerifyBody {
+    caller: String,
+    service: String,
+    granted_by: &'static str,
+}
+
+/// May `claims` call `service`? The whole policy, in one place and pure so
+/// it can be tested without a signing key or an HTTP stack.
+///
+/// One rule, deliberately: the caller carries `svc:<service>`, or it is an
+/// admin. Drivers get **no** blanket access — `stack:drivers` says *may
+/// drive SIGILED*, never *may call genie*. Keeping the driver group out of
+/// this function is the entire separation between the identity layer and
+/// the policy layer; the day it grows an `|| driver_group` arm, `[compose]`
+/// stops meaning anything for sessions.
+pub fn authorize_service_call(
+    claims: &Claims,
+    service: &str,
+    cfg: &AuthConfig,
+) -> Result<&'static str, Denial> {
+    if claims.groups.iter().any(|g| g == &cfg.admin_group) {
+        return Ok("admin");
+    }
+    let wanted = cfg.service_group(service);
+    if claims.groups.contains(&wanted) {
+        return Ok("compose");
+    }
+    Err(Denial(format!("caller {} lacks {wanted}", claims.driver())))
+}
+
+/// `POST /sigiled/auth/verify` — the question the edge asks about every
+/// machine-leg request: *may this caller call this service?*
+///
+/// Shaped for Caddy's `forward_auth`: **2xx = allow, anything else = deny**,
+/// and the useful identity leaves through a response header the edge copies
+/// onto the upstream request. Deliberately NOT behind the `Actor` extractor:
+/// a composed service is not a driver, holds no `stack:drivers` membership,
+/// and would be rejected by `actor_from_claims` before policy ever ran.
+///
+/// It is an unauthenticated endpoint in the sense that anyone may ask — but
+/// it answers 200 only to a validly signed, unexpired token from the trusted
+/// issuer carrying the right group. It therefore reveals nothing that making
+/// the real request would not, which is the bar a forward-auth oracle has to
+/// clear.
+///
+/// The policy itself is `authorize_service_call`; this handler is transport.
+pub async fn verify(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let auth = &state.auth;
+    let service = match headers.get(SERVICE_HEADER).and_then(|v| v.to_str().ok()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        // A misconfigured edge must fail closed and say so: this is an
+        // operator error, not a caller error, hence 500 rather than 401.
+        _ => {
+            return AuthError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("edge did not set {SERVICE_HEADER}"),
+            )
+            .into_response()
+        }
+    };
+
+    let token = match headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    {
+        Some(t) => t,
+        None => {
+            return AuthError(StatusCode::UNAUTHORIZED, "missing bearer".into()).into_response()
+        }
+    };
+
+    let claims = match validate_jwt(token, &auth.config, &auth.keys, Some(&auth.http)).await {
+        Ok(c) => c,
+        Err(e) => return AuthError(StatusCode::UNAUTHORIZED, e).into_response(),
+    };
+
+    let granted_by = match authorize_service_call(&claims, &service, &auth.config) {
+        Ok(g) => g,
+        Err(Denial(d)) => return AuthError(StatusCode::FORBIDDEN, d).into_response(),
+    };
+
+    let caller = claims.driver();
+    let mut res = Json(VerifyBody {
+        caller: caller.clone(),
+        service,
+        granted_by,
+    })
+    .into_response();
+    if let Ok(v) = axum::http::HeaderValue::from_str(&caller) {
+        res.headers_mut().insert(CALLER_HEADER, v);
+    }
+    res
+}
+
 // --- device flow endpoints (§1.4) -------------------------------------------
 
 #[derive(Serialize)]
@@ -629,6 +755,7 @@ YQIDAQAB
             device_client_id: "sigiled-device".into(),
             admin_group: "stack:admins".into(),
             driver_group: "stack:drivers".into(),
+            service_group_prefix: "svc:".into(),
         }
     }
 
@@ -658,6 +785,70 @@ YQIDAQAB
             role: Role::Driver,
             approval: None,
         }
+    }
+
+    fn claims_with(name: &str, groups: &[&str]) -> Claims {
+        serde_json::from_value(serde_json::json!({
+            "sub": "x", "preferred_username": name,
+            "groups": groups,
+            "iss": "https://idp.test/application/o/x/",
+            "exp": now_epoch() + 600
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn compose_group_grants_exactly_its_own_service() {
+        let c = claims_with("sde", &["svc:genie", "svc:paper"]);
+        assert_eq!(authorize_service_call(&c, "genie", &cfg()), Ok("compose"));
+        assert_eq!(authorize_service_call(&c, "paper", &cfg()), Ok("compose"));
+        // Declared two, granted two — the third is not implied by the others.
+        assert!(authorize_service_call(&c, "folio", &cfg()).is_err());
+    }
+
+    #[test]
+    fn driver_membership_is_not_a_licence_to_call_services() {
+        // The load-bearing test of the whole design: `stack:drivers` means
+        // "may drive SIGILED", never "may call genie". If this ever passes,
+        // [compose] has stopped constraining sessions and the least-privilege
+        // story is gone — see docs/plans/2026-08-15-composed-service-auth.md.
+        let c = claims_with("sigiled-claude", &["stack:drivers"]);
+        let denial = authorize_service_call(&c, "genie", &cfg()).unwrap_err();
+        assert!(
+            denial.0.contains("svc:genie"),
+            "denial should name the missing group: {}",
+            denial.0
+        );
+        assert!(
+            denial.0.contains("sigiled-claude"),
+            "denial should name the caller: {}",
+            denial.0
+        );
+    }
+
+    #[test]
+    fn admins_pass_every_gate() {
+        let c = claims_with("ivan", &["stack:admins"]);
+        assert_eq!(authorize_service_call(&c, "anything", &cfg()), Ok("admin"));
+    }
+
+    #[test]
+    fn a_token_with_no_groups_is_denied_not_defaulted() {
+        let c = claims_with("nobody", &[]);
+        assert!(authorize_service_call(&c, "genie", &cfg()).is_err());
+    }
+
+    #[test]
+    fn the_group_prefix_is_configurable_and_not_a_substring_match() {
+        let mut c2 = cfg();
+        c2.service_group_prefix = "stack:svc-".into();
+        let c = claims_with("sde", &["stack:svc-genie"]);
+        assert_eq!(authorize_service_call(&c, "genie", &c2), Ok("compose"));
+        // "genie" must not be satisfied by a group for "genie-preview": the
+        // comparison is whole-string, and a prefix-match bug here would
+        // silently widen every grant on the stack.
+        let sneaky = claims_with("sde", &["stack:svc-genie-preview"]);
+        assert!(authorize_service_call(&sneaky, "genie", &c2).is_err());
     }
 
     #[tokio::test]
