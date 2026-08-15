@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-08-15 — sessione 5bb368aa: DEC-28 proposta, l'auth fra servizi composti
+
+**Dove eravamo.** `sde`, primo servizio composto (sequenza DEC-27), si è fermato a metà S2: ogni servizio dello stack è gated **al bordo**, quindi da dentro un container di sessione `genie/healthz`, `genie/docs`, `paper-api/openapi.json` e `adhd/openapi.json` rispondono **401** — e anche un token driver `sigiled-claude` appena mintato prende 401 su tutti e tre. **La specifica pubblica di un servizio è illeggibile da dove si scrive il suo client.** SDE ha scelto di non scrivere due client indovinandone la forma, e lo ha messo per iscritto in `docs/composed-service-auth.md` del suo repo, con tre opzioni per il control plane. Questa sessione è la risposta.
+
+**Dove prevedevamo di andare.** Operatore in chat: opzione 1 (JWT scoped dall'IdP) **più** opzione 3 (grafo di dipendenze dichiarato), chiedendo prima se le due confliggono.
+
+**Cosa è stato fatto.** Non confliggono — sono meccanismo e politica — ma leggendo *questo* repo sono emerse due correzioni al documento SDE, entrambe registrate in `docs/plans/2026-08-15-composed-service-auth.md` (**DEC-28, proposta, NON ratificata**):
+
+1. **`aud=<callee>` non è esprimibile.** `auth.rs` mette `validate_aud = false` di proposito (*aud è il client_id del driver*), e in authentik l'audience è impostazione **del provider**, non parametro per-richiesta di `client_credentials`: servirebbe un provider per ogni coppia *(chiamante, chiamato)*. Si usano i **gruppi**: `svc:<servizio>`, che è ciò che lo scope mapping `sigiled-groups` già emette e che `Claims` già parsa. Confronto a stringa intera — un match per prefisso farebbe passare `svc:genie-preview` per `genie` e allargherebbe in silenzio ogni concessione dello stack.
+2. **Il bordo non deve imparare i JWT.** Caddy standard non li valida e servirebbe un build `xcaddy`, una seconda implementazione della crittografia e un secondo orologio contro cui sfasare `exp`. Inutile: sigiledd **già** valida RS256 contro la JWKS dell'issuer con `KeyStore` in cache, e il Caddyfile **già** usa `forward_auth` per la gamba umana. Il bordo chiede, sigiledd risponde.
+
+Consegnato: `[compose] services = [...]` in `manifest.rs` (politica pura, validata solo nella forma — mai contro `catalog.json`, o il parse di un manifest dipenderebbe dalla data di build del control plane); `authorize_service_call()` + `GET|POST /auth/verify`; snippet `(dual)` a **doppia accettazione** in `deploy/Caddyfile.example` (bearer statico *oppure* JWT arbitrato, statico per primo così la migrazione non rallenta chi non si è ancora mosso). 105 test verdi, fmt e clippy puliti su tutto ciò che è stato toccato. Smoke contro un run locale: niente header di servizio 500, niente bearer 401, bearer spazzatura 401, healthz 200 — e quel 401 conta, perché senza IdP configurato l'estrattore `Actor` tratta tutto come dev admin e `/auth/verify` di proposito **non** eredita quella permissività.
+
+**Scarti.** Quattro, tutti dal reale:
+
+1. **Il broker non è stato consegnato, ed è una decisione.** SDE scriveva che le sessioni «cadono fuori gratis» accettando il token del driver: **falso, e strutturalmente**. `sigiled-claude` è identità *driver*, condivisa fra tutti i progetti; il suo JWT non porta nulla che dica *sto agendo per sde*. Quindi il bordo non può applicare una politica `[compose]` **per progetto** partendo da un token driver. O si accettano i token driver (e allora `[compose]` vincola solo job e app), o si minta un token **di sessione** che porti il progetto — l'opzione 2 di SDE. La seconda è quella giusta ed è il commit successivo naturale: vuole una chiave di firma per sigiledd e un braccio in più in `/auth/verify`. Non l'ho infilata a fine sessione: è superficie nuova che *emette credenziali* nel control plane e merita la sua revisione.
+2. **Conseguenza da dire chiaro: SDE non è ancora sbloccato da questa sessione.** Finché non arriva il broker (o finché l'operatore non concede a mano i gruppi `svc:*` a un driver, che è un allargamento vero e va scelto a tempo), una sessione continua a non poter leggere le specifiche di genie e paper.
+3. **`cargo fmt` e `cargo clippy` non sono mai esistiti in una sessione di questo repo.** `Dockerfile.session` installava il toolchain `--profile minimal` senza componenti, e `RUSTUP_HOME` è di root mentre l'agente è uid 1000: i comandi non ci sono e non si possono installare. Recuperati in-sessione copiando la rustup home in `$HOME` (593 MB — via di recupero, non abitudine) e **bakati** nel Dockerfile per la prossima. Il riformat di tutto il repo che il silenzio aveva accumulato è un commit a sé; il primo clippy della storia di questo codice ha trovato due lint latenti (`catalog.rs:80`, `runtime.rs:301`) in file che non stavo toccando — **lasciati lì**, non aggiustati dentro un commit di feature.
+4. **Un commit è stato ricostruito.** Il primo `cargo fmt --all` ha travolto la feature con 24 file di riformattazione: `reset --hard HEAD~1`, riformat da solo, feature sopra, `push --force-with-lease` sul branch di sessione. La regola 2 dice che il commit è la consegna, e una feature illeggibile sotto un riformat non consegna niente.
+
+**Stato a fine sessione.** Master ha la politica e l'arbitro; **la produzione non cambia di una virgola**. `/auth/verify` è additivo e nessun bordo lo chiama finché il Caddyfile vivo — che sta sull'host, irraggiungibile da qualunque sessione (regola 5) — non viene aggiornato a mano. Il registro §8 di `sigiled-v2.md` **non è stato toccato**: la riga DEC-28 la scrive la ratifica, non la proposta.
+
+**Prossimo passo.** (1) Operatore: ratificare o emendare DEC-28; (2) incollare lo snippet `(dual)` sul bordo, dare a ogni `import dual` il secondo argomento col nome del servizio, ricaricare e passare le due curl in fondo al file; (3) provisionare i gruppi `svc:*` estendendo `authentik-provision.sh` — dopo la ratifica, non prima; (4) il broker di token di sessione; (5) solo allora `sde` finisce S2 con le specifiche davvero lette.
+
+---
+
 ## 2026-08-15 — sessione 211a4f42: gate DEC-27 allineati al bordo
 
 **Dove eravamo.** Catalogo su master con i gate sondati com'erano: search `sso-only`, genie/adhd `edge-open`.
