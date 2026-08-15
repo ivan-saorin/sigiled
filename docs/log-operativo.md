@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-08-15 — sessione 211a4f42: gate DEC-27 allineati al bordo
+
+**Dove eravamo.** Catalogo su master con i gate sondati com'erano: search `sso-only`, genie/adhd `edge-open`.
+
+**Dove prevedevamo di andare.** Decisione operatore sui gate di genie/adhd; flip di search alla posa del metodo `(dual)`.
+
+**Cosa è stato fatto.** Deciso in chat (il Re, 2026-08-15): bearer al bordo per genie e adhd — opzione 1, una riga per vhost, nessun codice nelle app. `catalog.json`: search, genie, adhd → `stack-bearer`. In coppia, consegnato all'operatore il Caddyfile del box aggiornato: snippet `(dual)` + search sul metodo + `import bearer` su genie/adhd (validato con caddy 2.10).
+
+**Scarti.** Nessuno.
+
+**Stato a fine sessione.** Catalogo e Caddyfile viaggiano insieme: incollare il Caddyfile e ricaricare il bordo prima o insieme al redeploy del control plane, così `GET /services` nasce già vero.
+
+**Prossimo passo.** (1) Operatore: Caddyfile sul box + reload; (2) redeploy sigiledd; (3) rigenera la skill; (4) il servizio composto, primo consumatore del catalogo.
+
+---
+
 ## 2026-08-15 — sessione 877b0a9c: DEC-27, il catalogo dei servizi
 
 **Dove eravamo.** Piattaforma completa post DEC-25/26; i servizi atomici dello stack (search, paper, folio, reddit, genie, adhd) esistevano solo nel Caddyfile del box — nessuna superficie che un LLM potesse interrogare per sapere cosa c'è.

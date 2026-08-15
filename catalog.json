@@ -4,7 +4,7 @@
     {
       "name": "search",
       "purpose": "Internet meta-search (SearXNG). One job: query in, ranked results out.",
-      "machine": { "base": "https://search.016180.xyz", "gate": "sso-only" },
+      "machine": { "base": "https://search.016180.xyz", "gate": "stack-bearer" },
       "human": { "base": "https://search.016180.xyz", "gate": "sso" },
       "spec": "GET /search?q={query}&format=json",
       "status": "live",
@@ -38,7 +38,7 @@
     {
       "name": "genie",
       "purpose": "Atomic models aggregator: {provider}/{size} slots route to configured local (llama.cpp) or external models.",
-      "machine": { "base": "https://genie.016180.xyz", "gate": "edge-open" },
+      "machine": { "base": "https://genie.016180.xyz", "gate": "stack-bearer" },
       "spec": "GET /openapi.json",
       "status": "building",
       "skill": null
@@ -46,7 +46,7 @@
     {
       "name": "adhd",
       "purpose": "Divergent-ideation engine for agents: structured idea generation and scoring.",
-      "machine": { "base": "https://adhd.016180.xyz", "gate": "edge-open" },
+      "machine": { "base": "https://adhd.016180.xyz", "gate": "stack-bearer" },
       "spec": "GET /openapi.json",
       "status": "building",
       "skill": null
