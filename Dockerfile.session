@@ -4,6 +4,12 @@
 # with — a session must be able to reproduce the release build.
 # System-wide rustup (the pattern of the official rust images): the agent
 # runs as uid 1000, so CARGO_HOME must be writable for the registry cache.
+# RUSTUP_HOME stays root-owned and read-only, which is why every component
+# this repo's quality gate needs must be baked in HERE: a session cannot add
+# one later (`rustup component add` → permission denied, and relocating the
+# rustup home is a 593 MB copy). Until 2026-08-15 the profile was `minimal`
+# with nothing added, so `cargo fmt` and `cargo clippy` did not exist in any
+# sigiled session and the repo's own gate had never once been run against it.
 FROM ghcr.io/ivan-saorin/vm-base:0.1.0
 
 USER root
@@ -19,6 +25,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && curl -sSf https://sh.rustup.rs \
        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.97.1 \
+              --component rustfmt clippy \
     && chmod -R a+rX /usr/local/rustup \
     && chmod -R a+w /usr/local/cargo \
     && printf 'export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo\nexport PATH=/usr/local/cargo/bin:$PATH\n' \
