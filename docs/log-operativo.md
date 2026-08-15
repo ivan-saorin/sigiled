@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-08-15 — sessione 877b0a9c: DEC-27, il catalogo dei servizi
+
+**Dove eravamo.** Piattaforma completa post DEC-25/26; i servizi atomici dello stack (search, paper, folio, reddit, genie, adhd) esistevano solo nel Caddyfile del box — nessuna superficie che un LLM potesse interrogare per sapere cosa c'è.
+
+**Dove prevedevamo di andare.** Il piano concordato in chat: catalogo prima, poi il servizio composto in coda.
+
+**Cosa è stato fatto.** `catalog.json` alla radice + `GET /services` (catalog.rs): embedded come il contratto, validato al boot (catalogo rotto = deploy fallito), pubblico. Schema per servizio: `name, purpose, machine{base,gate}, human?{base,gate}, spec, status, skill` — gamba machine obbligatoria. Skill template §3 (trio search/paper/folio + puntatore al catalogo). Contratto 2.2.0 (verbo + comando `services`). DEC-27 registrata e ratificata in chat: un solo metodo per i servizi dual — one vhost, bearer split — snippet `(dual)` normativo in `deploy/Caddyfile.example`. `cargo check` verde.
+
+**Scarti.** Due, entrambi dal reale: (1) il piano diceva "file letto per request" ma il container deployato non ha il repo — embedded per costruzione, come il contratto; (2) i gate del seed sondati dal vivo: paper è `service-token` (401 in-app), non edge-open; genie/adhd espongono `openapi.json`; search resta `sso-only` finché il suo edge non adotta lo split.
+
+**Stato a fine sessione.** Master ha tutto; il canary serve ancora il contratto 2.1.0 — il catalogo va in onda al prossimo redeploy del control plane.
+
+**Prossimo passo.** (1) Redeploy sigiledd (operatore); (2) rigenera la skill (`GET /skill/sigiled-claude`, approval-gated); (3) Caddyfile del box: `(dual)` su search, decisione bearer per genie/adhd; (4) il servizio composto, primo consumatore di `GET /services`.
+
+---
+
 ## Stato attuale
 
 _aggiornato: 2026-08-09, sessione b83823e4 (DEC-26 editto lingua + lettera alla prossima sessione: revisione anti-stale dei docs)_
