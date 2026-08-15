@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-08-15 — sessione 3ec67e53: DEC-28 semplificata dall'operatore, e l'immagine di sessione riparata
+
+**Dove eravamo.** DEC-28 proposta a fine sessione 5bb368aa con i grant **per-callee** (`svc:<servizio>` da `[compose]`) come regola, e il broker di token di sessione dichiarato prossimo passo obbligato.
+
+**Dove prevedevamo di andare.** Ratifica o emendamento. È arrivato l'emendamento, in chat: *«Basterebbe che il chiamante sia correttamente autenticato. Non mi serve la granularità per servizio.»* — con la richiesta di documentare comunque la fattibilità per-servizio come how-to.
+
+**Cosa è stato fatto.** `ServicePolicy` con due modi e default **`any-authenticated`**: il token è comunque validato (firma RS256 contro la JWKS, `exp`, issuer sotto la base configurata) e ciò che cade è solo la domanda *quali* servizi quel chiamante può raggiungere. Il modo `per-service` resta implementato e testato ma **spento**, con `docs/per-service-authorization.md` come how-to: dichiara `[compose]`, provisiona i gruppi `svc:*`, gira una env var. Il bordo **non cambia** nel passaggio, perché il Caddyfile passa già il nome del servizio a `/auth/verify` e il modo default ne ignora il valore — scelta deliberata, così l'eventuale stretta è un flip di configurazione e non una migrazione.
+
+Un valore di policy non riconosciuto **fa panicare il boot**, stessa dottrina di `catalog::assert_valid()`: una policy di sicurezza scritta male che ripiega in silenzio sul modo permissivo lascia l'operatore convinto di essere chiuso mentre è aperto. Verificato dal vivo: exit 101 col messaggio che nomina i due valori validi.
+
+108 test verdi, fmt e clippy puliti sui file toccati. Smoke: niente header di servizio 500, niente bearer 401, bearer forgiato 401, healthz 200.
+
+**Scarti.** Due, entrambi costosi e istruttivi:
+
+1. **Il fix al `Dockerfile.session` della sessione precedente era rotto.** `rustup-init` vuole `--component` **una volta per componente**: `--component rustfmt clippy` viene respinto con *"unexpected argument 'clippy' found"*. La build dell'immagine è fallita e — esattamente come DEC-25 promette — la sessione è caduta sull'immagine base globale **con lo shout in `build_error`**, cioè senza cargo, senza cc, senza niente. Diagnosi immediata perché il messaggio di rustup arrivava verbatim nella risposta di `open`: leggere la risposta, non bisecare un Dockerfile. Corretto in `--component rustfmt --component clippy`, e siccome `[workspace]` si legge da **master**, è costato commit + close + reopen prima di poter compilare una riga. Nessuna sessione può test-buildare il proprio dockerfile: niente docker nel container (regola 5). Riaperto su `vm-sigiled:df-06bf34aa4b47`, `build_error` assente, `cargo`/`fmt`/`clippy` nativi — la copia della rustup home in `$HOME` non serve più a nessuno.
+2. **Il broker esce dal percorso critico.** Non era un ritardo, era un requisito della granularità per-progetto: `sigiled-claude` è identità *driver* condivisa fra tutti i progetti e il suo JWT non dice *per quale progetto* sta agendo. Tolta la granularità, il requisito si dissolve invece di essere risolto — il token del driver basta, che è ciò che SDE sperava fin dall'inizio. Resta come nota a piè di pagina nell'how-to: è il pezzo da costruire per primo *se* un domani si accende `per-service` e lo si vuole vincolante anche per le sessioni, non solo per app e job.
+
+**Stato a fine sessione.** Master ha politica, arbitro, how-to e immagine di sessione funzionante. **La produzione continua a non cambiare**: `/auth/verify` è additivo e nessun bordo lo chiama finché il Caddyfile vivo — sull'host, irraggiungibile da qualunque sessione — non viene aggiornato a mano. Registro §8 ancora **non toccato**: la riga DEC-28 la scrive la ratifica.
+
+**Prossimo passo.** (1) Operatore: ratificare DEC-28 nella forma semplificata; (2) incollare lo snippet `(dual)` sul bordo col secondo argomento per ogni `import dual`, ricaricare, passare le tre curl in fondo al file; (3) **`sde` è sbloccato da quel momento** — token driver accettato, specifiche di genie e paper finalmente leggibili, S2 si chiude su documenti e non su congetture.
+
+---
+
 ## 2026-08-15 — sessione 5bb368aa: DEC-28 proposta, l'auth fra servizi composti
 
 **Dove eravamo.** `sde`, primo servizio composto (sequenza DEC-27), si è fermato a metà S2: ogni servizio dello stack è gated **al bordo**, quindi da dentro un container di sessione `genie/healthz`, `genie/docs`, `paper-api/openapi.json` e `adhd/openapi.json` rispondono **401** — e anche un token driver `sigiled-claude` appena mintato prende 401 su tutti e tre. **La specifica pubblica di un servizio è illeggibile da dove si scrive il suo client.** SDE ha scelto di non scrivere due client indovinandone la forma, e lo ha messo per iscritto in `docs/composed-service-auth.md` del suo repo, con tre opzioni per il control plane. Questa sessione è la risposta.

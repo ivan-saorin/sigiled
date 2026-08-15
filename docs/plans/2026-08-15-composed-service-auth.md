@@ -1,8 +1,22 @@
 # Composed-service authentication — plan (2026-08-15)
 
-**Session**: 5bb368aa (elevated, driver sigiled-claude) · **Decision**: DEC-28,
-**PROPOSED — not ratified.** The code described in §"What landed" is on master
-and inert; §"What the operator must do" is what turns it on.
+**Session**: 5bb368aa, continued in 3ec67e53 (elevated, driver sigiled-claude)
+· **Decision**: DEC-28, **PROPOSED — not ratified.** The code described in
+§"What landed" is on master and inert; §"What the operator must do" is what
+turns it on.
+
+> **Amended the same day, by the operator, before ratification.** The first
+> draft of this plan made per-callee grants the rule. The operator's answer:
+> *"It would be sufficient that the caller is correctly authenticated. I don't
+> need per service granularity."* — so the default is now
+> `any-authenticated`, and per-service survives as a tested, documented,
+> off-by-default tightening (`docs/per-service-authorization.md`).
+>
+> Two consequences worth reading before the rest of this document, because
+> they invert its original conclusions: **the session token broker is no
+> longer on the critical path** (it existed only to carry a project claim
+> that per-service granularity needed), and **SDE is unblocked** the moment
+> the edge change is applied — a driver token now satisfies the gate.
 **Origin**: `sde`, the first composed service (DEC-27 sequencing), could not be
 finished. Its writeup — `docs/composed-service-auth.md` in that repo — measured
 the wall from inside a session container: every stack service is gated at the
@@ -43,11 +57,24 @@ issuer's JWKS with a cached `KeyStore`, and the Caddyfile **already** uses
 
 ## Decisions (DEC-28, proposed)
 
-1. **Identity is a group, not an audience.** A caller may call `<service>` if
-   its token carries `svc:<service>`. The prefix is configurable
-   (`SIGILED_SERVICE_GROUP_PREFIX`, default `svc:`) and compared **whole
-   string** — a prefix match would let `svc:genie-preview` satisfy `genie` and
-   silently widen every grant on the stack.
+1. **A genuine stack identity is sufficient.** `SIGILED_SERVICE_POLICY`
+   defaults to `any-authenticated`: the edge accepts any token this IdP
+   signed, unexpired, from the trusted issuer. This is the same trust
+   boundary as the shared static bearer it replaces — everyone inside reaches
+   everything — but with the shared secret gone, the caller named in the
+   logs, revocation by disabling a client, and rotation by an hour elapsing.
+   A strict improvement on the status quo with no provisioning burden, which
+   is why it is the default rather than a compromise.
+
+   The tightening exists and is tested: `per-service` requires the caller to
+   carry `svc:<service>`, prefix configurable
+   (`SIGILED_SERVICE_GROUP_PREFIX`) and compared **whole string** — a prefix
+   match would let `svc:genie-preview` satisfy `genie` and silently widen
+   every grant on the stack. How to turn it on:
+   `docs/per-service-authorization.md`. An unrecognised policy value
+   **panics at boot**: a misspelling that resolves to the permissive default
+   would leave the operator believing the stack is locked down when it is
+   not.
 
 2. **`[compose]` is the policy layer, and it is separate on purpose.**
 
@@ -71,11 +98,12 @@ issuer's JWKS with a cached `KeyStore`, and the Caddyfile **already** uses
    client — that overwrite is the only reason the header can be trusted.
    Both verbs, because `forward_auth` rewrites the method to GET.
 
-4. **Drivers get no blanket access.** `stack:drivers` means *may drive
-   SIGILED*; it never means *may call genie*. The policy function has one
-   admin arm and one `svc:` arm and no third — the day it grows an
-   `|| driver_group`, `[compose]` stops constraining anything and least
-   privilege is gone. There is a test named for exactly that.
+4. **Under the default, a driver token reaches services — and that is the
+   point.** It is what lets a session read the spec of the service whose
+   client it is writing, which is the entire problem SDE reported. Under
+   `per-service` the same token is refused without an `svc:` grant, and there
+   is a test for each direction so neither behaviour can drift into the other
+   unnoticed.
 
 5. **Migrate by accepting both.** The edge keeps the static
    `{$API_BEARER_KEY}` arm and adds the adjudicated arm; static is matched
@@ -106,31 +134,28 @@ issuer's JWKS with a cached `KeyStore`, and the Caddyfile **already** uses
 **Nothing above changes the running stack.** The endpoint is additive and no
 edge calls it yet.
 
-## What did NOT land, and the reason it is a decision and not a delay
+## What did NOT land, and why it no longer blocks anything
 
-**The session token broker.** SDE's writeup claimed sessions "fall out of this
-for free" by accepting the driver's own token. They do not, and the reason is
-structural: `sigiled-claude` is a **driver** identity shared across all 20
-projects. Its JWT carries `groups` and nothing that says *acting for project
-sde*. So the edge cannot enforce a per-project `[compose]` policy from a driver
-token — the project is simply not in it. The choice is:
+**The session token broker — designed, not built, and no longer needed.**
 
-- accept driver tokens → sessions work immediately, but `[compose]` constrains
-  only jobs and apps, and a session on `torchio` may call `genie` just as well
-  as one on `sde`; or
-- mint a **session-scoped** token carrying the project — SDE's option 2, the
-  broker: `POST /sigiled/sessions/{id}/token/{service}`, short-lived, dying
-  with the session, every mint auditable against the session's `actor`.
+SDE's writeup claimed sessions "fall out of this for free" by accepting the
+driver's own token. Under the original per-callee proposal that was false, and
+structurally so: `sigiled-claude` is a **driver** identity shared across every
+project, and its JWT says *which driver*, never *which project* — so no
+per-project `[compose]` policy can be enforced from it. The fix would have been
+a project-scoped, session-lived token: SDE's option 2, the broker,
+`POST /sigiled/sessions/{id}/token/{service}`.
 
-The second is the one worth having and it is the natural next commit: it needs
-a signing key for sigiledd and one more arm in `/auth/verify` to accept
-sigiledd-issued tokens alongside authentik-issued ones. Deliberately not rushed
-into this session — it is new credential-issuing surface in the control plane,
-and it wants its own review rather than a tired appendix to this one.
+The operator's simplification dissolves the requirement rather than solving it.
+Under `any-authenticated` there is no per-project claim to carry, so the driver
+token is sufficient exactly as SDE originally hoped — it just needed the edge
+to accept IdP identities at all, which is what landed.
 
-**Consequence to state plainly: SDE is not yet unblocked by this session.**
-Until the broker lands (or the operator grants a driver the `svc:*` groups by
-hand as an interim), a session still cannot read genie's or paper's spec.
+The broker therefore stays a **footnote in
+`docs/per-service-authorization.md`**: the piece to build first *if* the stack
+ever turns on per-service and wants it to bind sessions as well as apps and
+jobs. It is new credential-issuing surface in the control plane, and it should
+be built when something needs it, with its own review.
 
 ## What the operator must do
 
@@ -141,12 +166,13 @@ hand as an interim), a session still cannot read genie's or paper's spec.
    the live Caddyfile is on the host, out of reach of any session (rule 5).
    Copy the `(dual)` snippet, give each `import dual` its service-name second
    argument, reload, then run the two probes at the bottom of that file.
-3. **Provision the groups.** `svc:<service>` per catalog service, and the
-   caller's service account added to the ones its `[compose]` declares.
-   `authentik-provision.sh` makes exactly these calls already for
-   `stack:drivers`; extending it is small and should follow ratification, not
-   precede it.
-4. **Decide the interim for SDE**: wait for the broker, or hand
-   `sigiled-claude` the five `svc:*` groups temporarily so S2 can be finished.
-   The second is a real widening — it grants every project that driver touches,
-   not just `sde` — so it should be a conscious, time-boxed choice.
+3. **Nothing else.** No groups to provision, no manifests to edit, no broker
+   to wait for: `any-authenticated` needs only the two steps above. SDE is
+   unblocked the moment step 2 is applied — it can then read genie's and
+   paper's specs with the token it already mints, and finish S2 against
+   documents rather than guesses.
+
+If and when the trade changes, `docs/per-service-authorization.md` is the
+how-to: declare `[compose]`, provision `svc:*` groups, flip one env var. The
+edge needs no change at that point, because the Caddyfile already passes each
+service's name to `/auth/verify` — the default policy simply ignores it.

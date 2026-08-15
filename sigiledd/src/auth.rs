@@ -46,8 +46,43 @@ pub struct AuthConfig {
     /// call: `svc:genie` says "may call genie". A group, not an audience,
     /// because groups are what this IdP already emits (the `sigiled-groups`
     /// scope mapping) and what `Claims` already carries — see
-    /// `docs/plans/2026-08-15-composed-service-auth.md`.
+    /// `docs/plans/2026-08-15-composed-service-auth.md`. Only consulted under
+    /// `ServicePolicy::PerService`.
     pub service_group_prefix: String,
+    /// How strict the service-to-service gate is. See `ServicePolicy`.
+    pub service_policy: ServicePolicy,
+}
+
+/// What `/auth/verify` requires beyond a valid token, decided by the operator
+/// for the whole instance (`SIGILED_SERVICE_POLICY`).
+///
+/// The distinction is *not* whether the caller is authenticated — the token is
+/// signature-checked, expiry-checked and issuer-checked before this is ever
+/// consulted, under both modes. It is only whether the stack additionally
+/// wants to say *which* services each caller may reach.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ServicePolicy {
+    /// **Default.** Any identity the stack IdP vouches for may call any
+    /// service. The trust boundary is the IdP's user set — on a stack whose
+    /// IdP holds the operator, a couple of drivers and some service accounts,
+    /// that is the same boundary as the shared bearer it replaces, minus the
+    /// shared secret and plus a name in the logs.
+    #[default]
+    AnyAuthenticated,
+    /// The caller must additionally carry `svc:<service>`, provisioned from
+    /// the project's `[compose]` table. The tightening path, off by default:
+    /// see `docs/per-service-authorization.md` for how to turn it on.
+    PerService,
+}
+
+impl ServicePolicy {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "any-authenticated" => Some(ServicePolicy::AnyAuthenticated),
+            "per-service" => Some(ServicePolicy::PerService),
+            _ => None,
+        }
+    }
 }
 
 impl AuthConfig {
@@ -63,6 +98,18 @@ impl AuthConfig {
                 .unwrap_or_else(|_| "stack:drivers".into()),
             service_group_prefix: std::env::var("SIGILED_SERVICE_GROUP_PREFIX")
                 .unwrap_or_else(|_| "svc:".into()),
+            // A misspelled security policy must not resolve to a default.
+            // Same doctrine as catalog::assert_valid(): a control plane that
+            // cannot read its own configuration does not boot.
+            service_policy: match std::env::var("SIGILED_SERVICE_POLICY") {
+                Ok(s) => ServicePolicy::parse(&s).unwrap_or_else(|| {
+                    panic!(
+                        "SIGILED_SERVICE_POLICY={s:?} is not a policy — \
+                         expected \"any-authenticated\" or \"per-service\""
+                    )
+                }),
+                Err(_) => ServicePolicy::default(),
+            },
         }
     }
 
@@ -457,12 +504,20 @@ pub struct VerifyBody {
 /// May `claims` call `service`? The whole policy, in one place and pure so
 /// it can be tested without a signing key or an HTTP stack.
 ///
-/// One rule, deliberately: the caller carries `svc:<service>`, or it is an
-/// admin. Drivers get **no** blanket access — `stack:drivers` says *may
-/// drive SIGILED*, never *may call genie*. Keeping the driver group out of
-/// this function is the entire separation between the identity layer and
-/// the policy layer; the day it grows an `|| driver_group` arm, `[compose]`
-/// stops meaning anything for sessions.
+/// **Reaching this function already means the caller is authenticated**: the
+/// token's signature, expiry and issuer were checked by `validate_jwt`, which
+/// only accepts issuers under the configured IdP base. What is decided here is
+/// the narrower question of whether the stack also wants per-callee
+/// granularity, and by default it does not — `AnyAuthenticated` is the
+/// operator's chosen posture (2026-08-15): a genuine stack identity is
+/// sufficient, and the trust boundary is who the IdP will issue to.
+///
+/// Under `PerService` the caller must additionally carry `svc:<service>`.
+/// Note this is enforceable today for apps and jobs, whose identity is their
+/// own; a *session* borrows its driver's identity, which names the driver and
+/// not the project, so per-service granularity for sessions needs a
+/// project-scoped token that nothing mints yet — the footnote in
+/// `docs/per-service-authorization.md`.
 pub fn authorize_service_call(
     claims: &Claims,
     service: &str,
@@ -471,11 +526,17 @@ pub fn authorize_service_call(
     if claims.groups.iter().any(|g| g == &cfg.admin_group) {
         return Ok("admin");
     }
-    let wanted = cfg.service_group(service);
-    if claims.groups.contains(&wanted) {
-        return Ok("compose");
+    match cfg.service_policy {
+        ServicePolicy::AnyAuthenticated => Ok("authenticated"),
+        ServicePolicy::PerService => {
+            let wanted = cfg.service_group(service);
+            if claims.groups.contains(&wanted) {
+                Ok("compose")
+            } else {
+                Err(Denial(format!("caller {} lacks {wanted}", claims.driver())))
+            }
+        }
     }
-    Err(Denial(format!("caller {} lacks {wanted}", claims.driver())))
 }
 
 /// `GET|POST /sigiled/auth/verify` — the question the edge asks about every
@@ -756,6 +817,16 @@ YQIDAQAB
             admin_group: "stack:admins".into(),
             driver_group: "stack:drivers".into(),
             service_group_prefix: "svc:".into(),
+            service_policy: ServicePolicy::default(),
+        }
+    }
+
+    /// The opt-in tightening. Its own helper so every per-service test says
+    /// out loud that it is testing a mode the stack does not run by default.
+    fn cfg_per_service() -> AuthConfig {
+        AuthConfig {
+            service_policy: ServicePolicy::PerService,
+            ..cfg()
         }
     }
 
@@ -797,23 +868,68 @@ YQIDAQAB
         .unwrap()
     }
 
+    // --- default posture: a genuine stack identity is enough ---------------
+
     #[test]
-    fn compose_group_grants_exactly_its_own_service() {
-        let c = claims_with("sde", &["svc:genie", "svc:paper"]);
-        assert_eq!(authorize_service_call(&c, "genie", &cfg()), Ok("compose"));
-        assert_eq!(authorize_service_call(&c, "paper", &cfg()), Ok("compose"));
-        // Declared two, granted two — the third is not implied by the others.
-        assert!(authorize_service_call(&c, "folio", &cfg()).is_err());
+    fn any_authenticated_is_the_default_and_admits_a_plain_driver() {
+        // The operator's decision, 2026-08-15: per-service granularity is not
+        // wanted, so a driver token reaching the edge is sufficient. This is
+        // what unblocks a session from reading a service's own spec.
+        assert_eq!(cfg().service_policy, ServicePolicy::AnyAuthenticated);
+        let c = claims_with("sigiled-claude", &["stack:drivers"]);
+        assert_eq!(
+            authorize_service_call(&c, "genie", &cfg()),
+            Ok("authenticated")
+        );
     }
 
     #[test]
-    fn driver_membership_is_not_a_licence_to_call_services() {
-        // The load-bearing test of the whole design: `stack:drivers` means
-        // "may drive SIGILED", never "may call genie". If this ever passes,
-        // [compose] has stopped constraining sessions and the least-privilege
-        // story is gone — see docs/plans/2026-08-15-composed-service-auth.md.
+    fn any_authenticated_still_means_authenticated() {
+        // The mode relaxes WHICH services a caller may reach; it never
+        // relaxes whether the token was real. Signature, expiry and issuer
+        // are validate_jwt's job and happen before this function — the tests
+        // for that are unchanged and still the gate that matters.
+        // Here: even with zero groups, the caller got in only by presenting a
+        // token this IdP signed.
+        let c = claims_with("some-service-account", &[]);
+        assert_eq!(
+            authorize_service_call(&c, "paper", &cfg()),
+            Ok("authenticated")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_policy_is_a_boot_failure_not_a_default() {
+        // Silently falling back to the permissive mode on a typo would be the
+        // worst of both worlds: the operator believes it is locked down.
+        assert_eq!(
+            ServicePolicy::parse("per-service"),
+            Some(ServicePolicy::PerService)
+        );
+        assert_eq!(ServicePolicy::parse("perservice"), None);
+        assert_eq!(ServicePolicy::parse(""), None);
+    }
+
+    // --- opt-in tightening: docs/per-service-authorization.md --------------
+
+    #[test]
+    fn compose_group_grants_exactly_its_own_service() {
+        let k = cfg_per_service();
+        let c = claims_with("sde", &["svc:genie", "svc:paper"]);
+        assert_eq!(authorize_service_call(&c, "genie", &k), Ok("compose"));
+        assert_eq!(authorize_service_call(&c, "paper", &k), Ok("compose"));
+        // Declared two, granted two — the third is not implied by the others.
+        assert!(authorize_service_call(&c, "folio", &k).is_err());
+    }
+
+    #[test]
+    fn under_per_service_a_driver_group_is_not_a_licence() {
+        // `stack:drivers` means "may drive SIGILED", never "may call genie".
+        // Only meaningful in the tightened mode — which is exactly why the
+        // helper name says so.
+        let k = cfg_per_service();
         let c = claims_with("sigiled-claude", &["stack:drivers"]);
-        let denial = authorize_service_call(&c, "genie", &cfg()).unwrap_err();
+        let denial = authorize_service_call(&c, "genie", &k).unwrap_err();
         assert!(
             denial.0.contains("svc:genie"),
             "denial should name the missing group: {}",
@@ -827,28 +943,32 @@ YQIDAQAB
     }
 
     #[test]
-    fn admins_pass_every_gate() {
+    fn admins_pass_every_gate_under_both_policies() {
         let c = claims_with("ivan", &["stack:admins"]);
         assert_eq!(authorize_service_call(&c, "anything", &cfg()), Ok("admin"));
+        assert_eq!(
+            authorize_service_call(&c, "anything", &cfg_per_service()),
+            Ok("admin")
+        );
     }
 
     #[test]
-    fn a_token_with_no_groups_is_denied_not_defaulted() {
+    fn under_per_service_no_groups_is_denied_not_defaulted() {
         let c = claims_with("nobody", &[]);
-        assert!(authorize_service_call(&c, "genie", &cfg()).is_err());
+        assert!(authorize_service_call(&c, "genie", &cfg_per_service()).is_err());
     }
 
     #[test]
     fn the_group_prefix_is_configurable_and_not_a_substring_match() {
-        let mut c2 = cfg();
-        c2.service_group_prefix = "stack:svc-".into();
+        let mut k = cfg_per_service();
+        k.service_group_prefix = "stack:svc-".into();
         let c = claims_with("sde", &["stack:svc-genie"]);
-        assert_eq!(authorize_service_call(&c, "genie", &c2), Ok("compose"));
+        assert_eq!(authorize_service_call(&c, "genie", &k), Ok("compose"));
         // "genie" must not be satisfied by a group for "genie-preview": the
         // comparison is whole-string, and a prefix-match bug here would
         // silently widen every grant on the stack.
         let sneaky = claims_with("sde", &["stack:svc-genie-preview"]);
-        assert!(authorize_service_call(&sneaky, "genie", &c2).is_err());
+        assert!(authorize_service_call(&sneaky, "genie", &k).is_err());
     }
 
     #[tokio::test]

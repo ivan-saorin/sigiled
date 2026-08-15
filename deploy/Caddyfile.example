@@ -49,9 +49,13 @@ auth.{$DOMAIN} {
 #      shared secret per callee, no idea who presented it, rotation means
 #      editing env on every caller at once.
 #   2. an IdP-signed JWT, adjudicated by sigiledd at /sigiled/auth/verify.
-#      The caller is named, the grant is a group (svc:<service>) provisioned
-#      from the project's [compose] table, revocation is removing a group
-#      membership, and rotation is a token expiring in an hour.
+#      By default (SIGILED_SERVICE_POLICY=any-authenticated) the rule is
+#      simply: a token this stack's IdP signed, unexpired, from the trusted
+#      issuer. Same trust boundary as the shared bearer it replaces — minus
+#      the shared secret, plus a caller name in the logs, plus revocation by
+#      disabling a client and rotation by an hour passing.
+#      docs/per-service-authorization.md documents the optional tightening
+#      to per-callee grants; it is an env var, not an edge change.
 #
 # Both are accepted deliberately: flipping straight to (2) would break every
 # caller on the stack in the same instant, including the deployed apps that
@@ -79,11 +83,16 @@ auth.{$DOMAIN} {
 			}
 			handle {
 				# 2xx = allow, anything else is returned to the caller as-is
-				# (401 unsigned/expired, 403 missing svc:<service>, 500 if
-				# this snippet was imported without its service argument).
+				# (401 unsigned/expired/wrong issuer, 403 missing the grant
+				# under the per-service policy, 500 if this snippet was
+				# imported without its service argument).
 				# X-Sigiled-Service is set HERE, never read from the client:
 				# a caller that sends its own is overwritten, which is what
 				# makes the header trustworthy on the sigiledd side.
+				# It is required even though the DEFAULT policy ignores its
+				# value — on purpose. It means switching the stack to
+				# per-service authorization later is one env var on sigiledd
+				# with no edge change and no reload of this file.
 				forward_auth sigiled:8080 {
 					uri /sigiled/auth/verify
 					header_up X-Sigiled-Service {args[1]}
@@ -137,5 +146,13 @@ auth.{$DOMAIN} {
 #
 #	curl -sS -H "Authorization: Bearer <a driver JWT>" \
 #	  -H 'X-Sigiled-Service: search' https://api.{$DOMAIN}/sigiled/auth/verify
-#	# 403 + {"detail":"caller sigiled-claude lacks svc:search"} — the policy
-#	# is live and correctly refuses a driver that was granted nothing yet.
+#	# 200 + {"caller":"sigiled-claude","service":"search",
+#	#        "granted_by":"authenticated"} — the new arm is live.
+#	# Under the per-service policy the same call answers 403 with
+#	# {"detail":"caller sigiled-claude lacks svc:search"} until the group
+#	# is provisioned.
+#
+#	curl -sS -o /dev/null -w '%{http_code}\n' \
+#	  -H 'Authorization: Bearer not-a-token' https://search.{$DOMAIN}/
+#	# 401 — a bad credential is still refused, which is the check that
+#	# actually matters after widening what counts as a good one.
