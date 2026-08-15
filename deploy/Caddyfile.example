@@ -60,50 +60,59 @@ auth.{$DOMAIN} {
 # Both are accepted deliberately: flipping straight to (2) would break every
 # caller on the stack in the same instant, including the deployed apps that
 # have the static token in their env today. Drop the static arm — the
-# `handle @static` block — once nothing presents it any more.
+# `@not_stack_bearer` matcher, making the forward_auth unconditional — once
+# nothing presents it any more.
 #
 # Static wins first on purpose: it costs no round trip, so the migration
 # never makes the hot path slower for callers that have not moved yet.
 #
-# Usage gains a second argument, the service's catalog name:
-#	import dual searxng:8080 search
+# The callee name sigiledd is told about comes from the HOSTNAME, not from
+# a snippet argument: labels are right-indexed, so on a two-label {$DOMAIN}
+# index 2 is the first label — genie.example.com → "genie". Site names ARE
+# catalog names on the reference instance, which makes this free. Learned
+# the hard way (2026-08-15, live edge): passing it as {args[1]} produced
+# "Placeholder {args[N]} index is out of bounds" warnings on the deployed
+# caddy, and an empty header. Hostname derivation has no such failure mode
+# and keeps every call site a plain one-argument `import dual`.
+#
+# The equivalent machine-only gate, for services with no human leg — call
+# sites stay a bare `import bearer`:
+#
+#	(bearer) {
+#		@not_stack_bearer not header Authorization "Bearer {$API_BEARER_KEY}"
+#		forward_auth @not_stack_bearer sigiled:8080 {
+#			uri /sigiled/auth/verify
+#			header_up X-Sigiled-Service {http.request.host.labels.2}
+#			copy_headers X-Sigiled-Caller
+#		}
+#	}
+#	genie.{$DOMAIN} {
+#		import bearer
+#		reverse_proxy genie:8000
+#	}
 #
 (dual) {
 	@machine header_regexp Authorization ^Bearer\s
 	handle @machine {
-		route {
-			@static header Authorization "Bearer {$API_BEARER_KEY}"
-			handle @static {
-				reverse_proxy {args[0]} {
-					header_up -X-Authentik-Username
-					header_up -X-Authentik-Groups
-					header_up -X-Authentik-Email
-					header_up -X-Sigiled-Caller
-				}
-			}
-			handle {
-				# 2xx = allow, anything else is returned to the caller as-is
-				# (401 unsigned/expired/wrong issuer, 403 missing the grant
-				# under the per-service policy, 500 if this snippet was
-				# imported without its service argument).
-				# X-Sigiled-Service is set HERE, never read from the client:
-				# a caller that sends its own is overwritten, which is what
-				# makes the header trustworthy on the sigiledd side.
-				# It is required even though the DEFAULT policy ignores its
-				# value — on purpose. It means switching the stack to
-				# per-service authorization later is one env var on sigiledd
-				# with no edge change and no reload of this file.
-				forward_auth sigiled:8080 {
-					uri /sigiled/auth/verify
-					header_up X-Sigiled-Service {args[1]}
-					copy_headers X-Sigiled-Caller
-				}
-				reverse_proxy {args[0]} {
-					header_up -X-Authentik-Username
-					header_up -X-Authentik-Groups
-					header_up -X-Authentik-Email
-				}
-			}
+		# The two-credential gate, inline (same shape as (bearer) above):
+		# the static key skips the round trip entirely; anything else is
+		# adjudicated by sigiledd — 2xx allow, else the 401/403/500 is
+		# returned to the caller as-is.
+		# X-Sigiled-Service is set HERE, never read from the client: a
+		# caller that sends its own is overwritten, which is what makes
+		# the header trustworthy on the sigiledd side. Under the default
+		# policy sigiledd ignores the value; sending it anyway is what
+		# makes a later flip to per-service one env var, no edge edit.
+		@not_stack_bearer not header Authorization "Bearer {$API_BEARER_KEY}"
+		forward_auth @not_stack_bearer sigiled:8080 {
+			uri /sigiled/auth/verify
+			header_up X-Sigiled-Service {http.request.host.labels.2}
+			copy_headers X-Sigiled-Caller
+		}
+		reverse_proxy {args[0]} {
+			header_up -X-Authentik-Username
+			header_up -X-Authentik-Groups
+			header_up -X-Authentik-Email
 		}
 	}
 	handle {
@@ -121,19 +130,32 @@ auth.{$DOMAIN} {
 		}
 	}
 }
-# Usage — a dual service is two lines; machine-only services keep the
-# plain bearer gate + reverse_proxy:
+# Usage — a dual service is two lines; machine-only services use the
+# (bearer) snippet documented above:
 #
 #	search.{$DOMAIN} {
-#		import dual searxng:8080 search
+#		import dual searxng:8080
 #	}
 #
 # ── Applying this to a live edge ──────────────────────────────────────
-# This file is an EXAMPLE: the running Caddyfile lives on the host, which
-# no session container can reach (contract rule 5). Landing it here changes
-# nothing in production until the operator copies the (dual) snippet across
-# and reloads. Until then /sigiled/auth/verify simply sits there unasked,
-# which is why the endpoint could ship ahead of the edge.
+# This pattern went to the reference instance's edge on 2026-08-15 and was
+# verified end-to-end the same evening (driver JWT reads genie/adhd
+# openapi.json and search JSON through the gate; static callers unchanged).
+# Three operational lessons from that deploy, all cheap to inherit:
+#
+#   1. VALIDATE BEFORE RELOAD, in the container's own image:
+#	docker run --rm --env-file .env -v $PWD/Caddyfile:/tmp/C:ro \
+#	  caddy:<your tag> caddy validate --adapter caddyfile --config /tmp/C
+#   2. A SINGLE-FILE bind mount pins the inode: an editor that saves via
+#      temp-file-and-rename (micro, vim, most of them) silently detaches
+#      the running container from your edits — every reload re-reads the
+#      OLD bytes and the error line numbers never move. Bind the DIRECTORY
+#      instead, or write strictly via `cat new > Caddyfile` redirection.
+#   3. Count what loaded: the "automatic TLS certificate management" log
+#      line lists every domain the config actually carries. If the count
+#      is short, the config was truncated in transit — caddy adapts what
+#      it was given and will not complain about sites that simply aren't
+#      there.
 #
 # The reload is safe by construction: every caller presenting today's static
 # token keeps working (arm 1), and the new arm can only ever ADD an accepted

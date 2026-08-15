@@ -560,17 +560,24 @@ pub async fn verify(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let auth = &state.auth;
+    // The header is REQUIRED only under PerService, where it is the policy
+    // input. Under AnyAuthenticated it is informational (logs, VerifyBody),
+    // so its absence must not fail the arm — hard-requiring it under the
+    // default was the bug that turned a cosmetic edge misconfiguration into
+    // a dead JWT path on 2026-08-15. Failing closed is still right where the
+    // value matters: a PerService edge that forgot the header would
+    // otherwise authorize against service "", which no svc:* group names.
     let service = match headers.get(SERVICE_HEADER).and_then(|v| v.to_str().ok()) {
         Some(s) if !s.is_empty() => s.to_string(),
-        // A misconfigured edge must fail closed and say so: this is an
-        // operator error, not a caller error, hence 500 rather than 401.
-        _ => {
+        _ if auth.config.service_policy == ServicePolicy::PerService => {
+            // Operator error, not caller error: hence 500, never 401.
             return AuthError(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("edge did not set {SERVICE_HEADER}"),
+                format!("edge did not set {SERVICE_HEADER} (required under per-service policy)"),
             )
-            .into_response()
+            .into_response();
         }
+        _ => String::new(),
     };
 
     let token = match headers
@@ -969,6 +976,70 @@ YQIDAQAB
         // silently widen every grant on the stack.
         let sneaky = claims_with("sde", &["stack:svc-genie-preview"]);
         assert!(authorize_service_call(&sneaky, "genie", &k).is_err());
+    }
+
+    // --- /auth/verify transport: the service header requirement ------------
+
+    fn verify_state(policy: ServicePolicy) -> crate::AppState {
+        let mut c = cfg();
+        c.bootstrap_bearer = None;
+        c.service_policy = policy;
+        let auth = AuthState {
+            config: std::sync::Arc::new(c),
+            keys: preloaded_keys(),
+            approvals: ApprovalStore::default(),
+            http: reqwest::Client::new(),
+        };
+        crate::AppState {
+            auth,
+            ..Default::default()
+        }
+    }
+
+    async fn call_verify(state: crate::AppState, with_service: bool) -> axum::http::StatusCode {
+        let claims = serde_json::json!({
+            "sub": "x", "preferred_username": "sigiled-claude",
+            "groups": ["stack:drivers"],
+            "iss": "https://idp.test/application/o/sigiled-claude/",
+            "exp": now_epoch() + 600
+        });
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", sign(&claims)).parse().unwrap(),
+        );
+        if with_service {
+            headers.insert(SERVICE_HEADER, "genie".parse().unwrap());
+        }
+        verify(axum::extract::State(state), headers)
+            .await
+            .into_response()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn missing_service_header_is_fine_under_the_default_policy() {
+        // The 2026-08-15 lesson: requiring an informational header turned an
+        // edge misconfiguration into a dead JWT arm. Under any-authenticated
+        // the header is not policy input, so its absence must not matter.
+        let s = verify_state(ServicePolicy::AnyAuthenticated);
+        assert_eq!(call_verify(s, false).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn missing_service_header_is_a_500_under_per_service() {
+        // Here the header IS the policy input: authorizing against "" would
+        // deny everyone with a message naming a group nobody could hold.
+        // Operator error, said as one: 500, not 401.
+        let s = verify_state(ServicePolicy::PerService);
+        assert_eq!(
+            call_verify(s, false).await,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        // And with the header present the same state authorizes normally
+        // (403 here: the driver holds no svc:genie under per-service).
+        let s = verify_state(ServicePolicy::PerService);
+        assert_eq!(call_verify(s, true).await, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
