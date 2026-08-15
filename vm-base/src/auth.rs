@@ -14,11 +14,7 @@ use crate::state::{now_epoch, AppState};
 /// Session token gate (§5 auth). Layered under Caddy's bearer; a token minted
 /// for project A must be rejected by project B's container — enforced simply
 /// because each container knows only its own token.
-pub async fn require_token(
-    State(st): State<Arc<AppState>>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn require_token(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let ok = req
         .headers()
         .get("authorization")
@@ -31,7 +27,10 @@ pub async fn require_token(
         .unwrap_or(false);
 
     if !ok {
-        return (StatusCode::UNAUTHORIZED, Json(json!({ "detail": "bad session token" })))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "detail": "bad session token" })),
+        )
             .into_response();
     }
 

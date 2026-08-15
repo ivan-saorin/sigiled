@@ -41,7 +41,10 @@ async fn git(st: &AppState, args: &[&str]) -> Result<String, ApiError> {
         }
     }
 
-    let out = cmd.output().await.map_err(|e| ApiError::internal(format!("spawn git: {e}")))?;
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| ApiError::internal(format!("spawn git: {e}")))?;
     if !out.status.success() {
         return Err(ApiError::bad_request(format!(
             "git {} failed ({}): {}",
@@ -72,7 +75,11 @@ pub async fn status(State(st): State<Arc<AppState>>) -> Result<Json<StatusResp>,
         .unwrap_or("?")
         .to_string();
     let files: Vec<String> = lines.map(|l| l.to_string()).collect();
-    Ok(Json(StatusResp { branch, dirty: !files.is_empty(), files }))
+    Ok(Json(StatusResp {
+        branch,
+        dirty: !files.is_empty(),
+        files,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -108,12 +115,16 @@ pub async fn commit(
     let staged = git(&st, &["status", "--porcelain"]).await?;
     if staged.trim().is_empty() {
         let sha = git(&st, &["rev-parse", "HEAD"]).await?.trim().to_string();
-        return Ok(Json(serde_json::json!({ "committed": false, "pushed": false, "sha": sha })));
+        return Ok(Json(
+            serde_json::json!({ "committed": false, "pushed": false, "sha": sha }),
+        ));
     }
     git(&st, &["commit", "-m", &r.message]).await?;
     let sha = git(&st, &["rev-parse", "HEAD"]).await?.trim().to_string();
     git(&st, &["push", "origin", "HEAD"]).await?;
-    Ok(Json(serde_json::json!({ "committed": true, "pushed": true, "sha": sha })))
+    Ok(Json(
+        serde_json::json!({ "committed": true, "pushed": true, "sha": sha }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -173,8 +184,12 @@ pub async fn branches(State(st): State<Arc<AppState>>) -> Result<Json<Vec<Branch
     git(&st, &["fetch", "--prune", "origin"]).await?;
     let raw = git(
         &st,
-        &["for-each-ref", "refs/heads", "refs/remotes/origin",
-          "--format=%(refname:short) %(objectname)"],
+        &[
+            "for-each-ref",
+            "refs/heads",
+            "refs/remotes/origin",
+            "--format=%(refname:short) %(objectname)",
+        ],
     )
     .await?;
     let out = raw

@@ -37,7 +37,9 @@ pub fn run(v1_dir: &Path) -> Result<String, String> {
 }
 
 fn import_projects(registry: &serde_json::Value, snap: &mut StateSnapshot, report: &mut String) {
-    let Some(projects) = registry["projects"].as_object() else { return };
+    let Some(projects) = registry["projects"].as_object() else {
+        return;
+    };
     let (mut imported, mut skipped) = (0, Vec::new());
     for (name, p) in projects {
         if TOMBSTONES.contains(&name.as_str()) {
@@ -59,9 +61,8 @@ fn import_projects(registry: &serde_json::Value, snap: &mut StateSnapshot, repor
             report.push_str(&format!(
                 "   ATTENZIONE {name}: branch v1 da riprendere: {} (last_commit {})\n",
                 resume["branch"].as_str().unwrap_or("?"),
-                &resume["last_commit"].as_str().unwrap_or("?")[..12.min(
-                    resume["last_commit"].as_str().unwrap_or("?").len()
-                )],
+                &resume["last_commit"].as_str().unwrap_or("?")
+                    [..12.min(resume["last_commit"].as_str().unwrap_or("?").len())],
             ));
         }
     }
@@ -78,11 +79,14 @@ fn import_history(registry: &serde_json::Value, snap: &mut StateSnapshot, report
     let mut touched: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Idempotency: a project whose log already has entries keeps it.
-    let has_history = |snap: &StateSnapshot, p: &str| {
-        snap.events.get(p).map(|v| !v.is_empty()).unwrap_or(false)
-    };
-    let frozen: std::collections::HashSet<String> =
-        snap.events.iter().filter(|(_, v)| !v.is_empty()).map(|(k, _)| k.clone()).collect();
+    let has_history =
+        |snap: &StateSnapshot, p: &str| snap.events.get(p).map(|v| !v.is_empty()).unwrap_or(false);
+    let frozen: std::collections::HashSet<String> = snap
+        .events
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, _)| k.clone())
+        .collect();
     let _ = has_history; // documented above; the frozen set is the check
 
     if let Some(ss) = registry["sessions"].as_object() {
@@ -99,14 +103,17 @@ fn import_history(registry: &serde_json::Value, snap: &mut StateSnapshot, report
                 .or_else(|| s["created_at"].as_str())
                 .and_then(iso_epoch)
                 .unwrap_or(0);
-            snap.events.entry(project.clone()).or_default().push(LogEntry {
-                at_epoch: at,
-                event: Event::V1Session {
-                    session_id: s["id"].as_str().unwrap_or("?").into(),
-                    branch: s["branch"].as_str().unwrap_or("?").into(),
-                    state: s["state"].as_str().unwrap_or("?").into(),
-                },
-            });
+            snap.events
+                .entry(project.clone())
+                .or_default()
+                .push(LogEntry {
+                    at_epoch: at,
+                    event: Event::V1Session {
+                        session_id: s["id"].as_str().unwrap_or("?").into(),
+                        branch: s["branch"].as_str().unwrap_or("?").into(),
+                        state: s["state"].as_str().unwrap_or("?").into(),
+                    },
+                });
             touched.insert(project);
             sessions += 1;
         }
@@ -125,14 +132,17 @@ fn import_history(registry: &serde_json::Value, snap: &mut StateSnapshot, report
                 .or_else(|| r["started_at"].as_str())
                 .and_then(iso_epoch)
                 .unwrap_or(0);
-            snap.events.entry(project.clone()).or_default().push(LogEntry {
-                at_epoch: at,
-                event: Event::JobRun {
-                    job: r["job"].as_str().unwrap_or("?").into(),
-                    branch: r["branch"].as_str().unwrap_or("?").into(),
-                    state: r["state"].as_str().unwrap_or("?").into(),
-                },
-            });
+            snap.events
+                .entry(project.clone())
+                .or_default()
+                .push(LogEntry {
+                    at_epoch: at,
+                    event: Event::JobRun {
+                        job: r["job"].as_str().unwrap_or("?").into(),
+                        branch: r["branch"].as_str().unwrap_or("?").into(),
+                        state: r["state"].as_str().unwrap_or("?").into(),
+                    },
+                });
             touched.insert(project);
             runs += 1;
         }
@@ -142,16 +152,20 @@ fn import_history(registry: &serde_json::Value, snap: &mut StateSnapshot, report
             v.sort_by_key(|e| e.at_epoch);
         }
     }
-    report.push_str(&format!("   storia: {sessions} sessioni v1, {runs} job run\n"));
+    report.push_str(&format!(
+        "   storia: {sessions} sessioni v1, {runs} job run\n"
+    ));
 }
 
 fn import_keys(v1_dir: &Path, report: &mut String) -> Result<(), String> {
     let src_root = v1_dir.join("keys");
-    let dst_root = std::path::PathBuf::from(
-        std::env::var("SIGILED_KEYS_DIR").unwrap_or_else(|_| {
-            format!("{}/keys", std::env::var("SIGILED_STATE_DIR").unwrap_or_else(|_| "/data".into()))
-        }),
-    );
+    let dst_root =
+        std::path::PathBuf::from(std::env::var("SIGILED_KEYS_DIR").unwrap_or_else(|_| {
+            format!(
+                "{}/keys",
+                std::env::var("SIGILED_STATE_DIR").unwrap_or_else(|_| "/data".into())
+            )
+        }));
     let (mut copied, mut kept) = (0, 0);
     let entries = std::fs::read_dir(&src_root).map_err(|e| format!("v1 keys dir: {e}"))?;
     for entry in entries.flatten() {
@@ -165,7 +179,10 @@ fn import_keys(v1_dir: &Path, report: &mut String) -> Result<(), String> {
             continue;
         }
         std::fs::create_dir_all(&dst).map_err(|e| format!("mkdir {name}: {e}"))?;
-        for f in std::fs::read_dir(entry.path()).map_err(|e| format!("{name}: {e}"))?.flatten() {
+        for f in std::fs::read_dir(entry.path())
+            .map_err(|e| format!("{name}: {e}"))?
+            .flatten()
+        {
             let to = dst.join(f.file_name());
             std::fs::copy(f.path(), &to).map_err(|e| format!("copy {name}: {e}"))?;
             #[cfg(unix)]
@@ -178,7 +195,9 @@ fn import_keys(v1_dir: &Path, report: &mut String) -> Result<(), String> {
         }
         copied += 1;
     }
-    report.push_str(&format!("   chiavi: {copied} copiate, {kept} già presenti\n"));
+    report.push_str(&format!(
+        "   chiavi: {copied} copiate, {kept} già presenti\n"
+    ));
     Ok(())
 }
 
@@ -271,7 +290,10 @@ mod tests {
         import_projects(&v1_fixture(), &mut snap, &mut report);
         let t = snap.projects.iter().find(|p| p.name == "torchio").unwrap();
         assert!(t.needs_merge);
-        assert!(report.contains("oannes-one"), "resume non segnalato: {report}");
+        assert!(
+            report.contains("oannes-one"),
+            "resume non segnalato: {report}"
+        );
         assert!(report.contains("session/206f26ec"));
     }
 
@@ -281,6 +303,10 @@ mod tests {
         let mut report = String::new();
         import_history(&v1_fixture(), &mut snap, &mut report);
         import_history(&v1_fixture(), &mut snap, &mut report);
-        assert_eq!(snap.events["torchio"].len(), 2, "storia duplicata al secondo giro");
+        assert_eq!(
+            snap.events["torchio"].len(),
+            2,
+            "storia duplicata al secondo giro"
+        );
     }
 }

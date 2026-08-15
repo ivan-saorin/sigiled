@@ -82,7 +82,10 @@ pub async fn exec(
 
     let (exit, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(status) => (
-            status.map_err(|e| ApiError::internal(e.to_string()))?.code().unwrap_or(-1),
+            status
+                .map_err(|e| ApiError::internal(e.to_string()))?
+                .code()
+                .unwrap_or(-1),
             false,
         ),
         Err(_) => {

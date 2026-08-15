@@ -62,7 +62,13 @@ impl JobsState {
         list.truncate(20);
     }
     /// Update the newest record of (project, job) matching `branch`.
-    fn update_run(&self, project: &str, job: &str, branch: &str, f: impl FnOnce(&mut JobRunRecord)) {
+    fn update_run(
+        &self,
+        project: &str,
+        job: &str,
+        branch: &str,
+        f: impl FnOnce(&mut JobRunRecord),
+    ) {
         let mut map = self.runs.write().unwrap();
         if let Some(list) = map.get_mut(&Self::key(project, job)) {
             if let Some(rec) = list.iter_mut().find(|r| r.branch == branch) {
@@ -71,13 +77,22 @@ impl JobsState {
         }
     }
     pub fn is_inflight(&self, project: &str, job: &str) -> bool {
-        self.inflight.read().unwrap().contains(&Self::key(project, job))
+        self.inflight
+            .read()
+            .unwrap()
+            .contains(&Self::key(project, job))
     }
     pub fn try_claim(&self, project: &str, job: &str) -> bool {
-        self.inflight.write().unwrap().insert(Self::key(project, job))
+        self.inflight
+            .write()
+            .unwrap()
+            .insert(Self::key(project, job))
     }
     fn release(&self, project: &str, job: &str) {
-        self.inflight.write().unwrap().remove(&Self::key(project, job));
+        self.inflight
+            .write()
+            .unwrap()
+            .remove(&Self::key(project, job));
     }
     pub fn dump(&self) -> HashMap<String, Vec<JobRunRecord>> {
         self.runs.read().unwrap().clone()
@@ -197,7 +212,10 @@ pub async fn run(
         return err(StatusCode::NOT_FOUND, format!("unknown job: {job}"));
     };
     if state.jobs.is_inflight(&project, &job) {
-        return err(StatusCode::CONFLICT, format!("job '{job}' already in flight — poll runs"));
+        return err(
+            StatusCode::CONFLICT,
+            format!("job '{job}' already in flight — poll runs"),
+        );
     }
     if state.sessions.runtime.is_none() {
         return err(
@@ -298,7 +316,10 @@ fn trigger(
             },
         );
         state.persist();
-        return Err(format!("job '{}' already in flight — skip recorded", jm.name));
+        return Err(format!(
+            "job '{}' already in flight — skip recorded",
+            jm.name
+        ));
     }
     let rec = JobRunRecord {
         project: project.to_string(),
@@ -312,7 +333,12 @@ fn trigger(
     };
     state.jobs.push_run(rec.clone());
     state.persist();
-    tokio::spawn(execute_run(state.clone(), project.to_string(), jm.clone(), branch));
+    tokio::spawn(execute_run(
+        state.clone(),
+        project.to_string(),
+        jm.clone(),
+        branch,
+    ));
     Ok(rec)
 }
 
@@ -321,7 +347,9 @@ fn trigger(
 /// leftovers committed (the branch is the run's testimony), container gone,
 /// record + machine log updated, hc pinged, latch released.
 async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, branch: String) {
-    let Some(rt) = state.sessions.runtime.clone() else { return };
+    let Some(rt) = state.sessions.runtime.clone() else {
+        return;
+    };
     let container = crate::runtime::Runtime::job_container(&project, &jm.name);
     let http = state.sessions.http().clone();
     let mut exit: Option<i64> = None;
@@ -346,13 +374,32 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
             return Err(format!("session image: {reason}"));
         }
         let tok = crate::sessions::mint_token();
-        rt.create_container(&container, &project, "job", &jm.name, &tok, &image.used, &extra)?;
+        rt.create_container(
+            &container,
+            &project,
+            "job",
+            &jm.name,
+            &tok,
+            &image.used,
+            &extra,
+        )?;
         rt.wait_healthy(&http, &container, &tok).await?;
-        rt.boot_workspace(&http, &container, &project, &tok, &branch, false).await?;
-        let r = rt.exec(&http, &container, &tok, &jm.command, jm.timeout_minutes * 60).await?;
+        rt.boot_workspace(&http, &container, &project, &tok, &branch, false)
+            .await?;
+        let r = rt
+            .exec(
+                &http,
+                &container,
+                &tok,
+                &jm.command,
+                jm.timeout_minutes * 60,
+            )
+            .await?;
         exit = r["exit"].as_i64();
         let timed_out = r["timed_out"].as_bool().unwrap_or(false);
-        let flushed = rt.flush(&http, &container, &tok, &format!("job {}", jm.name)).await;
+        let flushed = rt
+            .flush(&http, &container, &tok, &format!("job {}", jm.name))
+            .await;
         Ok(run_verdict(timed_out, exit, flushed))
     }
     .await;
@@ -366,8 +413,11 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
     if let Some(env_ref) = &jm.hc_ping {
         match std::env::var(env_ref) {
             Ok(url) => {
-                let ping =
-                    if final_state == "succeeded" { url } else { format!("{url}/fail") };
+                let ping = if final_state == "succeeded" {
+                    url
+                } else {
+                    format!("{url}/fail")
+                };
                 let _ = http
                     .get(&ping)
                     .timeout(std::time::Duration::from_secs(10))
@@ -447,7 +497,10 @@ mod tests {
 
     #[test]
     fn run_verdict_never_hides_a_failed_flush() {
-        assert_eq!(run_verdict(false, Some(0), true), ("succeeded".into(), None));
+        assert_eq!(
+            run_verdict(false, Some(0), true),
+            ("succeeded".into(), None)
+        );
         assert_eq!(run_verdict(false, Some(2), true), ("failed".into(), None));
         let (s, d) = run_verdict(true, None, true);
         assert_eq!(s, "timeout");
@@ -456,7 +509,10 @@ mod tests {
         // honest AND the detail shouts.
         let (s, d) = run_verdict(false, Some(0), false);
         assert_eq!(s, "succeeded");
-        assert!(d.unwrap().contains("flush"), "flush failure must be visible");
+        assert!(
+            d.unwrap().contains("flush"),
+            "flush failure must be visible"
+        );
     }
 
     #[test]
@@ -469,14 +525,39 @@ mod tests {
     fn fires_between_matches_the_window() {
         // */5: fires at :05 — inside (04:30, 05:30], outside (06:00, 09:00].
         let c = "*/5 * * * *";
-        assert!(fires_between(c, &local(2026, 8, 3, 10, 4, 30), &local(2026, 8, 3, 10, 5, 30)).unwrap());
-        assert!(!fires_between(c, &local(2026, 8, 3, 10, 6, 0), &local(2026, 8, 3, 10, 9, 0)).unwrap());
+        assert!(fires_between(
+            c,
+            &local(2026, 8, 3, 10, 4, 30),
+            &local(2026, 8, 3, 10, 5, 30)
+        )
+        .unwrap());
+        assert!(!fires_between(
+            c,
+            &local(2026, 8, 3, 10, 6, 0),
+            &local(2026, 8, 3, 10, 9, 0)
+        )
+        .unwrap());
         // A daily 03:30 job fires exactly once in its minute.
         let daily = "30 3 * * *";
-        assert!(fires_between(daily, &local(2026, 8, 3, 3, 29, 59), &local(2026, 8, 3, 3, 30, 0)).unwrap());
-        assert!(!fires_between(daily, &local(2026, 8, 3, 3, 30, 0), &local(2026, 8, 3, 3, 31, 0)).unwrap());
+        assert!(fires_between(
+            daily,
+            &local(2026, 8, 3, 3, 29, 59),
+            &local(2026, 8, 3, 3, 30, 0)
+        )
+        .unwrap());
+        assert!(!fires_between(
+            daily,
+            &local(2026, 8, 3, 3, 30, 0),
+            &local(2026, 8, 3, 3, 31, 0)
+        )
+        .unwrap());
         // Garbage is an error, not a silent never.
-        assert!(fires_between("nope", &local(2026, 8, 3, 0, 0, 0), &local(2026, 8, 3, 1, 0, 0)).is_err());
+        assert!(fires_between(
+            "nope",
+            &local(2026, 8, 3, 0, 0, 0),
+            &local(2026, 8, 3, 1, 0, 0)
+        )
+        .is_err());
     }
 
     #[test]
@@ -497,23 +578,35 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(
             "p/j".to_string(),
-            vec![rec("p", "j", "job-j-x", "running", 1), rec("p", "j", "job-j-y", "succeeded", 0)],
+            vec![
+                rec("p", "j", "job-j-x", "running", 1),
+                rec("p", "j", "job-j-y", "succeeded", 0),
+            ],
         );
         js.hydrate(map);
         let list = js.runs_for("p", "j");
-        assert_eq!(list[0].state, "aborted", "a running record cannot survive a reboot");
+        assert_eq!(
+            list[0].state, "aborted",
+            "a running record cannot survive a reboot"
+        );
         assert_eq!(list[1].state, "succeeded");
     }
 
     // --- the run verb, branch-only paths ------------------------------------
 
     fn admin() -> Actor {
-        Actor { driver: "bootstrap".into(), role: crate::auth::Role::Admin, approval: None }
+        Actor {
+            driver: "bootstrap".into(),
+            role: crate::auth::Role::Admin,
+            approval: None,
+        }
     }
 
     async fn body_json(resp: Response) -> (StatusCode, serde_json::Value) {
         let status = resp.status();
-        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
         (status, serde_json::from_slice(&bytes).unwrap())
     }
 
@@ -526,7 +619,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&renamed);
         std::fs::rename(&repo, &renamed).unwrap();
         if !manifest.is_empty() {
-            crate::merge::tests::commit_on(&renamed, "master", "sigiled.toml", manifest, "manifest");
+            crate::merge::tests::commit_on(
+                &renamed,
+                "master",
+                "sigiled.toml",
+                manifest,
+                "manifest",
+            );
         }
         let state = crate::AppState {
             sessions: crate::sessions::SessionState::with_repos_dir(repos_dir),
@@ -545,7 +644,12 @@ mod tests {
     async fn run_unknown_job_is_404() {
         let state = app_state_with_manifest("jsmoke-a", "jsa", "");
         let (status, _) = body_json(
-            run(admin(), State(state), AxPath(("jsmoke-a".into(), "ghost".into()))).await,
+            run(
+                admin(),
+                State(state),
+                AxPath(("jsmoke-a".into(), "ghost".into())),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -559,7 +663,12 @@ mod tests {
             "[jobs.x]\ncron = \"not a cron\"\ncommand = \"c\"\n",
         );
         let (status, body) = body_json(
-            run(admin(), State(state), AxPath(("jsmoke-b".into(), "x".into()))).await,
+            run(
+                admin(),
+                State(state),
+                AxPath(("jsmoke-b".into(), "x".into())),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
@@ -572,14 +681,24 @@ mod tests {
         // In flight → 409 before anything else touches docker.
         assert!(state.jobs.try_claim("jsmoke-c", "x"));
         let (status, _) = body_json(
-            run(admin(), State(state.clone()), AxPath(("jsmoke-c".into(), "x".into()))).await,
+            run(
+                admin(),
+                State(state.clone()),
+                AxPath(("jsmoke-c".into(), "x".into())),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         // Free but no runtime → 503 honest (jobs need real containers).
         state.jobs.release("jsmoke-c", "x");
         let (status, _) = body_json(
-            run(admin(), State(state), AxPath(("jsmoke-c".into(), "x".into()))).await,
+            run(
+                admin(),
+                State(state),
+                AxPath(("jsmoke-c".into(), "x".into())),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -598,7 +717,12 @@ mod tests {
             template_behind: false,
             needs_merge: true,
         });
-        scheduler_tick(&state, &local(2026, 8, 3, 10, 0, 0), &local(2026, 8, 3, 10, 0, 30)).await;
+        scheduler_tick(
+            &state,
+            &local(2026, 8, 3, 10, 0, 0),
+            &local(2026, 8, 3, 10, 0, 30),
+        )
+        .await;
         let r = &state.registry.snapshot()[0];
         assert_eq!(
             r.template_version.as_deref(),
@@ -606,15 +730,25 @@ mod tests {
             "the tick already reads the manifest — the pin must land in the record"
         );
         assert!(r.template_behind, "pin 0.1.0 trails latest 0.2.0");
-        assert!(r.needs_merge, "the tick refresh must not clobber needs_merge");
+        assert!(
+            r.needs_merge,
+            "the tick refresh must not clobber needs_merge"
+        );
     }
 
     #[tokio::test]
     async fn runs_listing_answers_from_the_store() {
         let state = app_state_with_manifest("jsmoke-d", "jsd", "");
-        state.jobs.push_run(rec("jsmoke-d", "x", "job-x-1", "succeeded", 5));
+        state
+            .jobs
+            .push_run(rec("jsmoke-d", "x", "job-x-1", "succeeded", 5));
         let (status, body) = body_json(
-            runs(admin(), State(state), AxPath(("jsmoke-d".into(), "x".into()))).await,
+            runs(
+                admin(),
+                State(state),
+                AxPath(("jsmoke-d".into(), "x".into())),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::OK);

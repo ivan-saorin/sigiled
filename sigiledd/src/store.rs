@@ -49,7 +49,9 @@ impl Store {
     }
 
     pub fn at_dir(dir: &std::path::Path) -> Self {
-        Store { path: Some(dir.join("state.json")) }
+        Store {
+            path: Some(dir.join("state.json")),
+        }
     }
 
     pub fn load(&self) -> Option<StateSnapshot> {
@@ -59,7 +61,10 @@ impl Store {
             Ok(snap) => Some(snap),
             // A state file that exists but does not parse is a stop-the-world
             // condition: starting empty would overwrite it on first mutation.
-            Err(e) => panic!("corrupt state file {}: {e} — restore from backup", p.display()),
+            Err(e) => panic!(
+                "corrupt state file {}: {e} — restore from backup",
+                p.display()
+            ),
         }
     }
 

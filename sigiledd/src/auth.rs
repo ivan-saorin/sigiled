@@ -24,7 +24,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const PLATFORM_PROJECTS: [&str; 2] = ["sigiled", "sigiled-supervisor"];
 
 pub fn now_epoch() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 // --- configuration ----------------------------------------------------------
@@ -111,9 +114,7 @@ pub enum Action {
 pub fn requires_approval(action: Action, project: Option<&str>) -> bool {
     match action {
         Action::ProjectsNew | Action::AppVerb | Action::SkillRender => true,
-        Action::OpenSession => {
-            project.is_some_and(|p| PLATFORM_PROJECTS.contains(&p))
-        }
+        Action::OpenSession => project.is_some_and(|p| PLATFORM_PROJECTS.contains(&p)),
         _ => false,
     }
 }
@@ -206,7 +207,11 @@ impl KeyStore {
 }
 
 fn ensure_slash(s: &str) -> String {
-    if s.ends_with('/') { s.to_string() } else { format!("{s}/") }
+    if s.ends_with('/') {
+        s.to_string()
+    } else {
+        format!("{s}/")
+    }
 }
 
 /// Validate an IdP JWT: iss must live under the configured base, signature
@@ -233,7 +238,10 @@ pub async fn validate_jwt(
             .claims
     };
     if !unverified.iss.starts_with(&ensure_slash(base)) {
-        return Err(format!("issuer outside the configured IdP: {}", unverified.iss));
+        return Err(format!(
+            "issuer outside the configured IdP: {}",
+            unverified.iss
+        ));
     }
 
     if keys.get(&kid).is_none() {
@@ -250,7 +258,11 @@ pub async fn validate_jwt(
     Ok(data.claims)
 }
 
-pub fn actor_from_claims(claims: &Claims, cfg: &AuthConfig, approvals: &ApprovalStore) -> Result<Actor, String> {
+pub fn actor_from_claims(
+    claims: &Claims,
+    cfg: &AuthConfig,
+    approvals: &ApprovalStore,
+) -> Result<Actor, String> {
     let role = if claims.groups.iter().any(|g| g == &cfg.admin_group) {
         Role::Admin
     } else if claims.groups.iter().any(|g| g == &cfg.driver_group) {
@@ -265,7 +277,11 @@ pub fn actor_from_claims(claims: &Claims, cfg: &AuthConfig, approvals: &Approval
     let approval = approvals
         .live(&driver, now_epoch())
         .map(|a| format!("{} (device, expires {})", a.human, a.expires_epoch));
-    Ok(Actor { driver, role, approval })
+    Ok(Actor {
+        driver,
+        role,
+        approval,
+    })
 }
 
 // --- approvals (§1.4) -------------------------------------------------------
@@ -374,7 +390,11 @@ impl FromRequestParts<crate::AppState> for Actor {
             ONCE.call_once(|| {
                 tracing::warn!("auth disabled: no leg configured — dev run only");
             });
-            return Ok(Actor { driver: "dev".into(), role: Role::Admin, approval: None });
+            return Ok(Actor {
+                driver: "dev".into(),
+                role: Role::Admin,
+                approval: None,
+            });
         }
         let header = parts
             .headers
@@ -415,7 +435,10 @@ pub async fn elevate(
 ) -> Result<Json<ElevateResponse>, AuthError> {
     let auth = state.auth.clone();
     let base = auth.config.oidc_base.clone().ok_or_else(|| {
-        AuthError(StatusCode::SERVICE_UNAVAILABLE, "oidc leg not configured".into())
+        AuthError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "oidc leg not configured".into(),
+        )
     })?;
     let device_url = format!("{}application/o/device/", ensure_slash(&base));
     let resp: serde_json::Value = auth
@@ -431,7 +454,10 @@ pub async fn elevate(
 
     let device_code = resp["device_code"].as_str().unwrap_or_default().to_string();
     let user_code = resp["user_code"].as_str().unwrap_or_default().to_string();
-    let verification_uri = resp["verification_uri"].as_str().unwrap_or_default().to_string();
+    let verification_uri = resp["verification_uri"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     if device_code.is_empty() || user_code.is_empty() {
         return Err(AuthError(
             StatusCode::BAD_GATEWAY,
@@ -479,7 +505,9 @@ pub async fn elevate(
             else {
                 continue;
             };
-            let Ok(body) = r.json::<serde_json::Value>().await else { continue };
+            let Ok(body) = r.json::<serde_json::Value>().await else {
+                continue;
+            };
             match body["error"].as_str() {
                 Some("authorization_pending") | Some("slow_down") => continue,
                 Some(_) => {
@@ -503,7 +531,9 @@ pub async fn elevate(
                         .map(|d| d.claims.driver())
                         .unwrap_or_else(|| "operator".into());
                     let ttl = body["expires_in"].as_u64().unwrap_or(43200);
-                    app.auth.approvals.grant(&driver, &human, now_epoch() + ttl, body);
+                    app.auth
+                        .approvals
+                        .grant(&driver, &human, now_epoch() + ttl, body);
                     app.persist();
                     return;
                 }
@@ -511,7 +541,11 @@ pub async fn elevate(
         }
     });
 
-    Ok(Json(ElevateResponse { verification_uri, user_code, expires }))
+    Ok(Json(ElevateResponse {
+        verification_uri,
+        user_code,
+        expires,
+    }))
 }
 
 #[derive(Serialize)]
@@ -601,18 +635,29 @@ YQIDAQAB
     fn sign(claims: &serde_json::Value) -> String {
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("test-kid".into());
-        encode(&header, claims, &EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE.as_bytes()).unwrap())
-            .unwrap()
+        encode(
+            &header,
+            claims,
+            &EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE.as_bytes()).unwrap(),
+        )
+        .unwrap()
     }
 
     fn preloaded_keys() -> KeyStore {
         let ks = KeyStore::default();
-        ks.preload("test-kid", DecodingKey::from_rsa_pem(TEST_RSA_PUBLIC.as_bytes()).unwrap());
+        ks.preload(
+            "test-kid",
+            DecodingKey::from_rsa_pem(TEST_RSA_PUBLIC.as_bytes()).unwrap(),
+        );
         ks
     }
 
     fn driver_actor(name: &str) -> Actor {
-        Actor { driver: name.into(), role: Role::Driver, approval: None }
+        Actor {
+            driver: name.into(),
+            role: Role::Driver,
+            approval: None,
+        }
     }
 
     #[tokio::test]
@@ -623,7 +668,9 @@ YQIDAQAB
             "iss": "https://idp.test/application/o/sigiled-claude/",
             "exp": now_epoch() + 600
         });
-        let c = validate_jwt(&sign(&claims), &cfg(), &preloaded_keys(), None).await.unwrap();
+        let c = validate_jwt(&sign(&claims), &cfg(), &preloaded_keys(), None)
+            .await
+            .unwrap();
         let actor = actor_from_claims(&c, &cfg(), &ApprovalStore::default()).unwrap();
         assert_eq!(actor.driver, "sigiled-claude");
         assert_eq!(actor.role, Role::Driver);
@@ -636,10 +683,12 @@ YQIDAQAB
             "sub": "x", "groups": ["stack:drivers"],
             "iss": "https://idp.test/application/o/x/", "exp": now_epoch() - 600
         });
-        assert!(validate_jwt(&sign(&claims), &cfg(), &preloaded_keys(), None)
-            .await
-            .unwrap_err()
-            .contains("jwt"));
+        assert!(
+            validate_jwt(&sign(&claims), &cfg(), &preloaded_keys(), None)
+                .await
+                .unwrap_err()
+                .contains("jwt")
+        );
     }
 
     #[tokio::test]
@@ -660,7 +709,9 @@ YQIDAQAB
             "sub": "x", "groups": ["something:else"],
             "iss": "https://idp.test/application/o/x/", "exp": now_epoch() + 600
         });
-        let c = validate_jwt(&sign(&claims), &cfg(), &preloaded_keys(), None).await.unwrap();
+        let c = validate_jwt(&sign(&claims), &cfg(), &preloaded_keys(), None)
+            .await
+            .unwrap();
         assert!(actor_from_claims(&c, &cfg(), &ApprovalStore::default()).is_err());
     }
 
@@ -745,7 +796,11 @@ YQIDAQAB
     #[test]
     fn projects_new_and_app_verbs_gate_drivers_not_admins() {
         let store = ApprovalStore::default();
-        let admin = Actor { driver: "bootstrap".into(), role: Role::Admin, approval: None };
+        let admin = Actor {
+            driver: "bootstrap".into(),
+            role: Role::Admin,
+            approval: None,
+        };
         for action in [Action::ProjectsNew, Action::AppVerb] {
             assert!(authorize(&admin, action, None, &store, 1000).is_ok());
             assert!(authorize(&driver_actor("d"), action, None, &store, 1000).is_err());
@@ -754,9 +809,14 @@ YQIDAQAB
 
     #[test]
     fn everyday_verbs_are_open_to_drivers() {
-        for action in
-            [Action::CloseSession, Action::Recycle, Action::Git, Action::Exec, Action::JobRun, Action::JobRecap]
-        {
+        for action in [
+            Action::CloseSession,
+            Action::Recycle,
+            Action::Git,
+            Action::Exec,
+            Action::JobRun,
+            Action::JobRecap,
+        ] {
             assert!(authorize(
                 &driver_actor("d"),
                 action,
@@ -773,7 +833,12 @@ YQIDAQAB
         // The store DOES keep the tokens (custody §1.4, persisted 0600 by
         // store.rs); what must never carry them is the API surface.
         let store = ApprovalStore::default();
-        store.grant("d", "ivan", 2000, serde_json::json!({"access_token": "SECRET"}));
+        store.grant(
+            "d",
+            "ivan",
+            2000,
+            serde_json::json!({"access_token": "SECRET"}),
+        );
         let views: Vec<ApprovalView> = store
             .snapshot()
             .into_iter()

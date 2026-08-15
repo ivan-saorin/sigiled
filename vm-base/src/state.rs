@@ -23,9 +23,8 @@ impl AppState {
         if token.len() < 16 {
             panic!("SESSION_TOKEN too short (<16 chars)");
         }
-        let workspace = PathBuf::from(
-            std::env::var("WORKSPACE_DIR").unwrap_or_else(|_| "/workspace".into()),
-        );
+        let workspace =
+            PathBuf::from(std::env::var("WORKSPACE_DIR").unwrap_or_else(|_| "/workspace".into()));
         // Declared mounts beyond /workspace, colon-separated (§5 fs scope).
         let extra_roots = std::env::var("EXTRA_PATHS")
             .unwrap_or_default()

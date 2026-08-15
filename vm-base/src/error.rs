@@ -10,16 +10,28 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn bad_request(detail: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, detail: detail.into() }
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            detail: detail.into(),
+        }
     }
     pub fn not_found(detail: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, detail: detail.into() }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            detail: detail.into(),
+        }
     }
     pub fn forbidden(detail: impl Into<String>) -> Self {
-        Self { status: StatusCode::FORBIDDEN, detail: detail.into() }
+        Self {
+            status: StatusCode::FORBIDDEN,
+            detail: detail.into(),
+        }
     }
     pub fn internal(detail: impl Into<String>) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, detail: detail.into() }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            detail: detail.into(),
+        }
     }
 }
 

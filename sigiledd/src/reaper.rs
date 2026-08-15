@@ -31,7 +31,9 @@ pub async fn run(state: crate::AppState) {
 /// ones over the threshold. Unreachable agents are skipped loudly — a
 /// transient network hiccup must not destroy a working container.
 pub async fn reap_pass(state: &crate::AppState, idle_max: u64) -> usize {
-    let Some(rt) = state.sessions.runtime.clone() else { return 0 };
+    let Some(rt) = state.sessions.runtime.clone() else {
+        return 0;
+    };
     let mut reaped = 0;
     for rec in state.sessions.live_records() {
         let Some(tok) = &rec.token else { continue };
@@ -56,7 +58,9 @@ pub async fn reap_pass(state: &crate::AppState, idle_max: u64) -> usize {
 /// Auto-close one session the reaper way: flush, destroy, drop the record.
 /// The branch survives on the repo as the orphan open() will resume.
 pub async fn reap(state: &crate::AppState, session_id: &str, reason: &str) {
-    let Some(record) = state.sessions.record(session_id) else { return };
+    let Some(record) = state.sessions.record(session_id) else {
+        return;
+    };
     if let Some(rt) = &state.sessions.runtime {
         let vm = crate::runtime::Runtime::vm_name(&record.project);
         if let Some(tok) = &record.token {

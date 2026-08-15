@@ -48,23 +48,14 @@ pub enum Event {
     },
     /// POST /projects (session 5): born from the template, or adopted as an
     /// existing repo (key + register, nothing written).
-    ProjectCreated {
-        repo: String,
-        adopted: bool,
-    },
+    ProjectCreated { repo: String, adopted: bool },
     /// recycle (session 6): same branch, fresh container and token — the
     /// previous driver is structurally cut off (provider handoff, §10).
-    SessionRecycled {
-        session_id: String,
-        sha: String,
-    },
+    SessionRecycled { session_id: String, sha: String },
     /// The reaper (session 7, contract rule 6): idle too long — autosave
     /// flushed, container destroyed, branch left as an orphan the next
     /// open resumes stale.
-    SessionReaped {
-        session_id: String,
-        branch: String,
-    },
+    SessionReaped { session_id: String, branch: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,32 +112,60 @@ fn render_markdown(project: &str, entries: &[LogEntry]) -> String {
     }
     for e in entries {
         let line = match &e.event {
-            Event::SessionOpened { session_id, branch, stale } => format!(
+            Event::SessionOpened {
+                session_id,
+                branch,
+                stale,
+            } => format!(
                 "- [{}] session `{}` opened on `{}`{}",
                 e.at_epoch,
                 session_id,
                 branch,
                 if *stale { " (stale resume)" } else { "" }
             ),
-            Event::SessionClosed { session_id, merged, sha, log_operativo_touched } => format!(
+            Event::SessionClosed {
+                session_id,
+                merged,
+                sha,
+                log_operativo_touched,
+            } => format!(
                 "- [{}] session `{}` closed — {} @ `{}`{}",
                 e.at_epoch,
                 session_id,
-                if *merged { "merged" } else { "NOT merged (branch kept)" },
+                if *merged {
+                    "merged"
+                } else {
+                    "NOT merged (branch kept)"
+                },
                 &sha[..12.min(sha.len())],
-                if *log_operativo_touched { "" } else { " — log operativo NOT touched" }
+                if *log_operativo_touched {
+                    ""
+                } else {
+                    " — log operativo NOT touched"
+                }
             ),
             Event::JobRun { job, branch, state } => {
-                format!("- [{}] job `{}` run — {} (`{}`)", e.at_epoch, job, state, branch)
+                format!(
+                    "- [{}] job `{}` run — {} (`{}`)",
+                    e.at_epoch, job, state, branch
+                )
             }
-            Event::V1Session { session_id, branch, state } => format!(
+            Event::V1Session {
+                session_id,
+                branch,
+                state,
+            } => format!(
                 "- [{}] v1 session `{}` on `{}` — {}",
                 e.at_epoch, session_id, branch, state
             ),
             Event::ProjectCreated { repo, adopted } => format!(
                 "- [{}] project {} (`{}`)",
                 e.at_epoch,
-                if *adopted { "adopted" } else { "created from template" },
+                if *adopted {
+                    "adopted"
+                } else {
+                    "created from template"
+                },
                 repo
             ),
             Event::SessionRecycled { session_id, sha } => format!(
@@ -178,9 +197,12 @@ pub async fn project_log(
     Query(q): Query<LogQuery>,
 ) -> Response {
     if !state.registry.contains(&project) {
-        return (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({
-            "detail": format!("unknown project: {project}")
-        })))
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "detail": format!("unknown project: {project}")
+            })),
+        )
             .into_response();
     }
     let entries = state.events.for_project(&project);
@@ -233,7 +255,10 @@ mod tests {
 
     #[test]
     fn close_hint_sees_the_log_operativo() {
-        assert!(log_operativo_touched(&["src/main.rs", "docs/log-operativo.md"]));
+        assert!(log_operativo_touched(&[
+            "src/main.rs",
+            "docs/log-operativo.md"
+        ]));
         assert!(!log_operativo_touched(&["src/main.rs", "README.md"]));
         // Path is exact: a project nesting the name elsewhere is not a touch.
         assert!(!log_operativo_touched(&["template/docs/log-operativo.md"]));

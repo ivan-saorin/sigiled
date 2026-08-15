@@ -11,8 +11,14 @@ pub async fn serve() -> impl IntoResponse {
         .unwrap_or_else(|_| HeaderValue::from_static("unknown"));
     (
         [
-            (header::CONTENT_TYPE, HeaderValue::from_static("text/markdown; charset=utf-8")),
-            (header::HeaderName::from_static("x-sigiled-version"), version),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/markdown; charset=utf-8"),
+            ),
+            (
+                header::HeaderName::from_static("x-sigiled-version"),
+                version,
+            ),
         ],
         TEXT,
     )

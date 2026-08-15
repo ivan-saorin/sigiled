@@ -167,7 +167,10 @@ pub async fn branches(
         },
         None => {
             let Some(repos) = state.sessions.repos_dir.clone() else {
-                return err(StatusCode::SERVICE_UNAVAILABLE, "SIGILED_REPOS_DIR not configured");
+                return err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "SIGILED_REPOS_DIR not configured",
+                );
             };
             let p = repos.join(&project);
             if !p.join(".git").exists() {
@@ -190,16 +193,21 @@ pub async fn branches(
     };
     let mut seen = std::collections::BTreeMap::new();
     for line in refs.lines() {
-        let Some((name, sha)) = line.trim().rsplit_once(' ') else { continue };
+        let Some((name, sha)) = line.trim().rsplit_once(' ') else {
+            continue;
+        };
         let name = name.trim().trim_start_matches("origin/");
         // `origin` alone is origin/HEAD's short name; skip the aliases.
         if name.is_empty() || name == "HEAD" || name == "origin" {
             continue;
         }
-        seen.entry(name.to_string()).or_insert_with(|| sha.to_string());
+        seen.entry(name.to_string())
+            .or_insert_with(|| sha.to_string());
     }
-    let list: Vec<serde_json::Value> =
-        seen.into_iter().map(|(name, sha)| json!({ "name": name, "sha": sha })).collect();
+    let list: Vec<serde_json::Value> = seen
+        .into_iter()
+        .map(|(name, sha)| json!({ "name": name, "sha": sha }))
+        .collect();
     Json(serde_json::Value::Array(list)).into_response()
 }
 
@@ -271,7 +279,10 @@ pub async fn create(
     state.events.record(
         &body.name,
         crate::auth::now_epoch(),
-        crate::events::Event::ProjectCreated { repo: repo_full.clone(), adopted },
+        crate::events::Event::ProjectCreated {
+            repo: repo_full.clone(),
+            adopted,
+        },
     );
     state.persist();
     tracing::info!(project = %body.name, %repo_full, adopted, "project registered");
@@ -360,7 +371,10 @@ mod tests {
         let m = Manifest::parse("template = \"vm-tmpl@0.1.0\"\n").unwrap();
         assert!(reg.refresh("smoke", &m));
         assert!(!reg.refresh("smoke", &m), "same manifest = no change");
-        assert!(!reg.refresh("ghost", &m), "unknown project = no change, no panic");
+        assert!(
+            !reg.refresh("ghost", &m),
+            "unknown project = no change, no panic"
+        );
     }
 
     // --- POST /projects (session 5) -----------------------------------------
@@ -427,9 +441,11 @@ mod tests {
             )
             .route(
                 "/repos/{owner}/{repo}",
-                get(move |AxPath((_o, _r)): AxPath<(String, String)>| async move {
-                    StatusCode::from_u16(probe_status).unwrap()
-                }),
+                get(
+                    move |AxPath((_o, _r)): AxPath<(String, String)>| async move {
+                        StatusCode::from_u16(probe_status).unwrap()
+                    },
+                ),
             )
             .route(
                 "/repos/{owner}/{repo}/keys",
@@ -499,10 +515,9 @@ mod tests {
             sessions: crate::sessions::SessionState::with_repos_dir(repos_dir),
             ..crate::AppState::default()
         };
-        let (status, body) = body_json(
-            branches(admin(), State(state), axum::extract::Path("brproj".into())).await,
-        )
-        .await;
+        let (status, body) =
+            body_json(branches(admin(), State(state), axum::extract::Path("brproj".into())).await)
+                .await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         let list = body.as_array().unwrap();
         let names: Vec<&str> = list.iter().map(|b| b["name"].as_str().unwrap()).collect();
@@ -517,7 +532,14 @@ mod tests {
     async fn create_invalid_name_is_422() {
         let state = crate::AppState::default();
         let (status, body) = body_json(
-            create(admin(), State(state), Json(NewProject { name: "Bad_Name".into() })).await,
+            create(
+                admin(),
+                State(state),
+                Json(NewProject {
+                    name: "Bad_Name".into(),
+                }),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -534,7 +556,14 @@ mod tests {
             needs_merge: false,
         });
         let (status, body) = body_json(
-            create(admin(), State(state), Json(NewProject { name: "torchio".into() })).await,
+            create(
+                admin(),
+                State(state),
+                Json(NewProject {
+                    name: "torchio".into(),
+                }),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
@@ -546,7 +575,14 @@ mod tests {
         // github: None (no GITHUB_PAT in the environment of this state).
         let state = crate::AppState::default();
         let (status, body) = body_json(
-            create(admin(), State(state), Json(NewProject { name: "fresh-proj".into() })).await,
+            create(
+                admin(),
+                State(state),
+                Json(NewProject {
+                    name: "fresh-proj".into(),
+                }),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -557,7 +593,14 @@ mod tests {
     async fn driver_without_approval_cannot_create() {
         let state = crate::AppState::default();
         let (status, body) = body_json(
-            create(driver(), State(state), Json(NewProject { name: "fresh-proj".into() })).await,
+            create(
+                driver(),
+                State(state),
+                Json(NewProject {
+                    name: "fresh-proj".into(),
+                }),
+            )
+            .await,
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -573,7 +616,9 @@ mod tests {
             create(
                 admin(),
                 State(state.clone()),
-                Json(NewProject { name: "smoke-new".into() }),
+                Json(NewProject {
+                    name: "smoke-new".into(),
+                }),
             )
             .await,
         )
@@ -611,7 +656,9 @@ mod tests {
             create(
                 admin(),
                 State(state.clone()),
-                Json(NewProject { name: "legacy-repo".into() }),
+                Json(NewProject {
+                    name: "legacy-repo".into(),
+                }),
             )
             .await,
         )
@@ -633,7 +680,9 @@ mod tests {
             create(
                 admin(),
                 State(state.clone()),
-                Json(NewProject { name: "phantom-proj".into() }),
+                Json(NewProject {
+                    name: "phantom-proj".into(),
+                }),
             )
             .await,
         )

@@ -57,7 +57,11 @@ fn err(status: StatusCode, detail: impl Into<String>) -> Response {
 /// incumbent keeps the name: the first project found wins, a second
 /// declaration simply never resolves (its verbs 404 — loud enough).
 fn resolve(state: &crate::AppState, name: &str) -> Result<(String, AppManifest), String> {
-    let rt = state.sessions.runtime.as_ref().ok_or("runtime not configured")?;
+    let rt = state
+        .sessions
+        .runtime
+        .as_ref()
+        .ok_or("runtime not configured")?;
     if let Some(rec) = state.apps.get(name) {
         if let Some(m) = read_app_manifest(rt, &rec.project)? {
             if m.name == name {
@@ -100,11 +104,16 @@ fn read_app_manifest(
 pub fn create_args(m: &AppManifest, image: &str, network: &str) -> Result<Vec<String>, String> {
     let mut args: Vec<String> = vec![
         "create".into(),
-        "--name".into(), m.name.clone(),
-        "--hostname".into(), m.name.clone(),
-        "--network".into(), network.into(),
-        "--restart".into(), "unless-stopped".into(),
-        "--label".into(), "sigiled.kind=app".into(),
+        "--name".into(),
+        m.name.clone(),
+        "--hostname".into(),
+        m.name.clone(),
+        "--network".into(),
+        network.into(),
+        "--restart".into(),
+        "unless-stopped".into(),
+        "--label".into(),
+        "sigiled.kind=app".into(),
     ];
     for (vol, target) in &m.volumes {
         args.push("-v".into());
@@ -148,9 +157,13 @@ pub async fn action(
     State(state): State<crate::AppState>,
     AxPath((name, verb)): AxPath<(String, String)>,
 ) -> Response {
-    if let Err(denial) =
-        authorize(&actor, Action::AppVerb, None, &state.auth.approvals, now_epoch())
-    {
+    if let Err(denial) = authorize(
+        &actor,
+        Action::AppVerb,
+        None,
+        &state.auth.approvals,
+        now_epoch(),
+    ) {
         return err(StatusCode::FORBIDDEN, denial.0);
     }
     let Some(rt) = state.sessions.runtime.clone() else {
@@ -180,8 +193,17 @@ pub async fn action(
 
 async fn upgrade(state: crate::AppState, rt: crate::runtime::Runtime, name: String) -> Response {
     // One build at a time per app: the record's action flag is the latch.
-    if state.apps.get(&name).and_then(|r| r.action.clone()).as_deref() == Some("building") {
-        return err(StatusCode::CONFLICT, format!("{name} is already building — poll status"));
+    if state
+        .apps
+        .get(&name)
+        .and_then(|r| r.action.clone())
+        .as_deref()
+        == Some("building")
+    {
+        return err(
+            StatusCode::CONFLICT,
+            format!("{name} is already building — poll status"),
+        );
     }
     let (project, manifest) = match resolve(&state, &name) {
         Ok(x) => x,
@@ -327,7 +349,8 @@ mod tests {
     #[test]
     fn missing_stack_secret_is_a_loud_failure() {
         let mut m = manifest();
-        m.secrets.insert("API_KEY".into(), "SIGILED_TEST_UNSET_VAR".into());
+        m.secrets
+            .insert("API_KEY".into(), "SIGILED_TEST_UNSET_VAR".into());
         let e = create_args(&m, "img:sha", "mgr-net").unwrap_err();
         assert!(e.contains("SIGILED_TEST_UNSET_VAR"), "{e}");
     }
@@ -351,6 +374,9 @@ mod tests {
         let dumped = apps.dump();
         let fresh = AppsState::default();
         fresh.hydrate(dumped);
-        assert_eq!(fresh.get("reddit-mine").unwrap().image.as_deref(), Some("reddit-mine:abc123def456"));
+        assert_eq!(
+            fresh.get("reddit-mine").unwrap().image.as_deref(),
+            Some("reddit-mine:abc123def456")
+        );
     }
 }

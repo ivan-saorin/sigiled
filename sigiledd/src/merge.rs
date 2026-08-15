@@ -59,14 +59,20 @@ pub fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 fn lines(s: String) -> Vec<String> {
-    s.lines().map(str::to_string).filter(|l| !l.is_empty()).collect()
+    s.lines()
+        .map(str::to_string)
+        .filter(|l| !l.is_empty())
+        .collect()
 }
 
 /// The paths a session branch changed vs the master it forked from —
 /// feeds the honest close hint (events::log_operativo_touched).
 pub fn changed_paths(repo: &Path, branch: &str) -> Result<Vec<String>, String> {
     let base = git(repo, &["merge-base", "master", branch])?;
-    Ok(lines(git(repo, &["diff", "--name-only", &format!("{base}..{branch}")])?))
+    Ok(lines(git(
+        repo,
+        &["diff", "--name-only", &format!("{base}..{branch}")],
+    )?))
 }
 
 pub fn close_merge(repo: &Path, branch: &str) -> Result<MergeOutcome, String> {
@@ -103,16 +109,28 @@ pub fn close_merge(repo: &Path, branch: &str) -> Result<MergeOutcome, String> {
 
     // Conflict: harvest the debt package, then put master back untouched.
     let conflicted = lines(git(repo, &["diff", "--name-only", "--diff-filter=U"])?);
-    let ours_msgs = lines(git(repo, &["log", "--format=%s", &format!("{base}..{master}")])?);
-    let theirs_msgs = lines(git(repo, &["log", "--format=%s", &format!("{base}..{head}")])?);
+    let ours_msgs = lines(git(
+        repo,
+        &["log", "--format=%s", &format!("{base}..{master}")],
+    )?);
+    let theirs_msgs = lines(git(
+        repo,
+        &["log", "--format=%s", &format!("{base}..{head}")],
+    )?);
     let since = git(repo, &["show", "-s", "--format=%cI", &base])?;
     git(repo, &["merge", "--abort"])?;
 
     Ok(MergeOutcome::Debt(MergeDebt {
         branch: branch.to_string(),
         conflicted_files: conflicted,
-        ours: DebtSide { sha: master, commit_messages: ours_msgs },
-        theirs: DebtSide { sha: head, commit_messages: theirs_msgs },
+        ours: DebtSide {
+            sha: master,
+            commit_messages: ours_msgs,
+        },
+        theirs: DebtSide {
+            sha: head,
+            commit_messages: theirs_msgs,
+        },
         since,
     }))
 }
@@ -209,7 +227,13 @@ pub mod tests {
         let repo = mk_repo("debt");
         sh(&repo, &["branch", "session/a", "master"]);
         commit_on(&repo, "master", "hot.txt", "ours\n", "fix: ours side");
-        commit_on(&repo, "session/a", "hot.txt", "theirs\n", "fix: theirs side");
+        commit_on(
+            &repo,
+            "session/a",
+            "hot.txt",
+            "theirs\n",
+            "fix: theirs side",
+        );
         let master_before = sh(&repo, &["rev-parse", "refs/heads/master"]);
         match close_merge(&repo, "session/a").unwrap() {
             MergeOutcome::Debt(d) => {
@@ -223,7 +247,10 @@ pub mod tests {
             o => panic!("expected Debt, got {o:?}"),
         }
         // Master untouched, branch survived, no merge left in progress.
-        assert_eq!(sh(&repo, &["rev-parse", "refs/heads/master"]), master_before);
+        assert_eq!(
+            sh(&repo, &["rev-parse", "refs/heads/master"]),
+            master_before
+        );
         assert!(sh(&repo, &["branch", "--list", "session/a"]).contains("session/a"));
         assert!(!repo.join(".git/MERGE_HEAD").exists());
     }
@@ -234,16 +261,30 @@ pub mod tests {
         sh(&repo, &["branch", "session/a", "master"]);
         commit_on(&repo, "master", "hot.txt", "ours\n", "fix: ours");
         commit_on(&repo, "session/a", "hot.txt", "theirs\n", "fix: theirs");
-        assert!(matches!(close_merge(&repo, "session/a").unwrap(), MergeOutcome::Debt(_)));
+        assert!(matches!(
+            close_merge(&repo, "session/a").unwrap(),
+            MergeOutcome::Debt(_)
+        ));
         // The resolution protocol (§4.2): on the debtor branch, merge master,
         // resolve explaining what was kept, commit, close again.
         sh(&repo, &["checkout", "-q", "session/a"]);
         // Conflict expected: git() errs on the nonzero exit, MERGE_HEAD stays.
         let _ = git(&repo, &["merge", "master"]);
-        assert!(repo.join(".git/MERGE_HEAD").exists(), "merge master did not start");
+        assert!(
+            repo.join(".git/MERGE_HEAD").exists(),
+            "merge master did not start"
+        );
         write(&repo, "hot.txt", "ours+theirs reconciled\n");
         sh(&repo, &["add", "-A"]);
-        sh(&repo, &["commit", "-q", "-m", "merge: kept both sides, reconciled hot.txt"]);
+        sh(
+            &repo,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "merge: kept both sides, reconciled hot.txt",
+            ],
+        );
         match close_merge(&repo, "session/a").unwrap() {
             MergeOutcome::Ff { sha } | MergeOutcome::Merged { sha } => {
                 assert_eq!(sha, sh(&repo, &["rev-parse", "refs/heads/master"]));
@@ -256,12 +297,20 @@ pub mod tests {
     fn changed_paths_feed_the_close_hint() {
         let repo = mk_repo("hint");
         sh(&repo, &["branch", "session/a", "master"]);
-        commit_on(&repo, "session/a", "docs/log-operativo.md", "# log\nentry\n", "log: entry");
+        commit_on(
+            &repo,
+            "session/a",
+            "docs/log-operativo.md",
+            "# log\nentry\n",
+            "log: entry",
+        );
         let paths = changed_paths(&repo, "session/a").unwrap();
         assert!(crate::events::log_operativo_touched(&paths));
         let repo2 = mk_repo("hint2");
         sh(&repo2, &["branch", "session/b", "master"]);
         commit_on(&repo2, "session/b", "src.rs", "fn x(){}\n", "feat: x");
-        assert!(!crate::events::log_operativo_touched(&changed_paths(&repo2, "session/b").unwrap()));
+        assert!(!crate::events::log_operativo_touched(
+            &changed_paths(&repo2, "session/b").unwrap()
+        ));
     }
 }

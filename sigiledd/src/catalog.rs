@@ -70,7 +70,9 @@ fn validate(v: &serde_json::Value) -> Result<(), String> {
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
         if !shape {
-            return Err(format!("{name}: names are lowercase alnum+dash, letter first"));
+            return Err(format!(
+                "{name}: names are lowercase alnum+dash, letter first"
+            ));
         }
         if !seen.insert(name) {
             return Err(format!("{name}: duplicate service name"));
@@ -128,7 +130,10 @@ pub async fn serve(Query(f): Query<Filter>) -> Response {
     let version = HeaderValue::from_str(&crate::version())
         .unwrap_or_else(|_| HeaderValue::from_static("unknown"));
     (
-        [(header::HeaderName::from_static("x-sigiled-version"), version)],
+        [(
+            header::HeaderName::from_static("x-sigiled-version"),
+            version,
+        )],
         axum::Json(body),
     )
         .into_response()

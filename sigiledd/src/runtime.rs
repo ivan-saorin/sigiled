@@ -31,10 +31,18 @@ pub struct ImageChoice {
 
 impl ImageChoice {
     fn base(image: String) -> Self {
-        ImageChoice { used: image, requested: None, build_error: None }
+        ImageChoice {
+            used: image,
+            requested: None,
+            build_error: None,
+        }
     }
     fn built(tag: String) -> Self {
-        ImageChoice { used: tag, requested: None, build_error: None }
+        ImageChoice {
+            used: tag,
+            requested: None,
+            build_error: None,
+        }
     }
 }
 
@@ -180,7 +188,8 @@ impl Runtime {
     }
 
     pub fn image_exists(&self, tag: &str) -> bool {
-        self.docker(&["image", "inspect", "--format", "ok", tag]).is_ok()
+        self.docker(&["image", "inspect", "--format", "ok", tag])
+            .is_ok()
     }
 
     // --- session images (DEC-25) -------------------------------------------
@@ -209,8 +218,13 @@ impl Runtime {
         };
         let blob = crate::merge::git(repo, &["hash-object", "--", &dockerfile])
             .map_err(|e| format!("[workspace] dockerfile {dockerfile:?}: {e}"))?;
-        let short = blob.get(..12).ok_or_else(|| format!("bad blob hash {blob:?}"))?;
-        Ok(Some((format!("{}:df-{short}", Self::vm_name(project)), dockerfile)))
+        let short = blob
+            .get(..12)
+            .ok_or_else(|| format!("bad blob hash {blob:?}"))?;
+        Ok(Some((
+            format!("{}:df-{short}", Self::vm_name(project)),
+            dockerfile,
+        )))
     }
 
     /// Resolve and, when needed, build the session image. Never fails: a
@@ -262,7 +276,15 @@ impl Runtime {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        let tail: String = text.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+        let tail: String = text
+            .lines()
+            .rev()
+            .take(20)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
         if out.status.success() {
             Ok(tail)
         } else {
@@ -289,18 +311,29 @@ impl Runtime {
         self.destroy(container); // stale container safety, as v1 — own name only
         let key = self.key_path(project);
         if !key.exists() {
-            return Err(format!("deploy key missing for {project}: {}", key.display()));
+            return Err(format!(
+                "deploy key missing for {project}: {}",
+                key.display()
+            ));
         }
         let mut args: Vec<String> = vec![
             "create".into(),
-            "--name".into(), container.into(),
-            "--hostname".into(), container.into(),
-            "--network".into(), self.network.clone(),
-            "--label".into(), format!("sigiled.kind={kind}"),
-            "--label".into(), format!("sigiled.project={project}"),
-            "--label".into(), format!("sigiled.workload={workload_id}"),
-            "-e".into(), format!("SESSION_TOKEN={token}"),
-            "-e".into(), "GIT_SSH_KEY=/secrets/deploy_key".into(),
+            "--name".into(),
+            container.into(),
+            "--hostname".into(),
+            container.into(),
+            "--network".into(),
+            self.network.clone(),
+            "--label".into(),
+            format!("sigiled.kind={kind}"),
+            "--label".into(),
+            format!("sigiled.project={project}"),
+            "--label".into(),
+            format!("sigiled.workload={workload_id}"),
+            "-e".into(),
+            format!("SESSION_TOKEN={token}"),
+            "-e".into(),
+            "GIT_SSH_KEY=/secrets/deploy_key".into(),
         ];
         for (name, value) in extra_env {
             args.push("-e".into());
@@ -309,7 +342,11 @@ impl Runtime {
         args.push(image.into());
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.docker(&arg_refs)?;
-        self.docker(&["cp", &key.to_string_lossy(), &format!("{container}:/secrets/deploy_key")])?;
+        self.docker(&[
+            "cp",
+            &key.to_string_lossy(),
+            &format!("{container}:/secrets/deploy_key"),
+        ])?;
         self.docker(&["start", container])?;
         Ok(())
     }
@@ -363,7 +400,9 @@ impl Runtime {
             return Err(format!("health: {}", r.status()));
         }
         let v: serde_json::Value = r.json().await.map_err(|e| format!("health decode: {e}"))?;
-        v["idle_secs"].as_u64().ok_or_else(|| "health: no idle_secs".into())
+        v["idle_secs"]
+            .as_u64()
+            .ok_or_else(|| "health: no idle_secs".into())
     }
 
     pub async fn exec(
@@ -406,7 +445,13 @@ impl Runtime {
             format!("git checkout -b {branch} && git push -u origin {branch}")
         };
         let r = self
-            .exec(http, container, token, &format!("{clone} && {guard} && {branch_cmd}"), 300)
+            .exec(
+                http,
+                container,
+                token,
+                &format!("{clone} && {guard} && {branch_cmd}"),
+                300,
+            )
             .await?;
         match r["exit"].as_i64() {
             Some(0) => {}
@@ -419,14 +464,26 @@ impl Runtime {
                 ))
             }
         }
-        let head = self.exec(http, container, token, "git rev-parse HEAD", 30).await?;
-        Ok(head["stdout"].as_str().unwrap_or_default().trim().to_string())
+        let head = self
+            .exec(http, container, token, "git rev-parse HEAD", 30)
+            .await?;
+        Ok(head["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string())
     }
 
     /// Commit anything left uncommitted, else make sure HEAD is pushed.
     /// An unreachable container is not an error: push-early means only
     /// already-pushed work exists (the v1 learned this the hard way).
-    pub async fn flush(&self, http: &reqwest::Client, container: &str, token: &str, label: &str) -> bool {
+    pub async fn flush(
+        &self,
+        http: &reqwest::Client,
+        container: &str,
+        token: &str,
+        label: &str,
+    ) -> bool {
         let cmd = autosave_cmd(label);
         matches!(
             self.exec(http, container, token, &cmd, 120).await,
@@ -476,12 +533,24 @@ mod tests {
     fn names_and_urls_match_the_v1_routing_contract() {
         // Caddy's static rule depends on these exact shapes.
         assert_eq!(Runtime::vm_name("torchio"), "vm-torchio");
-        assert_eq!(rt().endpoint("torchio"), "https://api.example.com/s/torchio/");
-        assert_eq!(rt().repo_url("torchio"), "git@github.com:example-org/torchio.git");
-        assert_eq!(rt().agent_url("vm-torchio", "/health"), "http://vm-torchio:8000/health");
+        assert_eq!(
+            rt().endpoint("torchio"),
+            "https://api.example.com/s/torchio/"
+        );
+        assert_eq!(
+            rt().repo_url("torchio"),
+            "git@github.com:example-org/torchio.git"
+        );
+        assert_eq!(
+            rt().agent_url("vm-torchio", "/health"),
+            "http://vm-torchio:8000/health"
+        );
         // Jobs never wear the session name: rm -f on create must not be
         // able to kill a live session's container.
-        assert_eq!(Runtime::job_container("torchio", "nightly"), "vm-job-torchio-nightly");
+        assert_eq!(
+            Runtime::job_container("torchio", "nightly"),
+            "vm-job-torchio-nightly"
+        );
     }
 
     #[test]
@@ -498,8 +567,14 @@ mod tests {
         // container env (GIT_AUTHOR_NAME, …) still wins when set.
         let cmd = autosave_cmd("session close");
         assert!(cmd.contains("wip: session close autosave"));
-        assert!(cmd.contains("-c user.name="), "commit must carry identity: {cmd}");
-        assert!(cmd.contains("-c user.email="), "commit must carry identity: {cmd}");
+        assert!(
+            cmd.contains("-c user.name="),
+            "commit must carry identity: {cmd}"
+        );
+        assert!(
+            cmd.contains("-c user.email="),
+            "commit must carry identity: {cmd}"
+        );
     }
 
     #[test]
@@ -516,26 +591,40 @@ mod tests {
         // No manifest, then a manifest without [workspace]: the global base.
         assert_eq!(rt.session_image_tag("proj", &repo).unwrap(), None);
         crate::merge::tests::commit_on(
-            &repo, "master", "sigiled.toml", "template = \"vm-tmpl@0.1.0\"\n", "chore: pin",
+            &repo,
+            "master",
+            "sigiled.toml",
+            "template = \"vm-tmpl@0.1.0\"\n",
+            "chore: pin",
         );
         assert_eq!(rt.session_image_tag("proj", &repo).unwrap(), None);
         // Declared: vm-{p}:df-{blob12}, stable under commits that don't
         // touch the dockerfile — that stability IS the image cache key.
         crate::merge::tests::commit_on(&repo, "master", "Dockerfile", "FROM scratch\n", "feat: df");
         crate::merge::tests::commit_on(
-            &repo, "master", "sigiled.toml",
+            &repo,
+            "master",
+            "sigiled.toml",
             "template = \"vm-tmpl@0.1.0\"\n[workspace]\ndockerfile = \"Dockerfile\"\n",
             "feat: session image",
         );
         let (tag, df) = rt.session_image_tag("proj", &repo).unwrap().unwrap();
         assert_eq!(df, "Dockerfile");
         assert!(tag.starts_with("vm-proj:df-"), "tag {tag}");
-        assert_eq!(tag.len(), "vm-proj:df-".len() + 12, "12-hex blob suffix: {tag}");
+        assert_eq!(
+            tag.len(),
+            "vm-proj:df-".len() + 12,
+            "12-hex blob suffix: {tag}"
+        );
         crate::merge::tests::commit_on(&repo, "master", "unrelated.txt", "x\n", "feat: other");
         assert_eq!(rt.session_image_tag("proj", &repo).unwrap().unwrap().0, tag);
         // Editing the dockerfile moves the tag: next open rebuilds.
         crate::merge::tests::commit_on(
-            &repo, "master", "Dockerfile", "FROM scratch\nLABEL v=2\n", "feat: edit df",
+            &repo,
+            "master",
+            "Dockerfile",
+            "FROM scratch\nLABEL v=2\n",
+            "feat: edit df",
         );
         assert_ne!(rt.session_image_tag("proj", &repo).unwrap().unwrap().0, tag);
     }
@@ -548,7 +637,10 @@ mod tests {
         // without the toolchain the project declared: today's exact bug.
         let repo = crate::merge::tests::mk_repo("img-missing");
         crate::merge::tests::commit_on(
-            &repo, "master", "sigiled.toml", "[workspace]\ndockerfile = \"Dockerfile.nope\"\n",
+            &repo,
+            "master",
+            "sigiled.toml",
+            "[workspace]\ndockerfile = \"Dockerfile.nope\"\n",
             "feat: dangling pin",
         );
         let e = rt().session_image_tag("proj", &repo).unwrap_err();
@@ -590,9 +682,18 @@ mod tests {
         crate::merge::tests::commit_on(&origin, "master", "new.txt", "n\n", "feat: upstream");
         crate::merge::tests::commit_on(&clone, "master", "local.txt", "l\n", "wip: local drift");
 
-        let rt = Runtime { repos_dir: dir.clone(), ..rt() };
+        let rt = Runtime {
+            repos_dir: dir.clone(),
+            ..rt()
+        };
         rt.ensure_mirror("proj").unwrap();
-        assert!(clone.join("new.txt").exists(), "upstream commit not fetched");
-        assert!(!clone.join("local.txt").exists(), "local drift survived the reset");
+        assert!(
+            clone.join("new.txt").exists(),
+            "upstream commit not fetched"
+        );
+        assert!(
+            !clone.join("local.txt").exists(),
+            "local drift survived the reset"
+        );
     }
 }

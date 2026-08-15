@@ -1,9 +1,9 @@
 mod auth;
 mod error;
 mod exec_api;
+mod ext_registry;
 mod fs_api;
 mod git_api;
-mod ext_registry;
 mod state;
 
 use std::sync::atomic::Ordering;
@@ -45,7 +45,9 @@ fn health_probe() -> ! {
         )?;
         let mut buf = [0u8; 64];
         let n = s.read(&mut buf)?;
-        Ok(std::str::from_utf8(&buf[..n]).unwrap_or("").starts_with("HTTP/1.1 200"))
+        Ok(std::str::from_utf8(&buf[..n])
+            .unwrap_or("")
+            .starts_with("HTTP/1.1 200"))
     };
     std::process::exit(match run() {
         Ok(true) => 0,
@@ -72,7 +74,10 @@ async fn main() {
     }
 
     let st = Arc::new(AppState::from_env());
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8000);
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8000);
 
     let api = Router::new()
         .route("/health", get(health))
@@ -91,12 +96,17 @@ async fn main() {
 
     // Extensions mount inside the same token gate: the auth layer is applied
     // after mounting, so it wraps /x/* too.
-    let app = ext_registry::mount(api)
-        .layer(middleware::from_fn_with_state(st.clone(), auth::require_token));
+    let app = ext_registry::mount(api).layer(middleware::from_fn_with_state(
+        st.clone(),
+        auth::require_token,
+    ));
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .expect("bind");
-    tracing::info!("vm-base {VERSION} listening on :{port}, workspace {}", st.workspace.display());
+    tracing::info!(
+        "vm-base {VERSION} listening on :{port}, workspace {}",
+        st.workspace.display()
+    );
     axum::serve(listener, app).await.expect("serve");
 }

@@ -40,13 +40,20 @@ impl TemplateRef {
         let (name, version) = s.split_once('@').ok_or_else(bad)?;
         let name_ok = !name.is_empty()
             && name.starts_with(|c: char| c.is_ascii_lowercase())
-            && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
         let version_ok = version.split('.').count() == 3
-            && version.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+            && version
+                .split('.')
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
         if !(name_ok && version_ok) {
             return Err(bad());
         }
-        Ok(TemplateRef { name: name.to_string(), version: version.to_string() })
+        Ok(TemplateRef {
+            name: name.to_string(),
+            version: version.to_string(),
+        })
     }
 }
 
@@ -185,7 +192,10 @@ impl AppManifest {
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
         if !name_ok {
-            return Err(ManifestError::BadApp(format!("bad app name {:?}", raw.name)));
+            return Err(ManifestError::BadApp(format!(
+                "bad app name {:?}",
+                raw.name
+            )));
         }
         for (vol, target) in &raw.volumes {
             let ok = target.starts_with('/')
@@ -225,9 +235,15 @@ impl Manifest {
     pub fn parse(text: &str) -> Result<Self, ManifestError> {
         let raw: RawManifest =
             toml::from_str(text).map_err(|e| ManifestError::Toml(e.to_string()))?;
-        let template = raw.template.as_deref().map(TemplateRef::parse).transpose()?;
-        let workspace_dockerfile =
-            raw.workspace.map(validate_workspace_dockerfile).transpose()?;
+        let template = raw
+            .template
+            .as_deref()
+            .map(TemplateRef::parse)
+            .transpose()?;
+        let workspace_dockerfile = raw
+            .workspace
+            .map(validate_workspace_dockerfile)
+            .transpose()?;
         let app = raw.app.map(AppManifest::validate).transpose()?;
         let mut jobs = raw
             .jobs
@@ -236,7 +252,12 @@ impl Manifest {
             .map(|(name, j)| JobManifest::validate(&name, j))
             .collect::<Result<Vec<_>, _>>()?;
         jobs.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Manifest { template, workspace_dockerfile, app, jobs })
+        Ok(Manifest {
+            template,
+            workspace_dockerfile,
+            app,
+            jobs,
+        })
     }
 
     /// The manifest of a repo checkout, probing the same filename pair every
@@ -247,7 +268,9 @@ impl Manifest {
         for f in ["sigiled.toml", "mgr.toml"] {
             let path = repo.join(f);
             if let Ok(text) = std::fs::read_to_string(&path) {
-                return Manifest::parse(&text).map(Some).map_err(|e| format!("{f}: {e}"));
+                return Manifest::parse(&text)
+                    .map(Some)
+                    .map_err(|e| format!("{f}: {e}"));
             }
         }
         Ok(None)
@@ -289,7 +312,10 @@ mod tests {
         ];
         for bad in bads {
             assert!(
-                matches!(TemplateRef::parse(bad), Err(ManifestError::BadTemplateRef(_))),
+                matches!(
+                    TemplateRef::parse(bad),
+                    Err(ManifestError::BadTemplateRef(_))
+                ),
                 "{bad} should be rejected"
             );
         }
@@ -306,7 +332,10 @@ mod tests {
 
     #[test]
     fn broken_toml_is_a_toml_error() {
-        assert!(matches!(Manifest::parse("class = "), Err(ManifestError::Toml(_))));
+        assert!(matches!(
+            Manifest::parse("class = "),
+            Err(ManifestError::Toml(_))
+        ));
     }
 
     #[test]
@@ -359,7 +388,10 @@ mod tests {
 
     #[test]
     fn no_jobs_table_is_an_empty_list() {
-        assert!(Manifest::parse("class = \"session\"\n").unwrap().jobs.is_empty());
+        assert!(Manifest::parse("class = \"session\"\n")
+            .unwrap()
+            .jobs
+            .is_empty());
     }
 
     #[test]
@@ -387,9 +419,17 @@ mod tests {
     #[test]
     fn workspace_dockerfile_parses_and_is_optional() {
         let m = Manifest::parse("[workspace]\ndockerfile = \"Dockerfile.session\"\n").unwrap();
-        assert_eq!(m.workspace_dockerfile.as_deref(), Some("Dockerfile.session"));
+        assert_eq!(
+            m.workspace_dockerfile.as_deref(),
+            Some("Dockerfile.session")
+        );
         // No [workspace] = the global base image (pre-DEC-25 behavior).
-        assert_eq!(Manifest::parse("class = \"session\"\n").unwrap().workspace_dockerfile, None);
+        assert_eq!(
+            Manifest::parse("class = \"session\"\n")
+                .unwrap()
+                .workspace_dockerfile,
+            None
+        );
     }
 
     #[test]
@@ -398,7 +438,10 @@ mod tests {
         // mirror checkout: escaping the repo root must die at parse.
         let bads = ["", "/etc/passwd", "../evil/Dockerfile", "a/../../b", "a\\b"];
         for bad in bads {
-            let text = format!("[workspace]\ndockerfile = \"{}\"\n", bad.replace('\\', "\\\\"));
+            let text = format!(
+                "[workspace]\ndockerfile = \"{}\"\n",
+                bad.replace('\\', "\\\\")
+            );
             assert!(
                 matches!(Manifest::parse(&text), Err(ManifestError::BadWorkspace(_))),
                 "{bad:?} should be rejected"
@@ -422,6 +465,9 @@ mod tests {
         // commented (parse → app None); if someone uncomments it, it must
         // still be valid. Both invariants in one place.
         let m = Manifest::parse(include_str!("../../template/sigiled.toml")).unwrap();
-        assert!(m.app.is_none(), "il template non deve dichiarare app di default");
+        assert!(
+            m.app.is_none(),
+            "il template non deve dichiarare app di default"
+        );
     }
 }

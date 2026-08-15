@@ -84,7 +84,10 @@ pub async fn serve(
     // Driver names ride into an IdP query: same shape rule as project
     // names keeps the URL inert.
     if !crate::project::valid_name(&driver) {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, format!("invalid driver name: {driver}"));
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("invalid driver name: {driver}"),
+        );
     }
     // Instance identity comes from the deploy env, exactly like the
     // runtime: without DOMAIN there is no instance to describe.
@@ -109,7 +112,10 @@ pub async fn serve(
     };
     let body = render(&driver, &api_base, &oidc_base, &search_base, &secret);
     (
-        [(header::CONTENT_TYPE, HeaderValue::from_static("text/markdown; charset=utf-8"))],
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/markdown; charset=utf-8"),
+        )],
         body,
     )
         .into_response()
@@ -134,16 +140,24 @@ mod tests {
         assert!(out.contains("GET https://api.example.com/sigiled/contract"));
         // Skill loaders require YAML frontmatter: the rendered file must
         // open with it, name stable across drivers.
-        assert!(out.starts_with("---
+        assert!(
+            out.starts_with(
+                "---
 name: sigil
-"), "missing frontmatter:
-{out}");
+"
+            ),
+            "missing frontmatter:
+{out}"
+        );
     }
 
     #[test]
     fn skill_render_is_approval_gated() {
         // The endpoint can emit a credential: same row of the capability
         // map as projects-new (drivers need a live human).
-        assert!(crate::auth::requires_approval(crate::auth::Action::SkillRender, None));
+        assert!(crate::auth::requires_approval(
+            crate::auth::Action::SkillRender,
+            None
+        ));
     }
 }

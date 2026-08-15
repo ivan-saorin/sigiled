@@ -11,10 +11,10 @@ mod catalog;
 mod contract;
 mod events;
 mod github;
+mod import;
 mod jobs;
 mod manifest;
 mod merge;
-mod import;
 mod project;
 mod reaper;
 mod runtime;
@@ -75,7 +75,11 @@ impl AppState {
 pub fn version() -> String {
     // Build sha baked by the image build (SIGILED_BUILD_SHA); absent in dev.
     match option_env!("SIGILED_BUILD_SHA") {
-        Some(sha) => format!("{}+{}", env!("CARGO_PKG_VERSION"), &sha[..12.min(sha.len())]),
+        Some(sha) => format!(
+            "{}+{}",
+            env!("CARGO_PKG_VERSION"),
+            &sha[..12.min(sha.len())]
+        ),
         None => env!("CARGO_PKG_VERSION").to_string(),
     }
 }
@@ -137,7 +141,10 @@ async fn main() {
             }
         }
     }
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8080);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!(version = %version(), %addr, "sigiledd starting");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");

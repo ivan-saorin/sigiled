@@ -70,10 +70,19 @@ impl Default for SessionState {
 
 impl SessionState {
     pub fn with_repos_dir(dir: PathBuf) -> Self {
-        SessionState { repos_dir: Some(dir), runtime: None, ..SessionState::default() }
+        SessionState {
+            repos_dir: Some(dir),
+            runtime: None,
+            ..SessionState::default()
+        }
     }
     pub fn debts_for(&self, project: &str) -> Vec<MergeDebt> {
-        self.debts.read().unwrap().get(project).cloned().unwrap_or_default()
+        self.debts
+            .read()
+            .unwrap()
+            .get(project)
+            .cloned()
+            .unwrap_or_default()
     }
     fn push_debt(&self, project: &str, debt: MergeDebt) {
         let mut map = self.debts.write().unwrap();
@@ -131,7 +140,10 @@ impl SessionState {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::time::{SystemTime, UNIX_EPOCH};
         static N: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
         let n = N.fetch_add(1, Ordering::SeqCst);
         format!("{:08x}", (nanos ^ (n << 48)) & 0xffff_ffff)
     }
@@ -239,10 +251,17 @@ pub async fn open(
                     .await
                 {
                     Ok(choice) => choice,
-                    Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("image resolve: {e}")),
+                    Err(e) => {
+                        return err(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("image resolve: {e}"),
+                        )
+                    }
                 }
             };
-            if let Err(e) = rt.create_container(&vm, &project, "session", &id, &tok, &image.used, &[]) {
+            if let Err(e) =
+                rt.create_container(&vm, &project, "session", &id, &tok, &image.used, &[])
+            {
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
             if let Err(e) = rt.wait_healthy(&state.sessions.http, &vm, &tok).await {
@@ -253,9 +272,15 @@ pub async fn open(
                 .boot_workspace(&state.sessions.http, &vm, &project, &tok, &branch, resume)
                 .await
             {
-                Ok(head) => {
-                    (id, branch, resume, head, Some(tok), Some(rt.endpoint(&project)), Some(image))
-                }
+                Ok(head) => (
+                    id,
+                    branch,
+                    resume,
+                    head,
+                    Some(tok),
+                    Some(rt.endpoint(&project)),
+                    Some(image),
+                ),
                 Err(e) => {
                     rt.destroy(&vm);
                     return err(StatusCode::INTERNAL_SERVER_ERROR, e);
@@ -264,7 +289,10 @@ pub async fn open(
         }
         None => {
             let Some(repos) = state.sessions.repos_dir.clone() else {
-                return err(StatusCode::SERVICE_UNAVAILABLE, "SIGILED_REPOS_DIR not configured");
+                return err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "SIGILED_REPOS_DIR not configured",
+                );
             };
             let repo = repos.join(&project);
             if !repo.join(".git").exists() {
@@ -276,7 +304,15 @@ pub async fn open(
                         Ok(h) => h,
                         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
                     };
-                    (b.trim_start_matches("session/").to_string(), b, true, head, None, None, None)
+                    (
+                        b.trim_start_matches("session/").to_string(),
+                        b,
+                        true,
+                        head,
+                        None,
+                        None,
+                        None,
+                    )
                 }
                 None => {
                     let (id, branch) = fresh_id_branch();
@@ -299,11 +335,20 @@ pub async fn open(
         actor: actor.clone(),
         token: token.clone(),
     };
-    state.sessions.records.write().unwrap().insert(id.clone(), record);
+    state
+        .sessions
+        .records
+        .write()
+        .unwrap()
+        .insert(id.clone(), record);
     state.events.record(
         &project,
         now_epoch(),
-        Event::SessionOpened { session_id: id.clone(), branch: branch.clone(), stale: resume },
+        Event::SessionOpened {
+            session_id: id.clone(),
+            branch: branch.clone(),
+            stale: resume,
+        },
     );
 
     state.persist();
@@ -333,7 +378,12 @@ pub(crate) fn mint_token() -> String {
     let mut out = String::with_capacity(48);
     while out.len() < 48 {
         let mut h = RandomState::new().build_hasher();
-        h.write_u64(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos() as u64);
+        h.write_u64(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos() as u64,
+        );
         out.push_str(&format!("{:016x}", h.finish()));
     }
     out.truncate(48);
@@ -345,8 +395,18 @@ pub async fn close(
     State(state): State<crate::AppState>,
     AxPath(session_id): AxPath<String>,
 ) -> Response {
-    let Some(record) = state.sessions.records.read().unwrap().get(&session_id).cloned() else {
-        return err(StatusCode::NOT_FOUND, format!("unknown session: {session_id}"));
+    let Some(record) = state
+        .sessions
+        .records
+        .read()
+        .unwrap()
+        .get(&session_id)
+        .cloned()
+    else {
+        return err(
+            StatusCode::NOT_FOUND,
+            format!("unknown session: {session_id}"),
+        );
     };
     if let Err(denial) = authorize(
         &actor,
@@ -371,7 +431,11 @@ pub async fn close(
             return err(StatusCode::INTERNAL_SERVER_ERROR, e);
         }
     }
-    let repos = state.sessions.repos_dir.clone().expect("open required repos_dir");
+    let repos = state
+        .sessions
+        .repos_dir
+        .clone()
+        .expect("open required repos_dir");
     let repo = repos.join(&record.project);
 
     // The critical section shrank from the whole session to these few
@@ -383,7 +447,10 @@ pub async fn close(
     // With a runtime the branch lives on the remote: give the mirror a
     // local ref to merge from.
     if state.sessions.runtime.is_some() {
-        let _ = git(&repo, &["fetch", "origin", &format!("{0}:{0}", record.branch)]);
+        let _ = git(
+            &repo,
+            &["fetch", "origin", &format!("{0}:{0}", record.branch)],
+        );
     }
 
     let touched = changed_paths(&repo, &record.branch)
@@ -458,8 +525,18 @@ pub async fn recycle(
     State(state): State<crate::AppState>,
     AxPath(session_id): AxPath<String>,
 ) -> Response {
-    let Some(record) = state.sessions.records.read().unwrap().get(&session_id).cloned() else {
-        return err(StatusCode::NOT_FOUND, format!("unknown session: {session_id}"));
+    let Some(record) = state
+        .sessions
+        .records
+        .read()
+        .unwrap()
+        .get(&session_id)
+        .cloned()
+    else {
+        return err(
+            StatusCode::NOT_FOUND,
+            format!("unknown session: {session_id}"),
+        );
     };
     if let Err(denial) = authorize(
         &actor,
@@ -490,19 +567,30 @@ pub async fn recycle(
             let image = match rt.ensure_mirror(&record.project) {
                 Ok(mirror) => {
                     let (rt2, p2) = (rt.clone(), record.project.clone());
-                    match tokio::task::spawn_blocking(move || rt2.ensure_session_image(&p2, &mirror))
-                        .await
+                    match tokio::task::spawn_blocking(move || {
+                        rt2.ensure_session_image(&p2, &mirror)
+                    })
+                    .await
                     {
                         Ok(choice) => choice,
                         Err(e) => {
-                            return err(StatusCode::INTERNAL_SERVER_ERROR, format!("image resolve: {e}"))
+                            return err(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("image resolve: {e}"),
+                            )
                         }
                     }
                 }
                 Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
             };
             if let Err(e) = rt.create_container(
-                &vm, &record.project, "session", &session_id, &tok, &image.used, &[],
+                &vm,
+                &record.project,
+                "session",
+                &session_id,
+                &tok,
+                &image.used,
+                &[],
             ) {
                 return err(StatusCode::INTERNAL_SERVER_ERROR, e);
             }
@@ -513,10 +601,22 @@ pub async fn recycle(
             // resume=true: the branch already exists on the remote — the
             // fresh container checks it out instead of cutting a new one.
             match rt
-                .boot_workspace(&state.sessions.http, &vm, &record.project, &tok, &record.branch, true)
+                .boot_workspace(
+                    &state.sessions.http,
+                    &vm,
+                    &record.project,
+                    &tok,
+                    &record.branch,
+                    true,
+                )
                 .await
             {
-                Ok(head) => (head, Some(tok), Some(rt.endpoint(&record.project)), Some(image)),
+                Ok(head) => (
+                    head,
+                    Some(tok),
+                    Some(rt.endpoint(&record.project)),
+                    Some(image),
+                ),
                 Err(e) => {
                     rt.destroy(&vm);
                     return err(StatusCode::INTERNAL_SERVER_ERROR, e);
@@ -525,7 +625,10 @@ pub async fn recycle(
         }
         None => {
             let Some(repos) = state.sessions.repos_dir.clone() else {
-                return err(StatusCode::SERVICE_UNAVAILABLE, "SIGILED_REPOS_DIR not configured");
+                return err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "SIGILED_REPOS_DIR not configured",
+                );
             };
             let repo = repos.join(&record.project);
             match git(&repo, &["rev-parse", &record.branch]) {
@@ -546,7 +649,10 @@ pub async fn recycle(
     state.events.record(
         &record.project,
         now_epoch(),
-        Event::SessionRecycled { session_id: session_id.clone(), sha: head.clone() },
+        Event::SessionRecycled {
+            session_id: session_id.clone(),
+            sha: head.clone(),
+        },
     );
     state.persist();
     Json(json!({
@@ -564,10 +670,18 @@ mod tests {
     use axum::body::to_bytes;
 
     fn admin() -> Actor {
-        Actor { driver: "bootstrap".into(), role: crate::auth::Role::Admin, approval: None }
+        Actor {
+            driver: "bootstrap".into(),
+            role: crate::auth::Role::Admin,
+            approval: None,
+        }
     }
     fn driver() -> Actor {
-        Actor { driver: "sigiled-claude".into(), role: crate::auth::Role::Driver, approval: None }
+        Actor {
+            driver: "sigiled-claude".into(),
+            role: crate::auth::Role::Driver,
+            approval: None,
+        }
     }
 
     /// AppState over a temp repos dir containing one repo named `project`.
@@ -602,13 +716,22 @@ mod tests {
         let id = body["session_id"].as_str().unwrap().to_string();
         let branch = body["branch"].as_str().unwrap().to_string();
 
-        commit_on(&repo, &branch, "docs/log-operativo.md", "# log\nvoce\n", "log: voce");
+        commit_on(
+            &repo,
+            &branch,
+            "docs/log-operativo.md",
+            "# log\nvoce\n",
+            "log: voce",
+        );
         let (status, body) =
             body_json(close(admin(), State(state.clone()), AxPath(id)).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["merge"], "ff");
         assert_eq!(body["log_operativo_touched"], true);
-        assert_eq!(body["sha"].as_str().unwrap(), sh(&repo, &["rev-parse", "master"]));
+        assert_eq!(
+            body["sha"].as_str().unwrap(),
+            sh(&repo, &["rev-parse", "master"])
+        );
         // Branch deleted on clean close; machine log recorded both events.
         assert!(sh(&repo, &["branch", "--list", &branch]).is_empty());
         assert_eq!(state.events.for_project("smoke-ff").len(), 2);
@@ -624,8 +747,7 @@ mod tests {
 
         commit_on(&repo, "master", "hot.txt", "ours\n", "fix: ours");
         commit_on(&repo, &branch, "hot.txt", "theirs\n", "fix: theirs");
-        let (_, closed) =
-            body_json(close(admin(), State(state.clone()), AxPath(id)).await).await;
+        let (_, closed) = body_json(close(admin(), State(state.clone()), AxPath(id)).await).await;
         assert_eq!(closed["merge"], "debt");
         assert_eq!(closed["merge_debt"]["conflicted_files"][0], "hot.txt");
 
@@ -643,9 +765,15 @@ mod tests {
         let (status, body) =
             body_json(open(driver(), State(state.clone()), AxPath("sigiled".into())).await).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        assert!(body["detail"].as_str().unwrap().contains("requires approval"));
+        assert!(body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("requires approval"));
         // With a live approval the same open passes (session-3 acceptance).
-        state.auth.approvals.grant("sigiled-claude", "ivan", now_epoch() + 3600, json!({}));
+        state
+            .auth
+            .approvals
+            .grant("sigiled-claude", "ivan", now_epoch() + 3600, json!({}));
         let (status, _) =
             body_json(open(driver(), State(state.clone()), AxPath("sigiled".into())).await).await;
         assert_eq!(status, StatusCode::CREATED);
@@ -661,7 +789,12 @@ mod tests {
             ..state
         };
         let (_, a) = body_json(
-            open(admin(), State(state.clone()), AxPath("smoke-persist".into())).await,
+            open(
+                admin(),
+                State(state.clone()),
+                AxPath("smoke-persist".into()),
+            )
+            .await,
         )
         .await;
         let id = a["session_id"].as_str().unwrap().to_string();
@@ -693,10 +826,19 @@ mod tests {
         assert_eq!(a["stale"], false);
         let id = a["session_id"].as_str().unwrap().to_string();
         let branch = a["branch"].as_str().unwrap().to_string();
-        commit_on(&repo, &branch, "midwork.txt", "m\n", "feat: interrupted work");
+        commit_on(
+            &repo,
+            &branch,
+            "midwork.txt",
+            "m\n",
+            "feat: interrupted work",
+        );
 
         crate::reaper::reap(&state, &id, "idle").await;
-        assert!(state.sessions.record(&id).is_none(), "reap must drop the record");
+        assert!(
+            state.sessions.record(&id).is_none(),
+            "reap must drop the record"
+        );
         let ev = serde_json::to_value(state.events.for_project("smoke-reap")).unwrap();
         assert_eq!(ev[1]["kind"], "session_reaped");
 
@@ -712,8 +854,7 @@ mod tests {
             sh(&repo, &["rev-parse", &branch])
         );
         // The resumed session closes clean, interrupted work merged.
-        let (_, closed) =
-            body_json(close(admin(), State(state.clone()), AxPath(id)).await).await;
+        let (_, closed) = body_json(close(admin(), State(state.clone()), AxPath(id)).await).await;
         assert_eq!(closed["merge"], "ff");
         sh(&repo, &["checkout", "-f", "master"]);
         assert!(repo.join("midwork.txt").exists());
@@ -759,7 +900,13 @@ mod tests {
             body_json(open(admin(), State(state.clone()), AxPath("smoke-rec".into())).await).await;
         let id = a["session_id"].as_str().unwrap().to_string();
         let branch = a["branch"].as_str().unwrap().to_string();
-        commit_on(&repo, &branch, "work.txt", "w\n", "feat: work before recycle");
+        commit_on(
+            &repo,
+            &branch,
+            "work.txt",
+            "w\n",
+            "feat: work before recycle",
+        );
 
         let (status, body) =
             body_json(recycle(admin(), State(state.clone()), AxPath(id.clone())).await).await;
@@ -790,8 +937,14 @@ mod tests {
             body_json(open(admin(), State(state.clone()), AxPath("smoke-par".into())).await).await;
         let (_, b) =
             body_json(open(admin(), State(state.clone()), AxPath("smoke-par".into())).await).await;
-        let (ida, bra) = (a["session_id"].as_str().unwrap(), a["branch"].as_str().unwrap());
-        let (idb, brb) = (b["session_id"].as_str().unwrap(), b["branch"].as_str().unwrap());
+        let (ida, bra) = (
+            a["session_id"].as_str().unwrap(),
+            a["branch"].as_str().unwrap(),
+        );
+        let (idb, brb) = (
+            b["session_id"].as_str().unwrap(),
+            b["branch"].as_str().unwrap(),
+        );
         // Disjoint work: no conflict, but only one can fast-forward.
         commit_on(&repo, bra, "left.txt", "L\n", "feat: left");
         commit_on(&repo, brb, "right.txt", "R\n", "feat: right");

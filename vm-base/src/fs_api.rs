@@ -32,7 +32,10 @@ fn resolve(st: &AppState, raw: &str) -> Result<PathBuf, ApiError> {
             return Ok(clean);
         }
     }
-    Err(ApiError::forbidden(format!("path outside allowed roots: {}", clean.display())))
+    Err(ApiError::forbidden(format!(
+        "path outside allowed roots: {}",
+        clean.display()
+    )))
 }
 
 #[derive(Deserialize)]
@@ -84,7 +87,10 @@ pub async fn read(
     let path = resolve(&st, &r.path)?;
     let bytes = tokio::fs::read(&path).await?;
     Ok(Json(match String::from_utf8(bytes) {
-        Ok(text) => ReadResp { encoding: "utf-8", content: text },
+        Ok(text) => ReadResp {
+            encoding: "utf-8",
+            content: text,
+        },
         Err(e) => ReadResp {
             encoding: "base64",
             content: base64::engine::general_purpose::STANDARD.encode(e.into_bytes()),

@@ -74,8 +74,10 @@ impl GitHub {
             .map_err(|e| format!("github generate: {e}"))?;
         match r.status().as_u16() {
             201 => {
-                let body: serde_json::Value =
-                    r.json().await.map_err(|e| format!("github generate decode: {e}"))?;
+                let body: serde_json::Value = r
+                    .json()
+                    .await
+                    .map_err(|e| format!("github generate decode: {e}"))?;
                 match body["full_name"].as_str() {
                     Some(full) => Ok((full.to_string(), false)),
                     None => Err("github generate: 201 without full_name".into()),
@@ -83,7 +85,11 @@ impl GitHub {
             }
             422 => {
                 let probe = self
-                    .req(http, reqwest::Method::GET, &format!("/repos/{}/{name}", self.owner))
+                    .req(
+                        http,
+                        reqwest::Method::GET,
+                        &format!("/repos/{}/{name}", self.owner),
+                    )
                     .send()
                     .await
                     .map_err(|e| format!("github probe: {e}"))?;
@@ -106,7 +112,11 @@ impl GitHub {
         pubkey: &str,
     ) -> Result<(), String> {
         let r = self
-            .req(http, reqwest::Method::POST, &format!("/repos/{}/{name}/keys", self.owner))
+            .req(
+                http,
+                reqwest::Method::POST,
+                &format!("/repos/{}/{name}/keys", self.owner),
+            )
             .json(&serde_json::json!({
                 "title": format!("sigiled-{name}"), "key": pubkey, "read_only": false,
             }))
@@ -114,7 +124,11 @@ impl GitHub {
             .await
             .map_err(|e| format!("github deploy key: {e}"))?;
         if r.status().as_u16() != 201 {
-            return Err(format!("github deploy key: {} {}", r.status().as_u16(), excerpt(r).await));
+            return Err(format!(
+                "github deploy key: {} {}",
+                r.status().as_u16(),
+                excerpt(r).await
+            ));
         }
         Ok(())
     }
@@ -132,7 +146,16 @@ impl GitHub {
         let _ = std::fs::remove_file(&priv_path);
         let _ = std::fs::remove_file(dir.join("id_ed25519.pub"));
         let out = std::process::Command::new("ssh-keygen")
-            .args(["-q", "-t", "ed25519", "-N", "", "-C", &format!("sigiled-{project}"), "-f"])
+            .args([
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                &format!("sigiled-{project}"),
+                "-f",
+            ])
             .arg(&priv_path)
             .output()
             .map_err(|e| format!("spawn ssh-keygen: {e}"))?;
