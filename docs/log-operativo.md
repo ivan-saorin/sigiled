@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-08-16 — sde registered: the DEC-27 queued composed service is live in the catalog
+
+- **Where we were:** catalog at 7 services; sde (the first consumer of the catalog, per the DEC-27 sequencing) had just finished its S5 — runs API, Setup 1 pass-through, `[app]` deploy.
+- **Done, across three surfaces (driver session bfceda11 + the previous registration session + host-side):**
+  - `catalog.json`: sde added — `https://sde.016180.xyz`, gate `stack-bearer`, spec `GET /openapi.json`, status `live` (committed only after the app was verified running; ff to master at `6066ab96`).
+  - Edge: `sde.{$DOMAIN}` vhost appended to `/opt/stack/Caddyfile` on the adhd pattern (`import bearer` + authentik header scrub), validated in the caddy image before the write (backup `Caddyfile.bak-pre-sde-vhost`), hot-reloaded — first probe answered the TLS handshake and the gate's `401 missing bearer`.
+  - Control plane: `./restart.sh` — rebuilt with the new embedded catalog; `GET /services?status=live` now publishes 7 live services, sde included.
+- **Verified end to end through the public edge with a driver JWT:** `sde.016180.xyz/healthz` 200; its boot report resolves all five dependencies ready, `blocked_stages: []`; `POST /runs` without a bearer answers the Setup 1 envelope 401. sde had already proven pass-through live from a dev session (two six-stage runs, recorded in its own repo).
+- **State:** catalog registration complete; sde is the first service whose deploy carried NO `[app.secrets]` — Setup 1 end to end.
+- **Next:** nothing open on this side; sde's own next steps live in its PLAN (converge-shape probe, S6).
+
 ## 2026-08-15 — sessione 1fbfe9a8: DEC-28 ratificata, dispiegata e indurita
 
 - **Dove eravamo:** DEC-28 semplificata (`any-authenticated` default) su master, produzione non toccata, ratifica in sospeso.
