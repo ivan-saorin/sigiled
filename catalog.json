@@ -4,8 +4,14 @@
     {
       "name": "search",
       "purpose": "Internet meta-search (SearXNG). One job: query in, ranked results out.",
-      "machine": { "base": "https://search.016180.xyz", "gate": "stack-bearer" },
-      "human": { "base": "https://search.016180.xyz", "gate": "sso" },
+      "machine": {
+        "base": "https://search.016180.xyz",
+        "gate": "stack-bearer"
+      },
+      "human": {
+        "base": "https://search.016180.xyz",
+        "gate": "sso"
+      },
       "spec": "GET /search?q={query}&format=json",
       "status": "live",
       "skill": null
@@ -13,8 +19,14 @@
     {
       "name": "paper",
       "purpose": "Academic paper search and aggregation (arXiv et al.). One job: find and aggregate papers.",
-      "machine": { "base": "https://paper-api.016180.xyz", "gate": "service-token" },
-      "human": { "base": "https://paper.016180.xyz", "gate": "sso" },
+      "machine": {
+        "base": "https://paper-api.016180.xyz",
+        "gate": "service-token"
+      },
+      "human": {
+        "base": "https://paper.016180.xyz",
+        "gate": "sso"
+      },
       "spec": null,
       "status": "live",
       "skill": null
@@ -22,7 +34,10 @@
     {
       "name": "folio",
       "purpose": "Arbitrary-precision markdown calculator: submit a folio, read computed results.",
-      "machine": { "base": "https://folio.016180.xyz", "gate": "stack-bearer" },
+      "machine": {
+        "base": "https://folio.016180.xyz",
+        "gate": "stack-bearer"
+      },
       "spec": null,
       "status": "live",
       "skill": "folio-numbers"
@@ -30,7 +45,10 @@
     {
       "name": "reddit",
       "purpose": "Stored Reddit corpus queries (Arctic Shift; ~36h behind live Reddit).",
-      "machine": { "base": "https://reddit.016180.xyz", "gate": "stack-bearer" },
+      "machine": {
+        "base": "https://reddit.016180.xyz",
+        "gate": "stack-bearer"
+      },
       "spec": null,
       "status": "live",
       "skill": "reddit-mine"
@@ -38,7 +56,10 @@
     {
       "name": "genie",
       "purpose": "Atomic models aggregator: {provider}/{size} slots route to configured local (llama.cpp) or external models.",
-      "machine": { "base": "https://genie.016180.xyz", "gate": "stack-bearer" },
+      "machine": {
+        "base": "https://genie.016180.xyz",
+        "gate": "stack-bearer"
+      },
       "spec": "GET /openapi.json",
       "status": "live",
       "skill": null
@@ -46,7 +67,21 @@
     {
       "name": "adhd",
       "purpose": "Divergent-ideation engine for agents: structured idea generation and scoring.",
-      "machine": { "base": "https://adhd.016180.xyz", "gate": "stack-bearer" },
+      "machine": {
+        "base": "https://adhd.016180.xyz",
+        "gate": "stack-bearer"
+      },
+      "spec": "GET /openapi.json",
+      "status": "live",
+      "skill": null
+    },
+    {
+      "name": "sde",
+      "purpose": "System Design Engine: arXiv-grounded, single-recommendation design dossiers as inspectable, resumable async runs.",
+      "machine": {
+        "base": "https://sde.016180.xyz",
+        "gate": "stack-bearer"
+      },
       "spec": "GET /openapi.json",
       "status": "live",
       "skill": null
@@ -54,8 +89,14 @@
     {
       "name": "spina",
       "purpose": "TORCHIO spina resident app; service surface to be defined before going live.",
-      "machine": { "base": "https://spina.016180.xyz", "gate": "service-token" },
-      "human": { "base": "https://spina.016180.xyz", "gate": "sso" },
+      "machine": {
+        "base": "https://spina.016180.xyz",
+        "gate": "service-token"
+      },
+      "human": {
+        "base": "https://spina.016180.xyz",
+        "gate": "sso"
+      },
       "spec": null,
       "status": "planned",
       "skill": null
