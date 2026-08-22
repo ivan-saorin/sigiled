@@ -87,6 +87,17 @@
       "skill": null
     },
     {
+      "name": "memory",
+      "purpose": "Stack recall: isolated LanceDB indexes + shared mem0, hybrid BM25+vector search with provenance on every hit.",
+      "machine": {
+        "base": "https://memory.016180.xyz",
+        "gate": "stack-bearer"
+      },
+      "spec": "GET /search?q={query}&idx={a,b}&k={n}",
+      "status": "live",
+      "skill": "memory-recall"
+    },
+    {
       "name": "spina",
       "purpose": "TORCHIO spina resident app; service surface to be defined before going live.",
       "machine": {
