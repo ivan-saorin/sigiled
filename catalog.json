@@ -98,6 +98,17 @@
       "skill": "memory-recall"
     },
     {
+      "name": "changed",
+      "purpose": "URL change monitor (job-class, no surface of its own): diffs on its job-watch-* branches, one memory chunk per change in the consumer's index (watches/<consumer>.toml; chg0 -> mem0). It answers in memory.",
+      "machine": {
+        "base": "https://memory.016180.xyz",
+        "gate": "stack-bearer"
+      },
+      "spec": "GET /idx/{project}/search?q=changed&tags=changed&since={last close}; full diff = git show <branch>:<path> in a session on changed; register = watches/{project}.toml",
+      "status": "live",
+      "skill": "changed"
+    },
+    {
       "name": "spina",
       "purpose": "TORCHIO spina resident app; service surface to be defined before going live.",
       "machine": {

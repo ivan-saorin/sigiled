@@ -4,7 +4,7 @@
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.2.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract.
+**Contract version:** 2.3.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract. 2.3.0 adds the change-notification step to `open`: the `changed` service (catalog) leaves one memory chunk per detected change in the project's index — surface them before writing.
 **Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8); every verb below is implemented and live-verified. SIGILED is the only orchestrator of the stack.
 
 This is the complete operating contract for SIGILED (v2 of SIGILED). It is
@@ -93,7 +93,7 @@ covered here falls through to the full API (§4, §6).
 | `status` | `GET /sigiled/healthz` + `GET /sigiled/projects`. Report version and, per project, `merge_debt` queue, `template_behind`, `needs_merge`; **any merge debt is shouted first**. |
 | `projects` | `GET /sigiled/projects` — full records (incl. `template_version`, `template_behind`). |
 | `new <name>` | Requires approval for `stack:drivers`. `POST /sigiled/projects` `{name}` (lowercase alnum+dash, 2–39 chars, letter first). Warn first: there is no delete verb — projects are permanent. |
-| `open <project>` | `POST /sigiled/projects/{p}/sessions`. Store `session_id`, `token`, `endpoint`. **If the response carries `merge_debt`, resolving it is your first and only job (§5).** Then rule 1: `GET /git/log?limit=15` and summarize the handoff before any write. |
+| `open <project>` | `POST /sigiled/projects/{p}/sessions`. Store `session_id`, `token`, `endpoint`. **If the response carries `merge_debt`, resolving it is your first and only job (§5).** Then rule 1: `GET /git/log?limit=15` and summarize the handoff before any write. Then what changed upstream since the last close: `GET https://memory.016180.xyz/idx/{p}/search?q=changed&tags=changed&since=<last close>` (the `changed` service, catalog entry; chg0 watches land in `mem0`) — surface the hits, each carries a `report: <branch>:<path>` pointer readable with `git show` in a session on `changed`. No index yet = nothing watched for this project. |
 | `close` | Commit pending work, then `POST /sigiled/sessions/{id}/close`. Report the merge outcome (`ff` / `merged` / `debt`) and `log_operativo_touched`. |
 | `recycle` | `POST /sigiled/sessions/{id}/recycle`. Replace the stored token (the old one is dead), confirm with `GET {endpoint}/health`. |
 | `elevate` | `POST /sigiled/auth/elevate` → relay URL + code to the operator; poll status via `GET /sigiled/auth/approvals`. |

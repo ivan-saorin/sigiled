@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-08-23 — changed registered: change notifications join the catalog and the open procedure
+
+- **Where we were:** catalog at 9 services (memory the latest, 2026-08-22); the `changed` project had just shipped M0–M2 in one session — job-class URL monitor, state on its `job-watch-*` branch chain (jobs get no volumes), notifications as manual chunks in memory — deployed: session image `vm-changed:df-436e82cf1c31` built on open, two job runs `succeeded` (seed, then seeded-from-previous-branch, nothing due).
+- **Done (driver session 93a670df, sigiled-claude, operator approval in chat):**
+  - `catalog.json`: `changed` added after memory, before the planned spina — status `live`, skill `changed` (file in the changed repo, `docs/skill-changed.md`, the memory-recall precedent). It has no HTTP surface of its own, and the schema makes the machine leg mandatory with an https base: the entry names where the service *answers* — `https://memory.016180.xyz`, gate `stack-bearer` as the edge actually is — with the consumer's search line as `spec`.
+  - `docs/sigiled-contract.md` → **2.3.0**: the `open` procedure gains one step after rule 1 — search the project's index for `tags=changed` since the last close and surface the hits (`chg0` watches land in `mem0`). The skill text stays untouched: it already defers to contract + catalog, so this lands on every driver at the next redeploy without a skill regeneration.
+  - Suite green in-session (embedded catalog parses and validates).
+- **Operator clarification recorded:** there is no stack bearer credential; the Authentik access token is the edge credential. The catalog's `stack-bearer` gate label describes the edge mode (static bearer OR adjudicated JWT, DEC-28), not a shared secret.
+- **Note:** embedded at build (DEC-27) — `GET /services` publishes `changed` and `GET /contract` serves 2.3.0 only after the control-plane rebuild/redeploy (operator: `./restart.sh`).
+- **Next:** operator redeploys; verify `GET /services?status=live` shows 10 services and the contract header reads 2.3.0. First real notification arrives on its own (the SIGILED-contract watch in chg0 fires on that very redeploy, into mem0). Consumer watches from torchio/sde sessions on `changed`.
+
 ## 2026-08-22 — memory registered: stack recall joins the catalog
 
 - **Where we were:** catalog at 8 services (sde the latest); the `memory` project had just shipped M0–M4 (LanceDB+model2vec hybrid recall, isolated indexes + shared `mem0`) and deployed via `upgrade` — live at `memory.016180.xyz`, reddit corpus (23k chunks) ingested and answering hybrid queries in ~15 ms.
