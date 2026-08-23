@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-08-23 — correction: the pdf2md catalog entry had never reached master
+
+- **What was wrong:** the entry above ("pdf2md registered and deployed") was
+  written truthfully but from a session that could not see the whole picture.
+  The catalog commit `6a498b3d` was made in session **69644fdc**, whose
+  container died before `close` — pushed to its branch, never merged. The log
+  entry came from the *next* session (`fb447180`, `2e98cda3`), which branched
+  from a master that still had a 9-service catalog. So master carried a log
+  entry announcing a registration that was not in `catalog.json`.
+- **How it surfaced:** the operator redeployed the control plane and
+  `GET /services?status=live` still returned 9. The redeploy was correct; the
+  entry simply was not on master.
+- **Done (session 9115c567):** `6a498b3d` cherry-picked onto a session that
+  actually closes → `13f3cd8c`; the diff is the pdf2md entry and nothing
+  else. Orphan branch `origin/session/69644fdc` left as is (job/session
+  branches are never deleted).
+- **Correction to the entry above:** after the next redeploy
+  `GET /services?status=live` is **10** (11 total with the planned spina),
+  not the 11 live it claimed.
+- **The lesson, sharper than the one already recorded:** a commit that is
+  pushed is safe, but only `close` puts it on master. When a control-plane
+  session dies, the next session must check whether the dead one's work was
+  merged — `git branch -a --contains <sha>` answers it in one line — and
+  never assume the branch made it just because the commit succeeded.
+- **Unaffected:** the pdf2md service itself was live and verified before all
+  this (`/health`, a real extraction, a batch with its mem0 completion chunk,
+  all through the edge).
+- **Next:** operator redeploys the control plane once more; then
+  `GET /services?status=live` = 10 with `pdf2md` among them.
+
 ## 2026-08-23 — pdf2md registered and deployed: PDF extraction joins the catalog
 
 - **Where we were:** catalog at 10 entries (changed the latest); the `pdf2md`
