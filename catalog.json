@@ -120,6 +120,17 @@
       "skill": "pdf2md"
     },
     {
+      "name": "av2md",
+      "purpose": "Audio/video to transcript: whisper.cpp + yt-dlp. YouTube videos, playlists/channels and direct media become timestamped markdown (SRT/VTT on demand), cached by content key; strictly sequential batches (captions+LLM fast path first, whisper recovery for the rest); optional ingest into a memory index; batch completion announced in mem0 with the chg0/changed tags.",
+      "machine": {
+        "base": "https://av2md.016180.xyz",
+        "gate": "stack-bearer"
+      },
+      "spec": "GET /health; POST /transcribe {url, pipeline?, model?, target_lang?, idx?} -> {key, cached, batch}; POST /batch {urls[], label?, idx?} (playlist URLs expand, cap 500); GET /batch/{id}; GET /doc/{key}/markdown|segments|srt|vtt; POST /doc/{key}/ingest {idx}",
+      "status": "live",
+      "skill": "av2md"
+    },
+    {
       "name": "spina",
       "purpose": "TORCHIO spina resident app; service surface to be defined before going live.",
       "machine": {

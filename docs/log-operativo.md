@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-08-23 — av2md registered + orphaned-build reconciliation
+
+- **Where we were:** catalog at 11 services (pdf2md the latest, same day); av2md had shipped v1 (whisper.cpp + yt-dlp transcripts, sequential two-phase batches, memory ingest, chg0 notifications) and its first `upgrade` was fired at 18:29Z.
+- **Bug found live:** that build was orphaned by a sigiledd restart. `upgrade` latches `action:"building"` into the persisted record and relies on a tokio task of the same process to clear it; the restart killed the task, hydrate restored the flag verbatim, and every later `upgrade` answered 409 forever — with `start`/`stop` unable to help and a second restart proving the flag survives reboots.
+- **Fix:** `AppsState::hydrate` now reconciles the impossible state — a restored `action:"building"` cannot correspond to a live build, so it clears and stamps a failed `BuildRecord` ("orphaned: sigiledd restarted…, re-fire upgrade"). Test `hydrate_clears_an_orphaned_building_action` pins it; finished records pass through untouched.
+- **Catalog:** `av2md` added after pdf2md, before spina — status `live`, skill `av2md` (in the av2md repo, `docs/skill-av2md.md`), machine leg `https://av2md.016180.xyz` gate `stack-bearer`, spec = the transcribe/batch/doc surface. Note av2md holds no credentials (2026-08-16 decision): it forwards the caller's bearer downstream and reaches genie/memory on the stack network.
+- Suite green in-session (111, embedded catalog validates).
+- **Operator next:** rebuild + redeploy sigiledd (this also un-wedges av2md via the new hydrate), then re-fire `apps av2md upgrade` and verify `https://av2md.016180.xyz/health`.
+
+
 ## 2026-08-23 — correction: the pdf2md catalog entry had never reached master
 
 - **What was wrong:** the entry above ("pdf2md registered and deployed") was

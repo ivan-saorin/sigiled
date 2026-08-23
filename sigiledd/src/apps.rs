@@ -316,7 +316,25 @@ impl AppsState {
     pub fn dump(&self) -> std::collections::HashMap<String, AppRecord> {
         self.0.read().unwrap().clone()
     }
-    pub fn hydrate(&self, map: std::collections::HashMap<String, AppRecord>) {
+    /// Restore the snapshot — reconciling one impossible state: a persisted
+    /// `action: "building"`. The build runs in a tokio task of THIS process
+    /// (see `upgrade`), so after a restart no such build can exist; restoring
+    /// the flag verbatim would latch every future `upgrade` into 409 forever
+    /// (bitten live, av2md 2026-08-23). An orphaned build becomes a failed
+    /// BuildRecord that says so, and the action clears.
+    pub fn hydrate(&self, mut map: std::collections::HashMap<String, AppRecord>) {
+        for rec in map.values_mut() {
+            if rec.action.as_deref() == Some("building") {
+                tracing::warn!(app = %rec.name, "orphaned build (restart mid-build): clearing action");
+                rec.action = None;
+                rec.build = Some(BuildRecord {
+                    sha: rec.sha.clone().unwrap_or_default(),
+                    ok: false,
+                    finished_epoch: now_epoch(),
+                    log_tail: "orphaned: sigiledd restarted while this build was in flight; the build process died with it. Re-fire upgrade.".into(),
+                });
+            }
+        }
         *self.0.write().unwrap() = map;
     }
 }
@@ -353,6 +371,40 @@ mod tests {
             .insert("API_KEY".into(), "SIGILED_TEST_UNSET_VAR".into());
         let e = create_args(&m, "img:sha", "mgr-net").unwrap_err();
         assert!(e.contains("SIGILED_TEST_UNSET_VAR"), "{e}");
+    }
+
+    #[test]
+    fn hydrate_clears_an_orphaned_building_action() {
+        let apps = AppsState::default();
+        apps.upsert(AppRecord {
+            name: "av2md".into(),
+            project: "av2md".into(),
+            sha: Some("0b0b59c285ce".into()),
+            image: Some("av2md:0b0b59c285ce".into()),
+            action: Some("building".into()),
+            build: None,
+        });
+        let fresh = AppsState::default();
+        fresh.hydrate(apps.dump());
+        let rec = fresh.get("av2md").unwrap();
+        assert_eq!(rec.action, None, "a build cannot survive the process");
+        let build = rec.build.expect("orphan stamped as a failed build");
+        assert!(!build.ok);
+        assert_eq!(build.sha, "0b0b59c285ce");
+        assert!(build.log_tail.contains("orphaned"));
+        // A finished record passes through untouched.
+        let done = AppsState::default();
+        done.upsert(AppRecord {
+            name: "memory".into(),
+            project: "memory".into(),
+            sha: Some("aaa".into()),
+            image: Some("memory:aaa".into()),
+            action: None,
+            build: Some(BuildRecord { sha: "aaa".into(), ok: true, finished_epoch: 1, log_tail: "done".into() }),
+        });
+        let fresh2 = AppsState::default();
+        fresh2.hydrate(done.dump());
+        assert!(fresh2.get("memory").unwrap().build.unwrap().ok);
     }
 
     #[test]
