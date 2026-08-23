@@ -15,7 +15,9 @@
   - Suite green in-session (embedded catalog parses and validates).
 - **Operator clarification recorded:** there is no stack bearer credential; the Authentik access token is the edge credential. The catalog's `stack-bearer` gate label describes the edge mode (static bearer OR adjudicated JWT, DEC-28), not a shared secret.
 - **Note:** embedded at build (DEC-27) — `GET /services` publishes `changed` and `GET /contract` serves 2.3.0 only after the control-plane rebuild/redeploy (operator: `./restart.sh`).
-- **Next:** operator redeploys; verify `GET /services?status=live` shows 10 services and the contract header reads 2.3.0. First real notification arrives on its own (the SIGILED-contract watch in chg0 fires on that very redeploy, into mem0). Consumer watches from torchio/sde sessions on `changed`.
+- **Redeployed and verified (operator, same day):** contract 2.3.0 served, `GET /services?status=live` = 9 live (10 with the planned spina), `changed` entry intact.
+- **Correction (session c09f9382, same approval):** the operator asked "what about chg0" — the `open` step as written searched `/idx/{p}/search` only, so the ownerless `chg0` watches in `mem0` were never surfaced for a project with its own index, and a project with NO index got nothing at all. Verified against memory: the federated `/search?idx=a,b` 404s as a whole when any named index is missing. The step now reads: `GET /search?q=changed&idx={p},mem0&tags=changed&since=…`; on `404 index {p} not found`, retry with `idx=mem0` alone. Catalog `spec` aligned. Contract stays 2.3.0 (same step, corrected text). One more rebuild/redeploy needed.
+- **Next:** operator redeploys once more; then nothing open on this side. Consumer watches from torchio/sde sessions on `changed`.
 
 ## 2026-08-22 — memory registered: stack recall joins the catalog
 

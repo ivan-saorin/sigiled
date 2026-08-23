@@ -104,7 +104,7 @@
         "base": "https://memory.016180.xyz",
         "gate": "stack-bearer"
       },
-      "spec": "GET /idx/{project}/search?q=changed&tags=changed&since={last close}; full diff = git show <branch>:<path> in a session on changed; register = watches/{project}.toml",
+      "spec": "GET /search?q=changed&idx={project},mem0&tags=changed&since={last close} (404 index not found -> idx=mem0 alone: chg0's ownerless watches apply to everyone); full diff = git show <branch>:<path> in a session on changed; register = watches/{project}.toml",
       "status": "live",
       "skill": "changed"
     },
