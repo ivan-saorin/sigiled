@@ -109,6 +109,17 @@
       "skill": "changed"
     },
     {
+      "name": "pdf2md",
+      "purpose": "PDF to structured markdown: content-addressed extraction (pdfium), strictly sequential URL batches, optional ingest into a memory index. Extraction only - no OCR in v1, no PDF creation (that stays with folio/typst).",
+      "machine": {
+        "base": "https://pdf2md.016180.xyz",
+        "gate": "stack-bearer"
+      },
+      "spec": "POST /extract {url} or application/pdf bytes -> {sha, cached} (202 = extracting, poll GET /doc/{sha}); GET /doc/{sha}/markdown | /pages/{n} | /images/{name}; POST /doc/{sha}/ingest {idx, tags?} chunks result.md into memory (source:pdf, ref = DOI or sha:12); a LIST of URLs is POST /batch {urls[], idx?, label?, delay_s?} -> GET /batch/{id}, one sequential worker with a politeness delay, resumable, never loop /extract yourself; batch completion drops one chunk in mem0 tagged changed/chg0/pdf2md/batch:<id>. Scanned PDFs fail typed as image_only - OCR is v2, do not retry.",
+      "status": "live",
+      "skill": "pdf2md"
+    },
+    {
       "name": "spina",
       "purpose": "TORCHIO spina resident app; service surface to be defined before going live.",
       "machine": {
