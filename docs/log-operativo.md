@@ -6,6 +6,53 @@
 
 ---
 
+## 2026-08-23 — pdf2md registered and deployed: PDF extraction joins the catalog
+
+- **Where we were:** catalog at 10 entries (changed the latest); the `pdf2md`
+  project had just shipped v1 in two sessions — pdfium-based extraction,
+  content-addressed cache, strictly sequential URL batches, memory ingest and
+  the chg0 completion chunk — verified in-session at 45/45
+  (`tools/smoke.sh` against `memory:8080`) but not deployed.
+- **Done (driver sessions 855f220b + 69644fdc, sigiled-claude, operator
+  approval in chat):**
+  - `catalog.json`: `pdf2md` added after changed, before the planned spina —
+    `https://pdf2md.016180.xyz`, gate `stack-bearer`, status `live`, skill
+    `pdf2md` (file in the pdf2md repo, `docs/skill-pdf2md.md`, the
+    memory-recall precedent). The `spec` leads with the mistake a driver
+    actually makes: a LIST of URLs is `POST /batch`, never a loop over
+    `/extract` — one worker runs the whole stack's batches sequentially with
+    a politeness delay. It also states that a scan fails typed as
+    `image_only` and must not be retried (OCR is v2).
+  - Deployed: `POST /apps/pdf2md/upgrade` → image `pdf2md:deae29dbee21` built
+    clean (202 `action=building`, polled to `ok:true`), container running,
+    volume `pdf2md-data` mounted. Verified live through the edge with an
+    Authentik token: `/health` 200, one real extraction end to end
+    (`https://arxiv.org/pdf/1706.03762` → 15 pages, `quality:text`, arXiv id
+    read from the rotated margin stamp, 3 tables, 3 images), and the second
+    request answered `cached:true`.
+- **Deviations:**
+  - The catalog entry was committed **before** the deploy this time, not
+    after (the memory precedent) — the deploy and the registration shared one
+    approval window and the service was already smoke-verified in-session.
+    Verified live immediately after; the entry is honest as written.
+  - `GET /apps/pdf2md` answered `unknown app` for the whole pre-deploy phase
+    and this cost a wrong hypothesis (a manifest that was never broken).
+    `status()` reads the **persisted** record only; it is `action()` /
+    `resolve()` that scans the mirrors' manifests. So an app that has never
+    been deployed always 404s on status — working as built, worth knowing:
+    **`upgrade` is what discovers an app, not `status`.**
+  - Two `sigiled` session containers died mid-work (a `bad session token`
+    after a recycle, and again right after `cargo test -p sigiledd`, which is
+    heavy on the control plane's own box). Nothing was lost the second time
+    because the catalog edit had already been committed — but the first one
+    ate an uncommitted edit. Lesson for control-plane sessions: commit the
+    edit before running anything expensive.
+- **Note:** embedded at build (DEC-27) — `GET /services` publishes `pdf2md`
+  only after the control-plane rebuild/redeploy (operator: `./restart.sh`).
+- **Next:** operator redeploys the control plane; verify
+  `GET /services?status=live` shows 11 live entries. pdf2md-side next steps
+  live in its own log (first real corpus batch; OCR is the v2 head).
+
 ## 2026-08-23 — changed registered: change notifications join the catalog and the open procedure
 
 - **Where we were:** catalog at 9 services (memory the latest, 2026-08-22); the `changed` project had just shipped M0–M2 in one session — job-class URL monitor, state on its `job-watch-*` branch chain (jobs get no volumes), notifications as manual chunks in memory — deployed: session image `vm-changed:df-436e82cf1c31` built on open, two job runs `succeeded` (seed, then seeded-from-previous-branch, nothing due).
