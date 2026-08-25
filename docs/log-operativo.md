@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-08-25 — awesome-ledger registered: the awesome-ecosystem ledger joins the catalog
+
+- **Where we were:** catalog at 12 services (av2md the latest, 2026-08-23);
+  awesome-ledger had shipped M0–M3 the same day pair — nightly `update` job
+  live, site on gh-pages, mem0 digest green over two real runs.
+- **Where we were going:** awesome-ledger M4 — catalog registration + skill
+  note, the last planned milestone.
+- **Done (session 5e5bb8f4):** `awesome-ledger` appended after spina —
+  job-class, no surface of its own (the `changed` pattern): machine leg
+  `https://memory.016180.xyz` gate `stack-bearer`; spec = mem0 recall
+  (`tags=awesome-ledger`, one digest chunk per eventful day, quiet day = no
+  chunk by design) + the gh-pages site + enrollment edits via `lists.toml`
+  in a session; status `live`, skill `awesome-ledger` (skill file in the
+  project repo, `docs/skill-awesome-ledger.md`, committed there in the
+  paired session 06f6e57c). Suite green in-session (111 passed; the
+  embedded catalog validates).
+- **Context worth keeping — the deploy-key incident that delayed this:**
+  opens on awesome-ledger failed today with `Permission denied (publickey)`.
+  The repo's deploy key had been replaced by an orphan named
+  `sigiled-deploy-awesome-ledger` (added 2026-08-25, never used) — a naming
+  scheme production does NOT use (its keys are `sigiled-<project>`, private
+  halves in `/data/keys/`). The operator restored the real pub from
+  `/data`. `awesome-updates` was deleted deliberately on GitHub; its
+  project record remains (no delete verb), so opens on it 404 forever and
+  its `/data/keys` entry was removed.
+- **Operator next:** rebuild + redeploy sigiledd to embed the 13-service
+  catalog (then `GET /services?status=live` shows awesome-ledger). Chase
+  which code path mints `sigiled-deploy-*` keys — something ran it against
+  production repos today.
+
 ## 2026-08-23 — av2md registered + orphaned-build reconciliation
 
 - **Where we were:** catalog at 11 services (pdf2md the latest, same day); av2md had shipped v1 (whisper.cpp + yt-dlp transcripts, sequential two-phase batches, memory ingest, chg0 notifications) and its first `upgrade` was fired at 18:29Z.
@@ -544,3 +574,4 @@ _aggiornato: 2026-08-09, sessione b83823e4 (DEC-26 editto lingua + lettera alla 
 - **Scarti**: due, entrambi migliorativi e guidati da evidenza. (1) L'ipotesi iniziale Â«PAT mintati da console SIGILEDÂ» Ã¨ crollata dopo la prova dal vivo su `auth.016180.xyz`: discovery pubblica attiva, token endpoint e device endpoint vivi â€” Authentik Ãˆ giÃ  la console, i driver possono essere client OAuth2 di prima classe. (2) L'ipotesi del Re Â«device flow + refresh token nella skillÂ» Ã¨ stata analizzata e corretta nella forma: rotazione + concorrenza multi-chat la squalificano; la custodia passa lato SIGILED (DEC-02), mantenendo il device flow come gesto umano.
 - **Stato a fine sessione**: vedi Â«Stato attualeÂ» sopra.
 - **Prossimo passo previsto**: ratifica delle DEC-01â€¦10 da parte del Re; eventuale confronto incrociato con altro modello prima della ratifica.
+
