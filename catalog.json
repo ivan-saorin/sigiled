@@ -144,6 +144,17 @@
       "spec": null,
       "status": "planned",
       "skill": null
+    },
+    {
+      "name": "awesome-ledger",
+      "purpose": "Daily ledger of the GitHub awesome ecosystem (job-class, no surface of its own): the nightly update job diffs every enrolled awesome list at entry level, publishes the static site + RSS on gh-pages, and drops one mem0 digest chunk per eventful day. It answers in memory and on the site.",
+      "machine": {
+        "base": "https://memory.016180.xyz",
+        "gate": "stack-bearer"
+      },
+      "spec": "GET /search?q={topic}&idx=mem0&tags=awesome-ledger — one digest chunk per eventful day (ref awesome-ledger/digest/{date}; quiet day = no chunk); site = https://ivan-saorin.github.io/awesome-ledger (+ /feed.xml, /list/{owner}-{repo}/, /archive/YYYY-MM/); enrollment edits = lists.toml in a session on awesome-ledger",
+      "status": "live",
+      "skill": "awesome-ledger"
     }
   ]
 }
