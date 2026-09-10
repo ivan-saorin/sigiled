@@ -56,14 +56,14 @@ fn err(status: StatusCode, detail: impl Into<String>) -> Response {
 /// scan of the registry's projects (mirror refresh + manifest parse). The
 /// incumbent keeps the name: the first project found wins, a second
 /// declaration simply never resolves (its verbs 404 — loud enough).
-fn resolve(state: &crate::AppState, name: &str) -> Result<(String, AppManifest), String> {
+async fn resolve(state: &crate::AppState, name: &str) -> Result<(String, AppManifest), String> {
     let rt = state
         .sessions
         .runtime
         .as_ref()
         .ok_or("runtime not configured")?;
     if let Some(rec) = state.apps.get(name) {
-        if let Some(m) = read_app_manifest(rt, &rec.project)? {
+        if let Some(m) = read_app_manifest(state, rt, &rec.project).await? {
             if m.name == name {
                 return Ok((rec.project.clone(), m));
             }
@@ -71,7 +71,7 @@ fn resolve(state: &crate::AppState, name: &str) -> Result<(String, AppManifest),
         // The declaration moved or vanished: fall through to a fresh scan.
     }
     for p in state.registry.snapshot() {
-        if let Some(m) = read_app_manifest(rt, &p.name).unwrap_or(None) {
+        if let Some(m) = read_app_manifest(state, rt, &p.name).await.unwrap_or(None) {
             if m.name == name {
                 return Ok((p.name, m));
             }
@@ -80,10 +80,13 @@ fn resolve(state: &crate::AppState, name: &str) -> Result<(String, AppManifest),
     Err(format!("no project declares app {name:?}"))
 }
 
-fn read_app_manifest(
+async fn read_app_manifest(
+    state: &crate::AppState,
     rt: &crate::runtime::Runtime,
     project: &str,
 ) -> Result<Option<AppManifest>, String> {
+    let lock = state.sessions.merge_lock(project);
+    let _mirror = lock.lock().await;
     let repo = rt.ensure_mirror(project)?;
     for f in ["sigiled.toml", "mgr.toml"] {
         let path = repo.join(f);
@@ -205,10 +208,11 @@ async fn upgrade(state: crate::AppState, rt: crate::runtime::Runtime, name: Stri
             format!("{name} is already building — poll status"),
         );
     }
-    let (project, manifest) = match resolve(&state, &name) {
+    let (project, manifest) = match resolve(&state, &name).await {
         Ok(x) => x,
         Err(e) => return err(StatusCode::NOT_FOUND, e),
     };
+    let mirror_guard = state.sessions.merge_lock(&project).lock_owned().await;
     let repo = match rt.ensure_mirror(&project) {
         Ok(p) => p,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
@@ -255,6 +259,7 @@ async fn upgrade(state: crate::AppState, rt: crate::runtime::Runtime, name: Stri
     tokio::spawn(async move {
         let name = name_task;
         let build = tokio::task::spawn_blocking(move || {
+            let _mirror = mirror_guard;
             build_rt
                 .build_image(&build_image, &build_manifest.dockerfile, &build_repo)
                 .and_then(|log| recreate(&build_rt, &build_manifest, &build_image).map(|()| log))
@@ -400,7 +405,12 @@ mod tests {
             sha: Some("aaa".into()),
             image: Some("memory:aaa".into()),
             action: None,
-            build: Some(BuildRecord { sha: "aaa".into(), ok: true, finished_epoch: 1, log_tail: "done".into() }),
+            build: Some(BuildRecord {
+                sha: "aaa".into(),
+                ok: true,
+                finished_epoch: 1,
+                log_tail: "done".into(),
+            }),
         });
         let fresh2 = AppsState::default();
         fresh2.hydrate(done.dump());

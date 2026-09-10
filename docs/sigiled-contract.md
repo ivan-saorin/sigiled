@@ -4,8 +4,8 @@
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.3.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract. 2.3.0 adds the change-notification step to `open`: the `changed` service (catalog) leaves one memory chunk per detected change in the project's index — surface them before writing.
-**Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8); every verb below is implemented and live-verified. SIGILED is the only orchestrator of the stack.
+**Contract version:** 2.4.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.4.0 adds independent session runtime bindings, recoverable lifecycle failures and redacted session inspection. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract. 2.3.0 adds the change-notification step to `open`: the `changed` service (catalog) leaves one memory chunk per detected change in the project's index — surface them before writing.
+**Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8); the established v2 verbs were live-verified; the 2.4.0 session foundation is implemented and hermetically tested on its isolated branch, not deployed. SIGILED is the only orchestrator of the stack.
 
 This is the complete operating contract for SIGILED (v2 of SIGILED). It is
 vendor-neutral: any LLM that can issue HTTPS requests can drive the system
@@ -36,7 +36,7 @@ sessions.
 | Surface | Base | Auth |
 |---|---|---|
 | SIGILED verbs | `https://api.016180.xyz/sigiled` | `Authorization: Bearer <access-token>` |
-| Workspace | `https://api.016180.xyz/s/{project}` | `X-Session-Token: {token}` (send your Bearer too — the edge does not inspect it here, the token is the auth) |
+| Workspace | returned `endpoint` (`https://api.016180.xyz/s/{project}-{session_id}/` for new sessions) | `X-Session-Token: {token}` (send your Bearer too — the edge does not inspect it here, the token is the auth) |
 | Web search | `https://search.016180.xyz` | stack search credential (operator-provided; a stack service, not part of SIGILED auth) |
 
 **Machine leg (yours).** Each driver is an OAuth2 client of the stack IdP
@@ -71,11 +71,11 @@ every session and job record.
 
 The workspace contract is two-header by design: the edge swaps
 `X-Session-Token` into `Authorization` before the request reaches the
-container, and the container validates it — the per-project, 192-bit,
+container, and the container validates it — the per-session, 192-bit,
 per-life token IS the workspace authentication (whatever `Authorization`
 you sent on `/s/` is not inspected at the edge). The token comes from
-`POST .../sessions`; a token minted for project A is rejected by project
-B's container — never reuse tokens across projects, or after
+`POST .../sessions`; a token minted for one session is rejected by another session's
+container, including another session of the same project — never reuse tokens after
 `recycle`/`close`.
 
 Request and response bodies are JSON unless noted (`git/diff` and
@@ -95,7 +95,7 @@ covered here falls through to the full API (§4, §6).
 | `new <name>` | Requires approval for `stack:drivers`. `POST /sigiled/projects` `{name}` (lowercase alnum+dash, 2–39 chars, letter first). Warn first: there is no delete verb — projects are permanent. |
 | `open <project>` | `POST /sigiled/projects/{p}/sessions`. Store `session_id`, `token`, `endpoint`. **If the response carries `merge_debt`, resolving it is your first and only job (§5).** Then rule 1: `GET /git/log?limit=15` and summarize the handoff before any write. Then what changed upstream since the last close: `GET https://memory.016180.xyz/search?q=changed&idx={p},mem0&tags=changed&since=<last close>` (the `changed` service, catalog entry). `404 index {p} not found` = nothing is watched for this project yet — retry with `idx=mem0` alone: the ownerless `chg0` watches (Anthropic release notes, this contract, Arctic Shift) apply to everyone. Surface the hits; each carries a `report: <branch>:<path>` pointer readable with `git show` in a session on `changed`. |
 | `close` | Commit pending work, then `POST /sigiled/sessions/{id}/close`. Report the merge outcome (`ff` / `merged` / `debt`) and `log_operativo_touched`. |
-| `recycle` | `POST /sigiled/sessions/{id}/recycle`. Replace the stored token (the old one is dead), confirm with `GET {endpoint}/health`. |
+| `recycle` | `POST /sigiled/sessions/{id}/recycle`. Replace the stored token **and endpoint** after success (the old token is dead), confirm with `GET {endpoint}/health`. |
 | `elevate` | `POST /sigiled/auth/elevate` → relay URL + code to the operator; poll status via `GET /sigiled/auth/approvals`. |
 | `log <project>` | `GET /sigiled/projects/{p}/log` — the machine layer of history (sessions, merges, job runs). The narrative layer is `docs/log-operativo.md` in the repo. |
 | `jobs <project>` | `GET /sigiled/projects/{p}/branches` filtered to `job-*`, plus `GET /sigiled/projects/{p}/jobs/{j}/runs` per job of interest; summarize outcomes newest-first. |
@@ -131,7 +131,7 @@ dangling (rule 6).
    projects, docker, ssh: structurally out of reach. Do not try.
 6. **Do not idle.** ~1 h without API calls and the reaper auto-closes the
    session: uncommitted work is autosave-committed and pushed, nothing is
-   merged, the container is destroyed. No work is lost, but your token is
+   merged, the container is destroyed. A failed checkpoint leaves the container and record intact with a recoverable error; after successful reap your token is
    dead and the next start is stale. Done? `close`. Pausing? Say so in a
    commit message first.
 7. **master only moves through `close`** — fast-forward when possible,
@@ -172,7 +172,8 @@ need a live approval for `projects new`, app verbs, and any session on
 | `GET /projects/{p}/log` | machine history: sessions (with `actor`), merge outcomes, job runs — JSON; `?format=md` renders markdown |
 | `GET /projects/{p}/branches` | `[{name, sha}]` — job-recap entry point |
 | `POST /projects/{p}/sessions` | 201 (§5; `merge_debt` on top when present) · 503 `{retry:true}` repo not ready — wait ~5 s, retry |
-| `GET /sessions/{id}` | session record minus token; plus `container` + `logs` while running |
+| `GET /sessions?project={p}` | authenticated `{sessions:[...]}`; optional project filter; safe operational metadata only |
+| `GET /sessions/{id}` | authenticated safe metadata: session ID, project, branch, actor, state, generation, endpoint, runtime name, image name, error code; 404 if absent |
 | `POST /sessions/{id}/close` | `{closed, merge: "ff"\|"merged"\|"debt", sha, flushed, log_operativo_touched}` |
 | `POST /sessions/{id}/recycle` | fresh `{token, endpoint, sha_at_recycle, image}` — old token dead |
 | `POST /projects/{p}/jobs/{j}/run` | 202 run record · 404 unknown job · 409 same job in flight · 422 broken `[jobs]` |
@@ -185,7 +186,8 @@ need a live approval for `projects new`, app verbs, and any session on
 
 ```json
 {"session_id": "…", "project": "…", "branch": "session/…", "token": "…",
- "endpoint": "https://api.016180.xyz/s/{p}/", "head": "<sha>",
+ "endpoint": "https://api.016180.xyz/s/{p}-{session_id}/", "head": "<sha>",
+ "generation": 1, "state": "active",
  "stale": false, "last_commit": null,
  "merge_debt": null,
  "image": {"used": "vm-{p}:df-…"},
@@ -222,16 +224,52 @@ container, recreate it **from your branch** with a freshly minted token.
 Use when handing the session to another provider, when the container is
 wedged — or to pick up the project's session image after a dockerfile fix
 (the fresh container rides what master declares now; `image` in the
-response says what you got). Replace your stored token with the returned
-one.
+response says what you got). Replace your stored token **and endpoint** with
+the returned values. Generation increments; recycle migrates a legacy binding
+to a unique session runtime. Flush and branch fetch must succeed before the
+old runtime is removed. A failure returns 409 with a typed `error`,
+`session_id`, and `recoverable: true`; retain the session and inspect it.
 
 **Close** (`POST /sigiled/sessions/{id}/close`): flush, then under the
-project's merge lock (seconds): fast-forward if master has not moved,
+project's mirror/merge lock: fast-forward if master has not moved,
 three-way merge if it has and the changes are disjoint, **merge debt**
 otherwise — master stays put, your branch survives, the debt package is
 recorded, and the next session on the project inherits it (rule 9).
 Simultaneous closes serialize on the lock: one wins, the other sees a
 moved master and takes the merge path.
+
+### Independent runtimes and recovery
+
+Each new open allocates a cryptographically random identity and persists its
+binding before runtime creation. Two opens for the same project keep separate
+containers, endpoints, tokens and branches. Orphan resume retains the branch
+but allocates a fresh session ID. Always use the returned endpoint; never
+construct it from the project name. No edge reload is needed for this routing.
+
+One lifecycle transition runs at a time per session. Mirror refresh, branch
+allocation, image builds, merge and push serialize per project across session,
+app, job and branch-listing callers; workspace execution remains independent.
+Drivers may mutate only sessions they own, subject to existing project
+approval policy. Admins may manage all sessions. Inspection shares the existing
+project visibility policy, never returns tokens or container logs, and never
+contacts a workspace or extends its idle lifetime.
+
+A failed flush/checkpoint, fetch, merge or master push preserves recoverable
+work and returns 409; it must not be treated as a closed session. Reaper follows
+the same preservation rule. Inspection states are `creating`, `active`,
+`recycling`, `closing`, and `failed`. Successful close/reap removes the record
+and retains the existing machine event, so subsequent detail returns 404.
+Interrupted transitions after a restart surface as `failed` / `interrupted`.
+Only fixed error codes enter public inspection; repository/container output
+and custodied tokens are never serialized there.
+
+Old snapshot records still load with generation zero and their legacy
+`vm-{project}` binding. When multiple legacy records claim one project runtime,
+all are quarantined with `legacy_ownership_ambiguous`; no lifecycle verb may
+flush or destroy that runtime until an operator reconciles ownership. See
+[session recovery runbook](session-lifecycle.md). Implementation rollout must
+include a state backup and this ownership check; this contract change alone
+does not deploy the new binary.
 
 ## 6. Workspace API
 

@@ -1034,6 +1034,7 @@ dependencies = [
  "axum",
  "chrono",
  "cron",
+ "getrandom 0.2.17",
  "jsonwebtoken",
  "reqwest",
  "serde",

@@ -69,29 +69,38 @@ impl Store {
     }
 
     pub fn save(&self, snap: &StateSnapshot) {
-        let Some(p) = &self.path else { return };
+        self.try_save(snap).expect("save snapshot");
+    }
+    pub fn try_save(&self, snap: &StateSnapshot) -> Result<(), String> {
+        use std::io::Write;
+        let Some(p) = &self.path else {
+            return Ok(());
+        };
         if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            std::fs::create_dir_all(dir).map_err(|_| "state directory unavailable")?;
         }
         let tmp = p.with_extension("json.tmp");
-        let bytes = match serde_json::to_vec_pretty(snap) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!(%e, "state serialize failed — snapshot dropped");
-                return;
-            }
-        };
-        let written = std::fs::write(&tmp, bytes).and_then(|_| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-            }
-            std::fs::rename(&tmp, p)
-        });
-        if let Err(e) = written {
-            tracing::error!(%e, "state persist failed — disk state is stale");
+        let bytes = serde_json::to_vec_pretty(snap).map_err(|_| "state serialization failed")?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
+        let mut file = options
+            .open(&tmp)
+            .map_err(|_| "state temporary file unavailable")?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "state write failed")?;
+        std::fs::rename(&tmp, p).map_err(|_| "state replacement failed")?;
+        if let Some(dir) = p.parent() {
+            std::fs::File::open(dir)
+                .and_then(|f| f.sync_all())
+                .map_err(|_| "state directory sync failed")?;
+        }
+        Ok(())
     }
 }
 

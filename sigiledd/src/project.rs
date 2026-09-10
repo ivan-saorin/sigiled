@@ -160,6 +160,8 @@ pub async fn branches(
     ) {
         return err(StatusCode::FORBIDDEN, denial.0);
     }
+    let lock = state.sessions.merge_lock(&project);
+    let _mirror = lock.lock().await;
     let repo = match &state.sessions.runtime {
         Some(rt) => match rt.ensure_mirror(&project) {
             Ok(p) => p,

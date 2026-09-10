@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-09-10 — A1 independent, recoverable sessions (implementation, not deployed)
+
+- **Where we were:** sessions had separate branches but shared `vm-{project}`;
+  a second open could replace the first runtime. Close/recycle/reaper could
+  discard a workspace after a failed checkpoint, and mirror reset callers
+  operated outside the merge lock.
+- **Where we were going:** prerequisite A1 of the approved SIGIL OS blueprint:
+  independent session bindings, recoverable transitions and safe inspection.
+- **Done:** persisted per-session container/endpoint bindings, lifecycle and
+  generations; OS entropy for IDs/tokens; actor ownership on mutation;
+  authenticated redacted list/detail APIs; legacy quarantine and interrupted
+  transition handling; checkpoint/fetch/push preservation; session lifecycle
+  locks and shared mirror locks across sessions, branches, apps and jobs.
+- **Verification:** regression tests first reproduced shared endpoints and
+  false-success close after failed flush using a hermetic runtime, never
+  production Docker. `cargo test --workspace`: 126 control-plane tests passed
+  (vm-base has 0 tests); `cargo fmt --all --check` passed; Clippy exited 0
+  with only the existing catalog `map_or` and container argument-count warnings.
+  New tests cover independent opens,
+  lifecycle targeting, failed checkpoints/fetch/master push, collisions,
+  legacy state, HTTP auth/redaction, concurrency and disk/restart recovery.
+- **Deviation:** orphan resume now keeps the branch but gets a new session ID;
+  recycle returns a new endpoint with its new token. Successful close/reap
+  retains the existing remove-record plus historical-event architecture.
+- **State / rollout:** **not deployed**. Back up state, reconcile any ambiguous
+  legacy owners, and verify clients use returned endpoints before rollout.
+  Existing edge routing needs no reload. Registry/UI, IDE, memory and browser
+  authentication remain subsequent work; operator recovery of quarantined or
+  failed boots is deliberately explicit, with no destructive force fallback.
+- **Next:** parent review/merge and authorized deployment, then A2 registry and
+  overview foundation; see `docs/session-lifecycle.md` and the approved plans.
+
 ## 2026-08-25 — awesome-ledger registered: the awesome-ecosystem ledger joins the catalog
 
 - **Where we were:** catalog at 12 services (av2md the latest, 2026-08-23);

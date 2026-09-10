@@ -1,27 +1,56 @@
-// sessions.rs — the session verbs of design §4: open without locks (no more
-// 409 — N concurrent sessions, N branches), close under a per-project merge
-// lock of seconds (ff → three-way → debt, merge.rs). Container runtime is
-// cutover territory: pre-cutover the verbs manage branches and debt on the
-// repos under SIGILED_REPOS_DIR, which is exactly what the runtime will
-// wrap. token/endpoint are null until then, honestly.
-//
-// This is also where the session-3 policy finally gets consumed: open takes
-// authorize(OpenSession, project) — a driver needs a live approval for the
-// platform projects (DEC-15) — and every record carries its actor (§1.6).
-use crate::auth::{authorize, Action, Actor};
+// Session lifecycle. Lock order is session, then project mirror; opening a
+// newly allocated identity also holds its session lock before publishing.
+use crate::auth::{authorize, Action, Actor, Role};
 use crate::events::{log_operativo_touched, Event};
 use crate::merge::{changed_paths, close_merge, git, MergeDebt, MergeOutcome};
-use axum::extract::{Path as AxPath, State};
+use axum::extract::{Path as AxPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkspaceBinding {
+    pub container: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub generation: u64,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lifecycle {
+    Creating,
+    #[default]
+    Active,
+    Recycling,
+    Closing,
+    Failed,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Failure {
+    LegacyOwnershipAmbiguous,
+    Interrupted,
+    PersistFailed,
+    MirrorFailed,
+    CreateFailed,
+    BootFailed,
+    FlushFailed,
+    FetchFailed,
+    MergeFailed,
+    PushFailed,
+    CleanupFailed,
+    RuntimeNotOwned,
+    RuntimeUnavailable,
+}
+fn legacy_owned() -> bool {
+    true
+}
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub session_id: String,
     pub project: String,
@@ -29,32 +58,63 @@ pub struct SessionRecord {
     pub head: String,
     pub stale: bool,
     pub actor: Actor,
-    /// The workspace token, kept so close can flush through the agent. It
-    /// lives in the 0600 state file (as v1's registry did) and never in an
-    /// API response other than the open that minted it.
+    // Custodied persistence only. Public responses use an explicit projection.
     #[serde(default)]
     pub token: Option<String>,
+    #[serde(default)]
+    pub binding: Option<WorkspaceBinding>,
+    #[serde(default)]
+    pub lifecycle: Lifecycle,
+    #[serde(default)]
+    pub generation: u64,
+    #[serde(default)]
+    pub error: Option<Failure>,
+    #[serde(default)]
+    pub image: Option<String>,
+    // A failed create may collide with an incumbent. Never claim that runtime.
+    #[serde(default = "legacy_owned")]
+    pub runtime_owned: bool,
 }
-
+// Debug must not accidentally expose the custodied token in a log or panic.
+impl std::fmt::Debug for SessionRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionRecord")
+            .field("session_id", &self.session_id)
+            .field("project", &self.project)
+            .field("lifecycle", &self.lifecycle)
+            .finish_non_exhaustive()
+    }
+}
+impl SessionRecord {
+    pub fn container(&self) -> String {
+        self.binding
+            .as_ref()
+            .map(|b| b.container.clone())
+            .unwrap_or_else(|| crate::runtime::Runtime::vm_name(&self.project))
+    }
+    fn view(&self, rt: Option<&crate::runtime::Runtime>) -> serde_json::Value {
+        json!({"session_id":self.session_id,"project":self.project,"branch":self.branch,
+            "actor":self.actor,"state":self.lifecycle,"generation":self.generation,
+            "endpoint":self.binding.as_ref().map(|b|b.endpoint.clone()).or_else(||rt.map(|r|r.endpoint(&self.project))),
+            "runtime": if self.token.is_some() { Some(self.container()) } else { None },
+            "image":self.image,"error":self.error})
+    }
+}
+type Locks = Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 #[derive(Clone)]
 pub struct SessionState {
-    /// Root of the project repos this control plane arbitrates. None = the
-    /// verbs answer 503 (dev run without a repo store).
     pub repos_dir: Option<PathBuf>,
-    /// Some = real workspaces (containers, deploy keys, mirrors). None =
-    /// branch-only path: the verbs still arbitrate master, they just don't
-    /// rent a container. Tests and dev runs live here.
     pub runtime: Option<crate::runtime::Runtime>,
     http: reqwest::Client,
     records: Arc<RwLock<HashMap<String, SessionRecord>>>,
     debts: Arc<RwLock<HashMap<String, Vec<MergeDebt>>>>,
-    merge_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    merge_locks: Locks,
+    session_locks: Locks,
 }
-
 impl Default for SessionState {
     fn default() -> Self {
         let runtime = crate::runtime::Runtime::from_env();
-        SessionState {
+        Self {
             repos_dir: std::env::var("SIGILED_REPOS_DIR")
                 .ok()
                 .map(PathBuf::from)
@@ -64,16 +124,16 @@ impl Default for SessionState {
             records: Arc::default(),
             debts: Arc::default(),
             merge_locks: Arc::default(),
+            session_locks: Arc::default(),
         }
     }
 }
-
 impl SessionState {
     pub fn with_repos_dir(dir: PathBuf) -> Self {
-        SessionState {
+        Self {
             repos_dir: Some(dir),
             runtime: None,
-            ..SessionState::default()
+            ..Self::default()
         }
     }
     pub fn debts_for(&self, project: &str) -> Vec<MergeDebt> {
@@ -85,10 +145,10 @@ impl SessionState {
             .unwrap_or_default()
     }
     fn push_debt(&self, project: &str, debt: MergeDebt) {
-        let mut map = self.debts.write().unwrap();
-        let queue = map.entry(project.to_string()).or_default();
-        queue.retain(|d| d.branch != debt.branch);
-        queue.push(debt);
+        let mut m = self.debts.write().unwrap();
+        let q = m.entry(project.into()).or_default();
+        q.retain(|d| d.branch != debt.branch);
+        q.push(debt);
     }
     fn clear_debt(&self, project: &str, branch: &str) {
         if let Some(q) = self.debts.write().unwrap().get_mut(project) {
@@ -104,13 +164,12 @@ impl SessionState {
     pub fn remove_record(&self, id: &str) {
         self.records.write().unwrap().remove(id);
     }
-    /// Sessions that hold a workspace token — the ones the reaper polls.
     pub fn live_records(&self) -> Vec<SessionRecord> {
         self.records
             .read()
             .unwrap()
             .values()
-            .filter(|r| r.token.is_some())
+            .filter(|r| r.token.is_some() && r.lifecycle == Lifecycle::Active)
             .cloned()
             .collect()
     }
@@ -123,41 +182,105 @@ impl SessionState {
     pub fn hydrate(
         &self,
         debts: HashMap<String, Vec<MergeDebt>>,
-        records: HashMap<String, SessionRecord>,
+        mut records: HashMap<String, SessionRecord>,
     ) {
+        let mut legacy = HashMap::<String, usize>::new();
+        for r in records
+            .values()
+            .filter(|r| r.binding.is_none() && r.token.is_some())
+        {
+            *legacy.entry(r.project.clone()).or_default() += 1;
+        }
+        for r in records.values_mut() {
+            if r.binding.is_none()
+                && r.token.is_some()
+                && legacy.get(&r.project).copied().unwrap_or(0) > 1
+            {
+                r.lifecycle = Lifecycle::Failed;
+                r.error = Some(Failure::LegacyOwnershipAmbiguous);
+            } else if matches!(
+                r.lifecycle,
+                Lifecycle::Creating | Lifecycle::Closing | Lifecycle::Recycling
+            ) {
+                r.lifecycle = Lifecycle::Failed;
+                r.error = Some(Failure::Interrupted);
+            }
+        }
         *self.debts.write().unwrap() = debts;
         *self.records.write().unwrap() = records;
     }
-    fn merge_lock(&self, project: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.merge_locks
-            .lock()
+    fn lock(locks: &Locks, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        locks.lock().unwrap().entry(key.into()).or_default().clone()
+    }
+    pub(crate) fn merge_lock(&self, project: &str) -> Arc<tokio::sync::Mutex<()>> {
+        Self::lock(&self.merge_locks, project)
+    }
+    pub(crate) fn session_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        Self::lock(&self.session_locks, id)
+    }
+    fn put(&self, record: SessionRecord) {
+        self.records
+            .write()
             .unwrap()
-            .entry(project.to_string())
-            .or_default()
-            .clone()
+            .insert(record.session_id.clone(), record);
+    }
+    pub(crate) fn mark(&self, id: &str, lifecycle: Lifecycle, error: Option<Failure>) {
+        if let Some(r) = self.records.write().unwrap().get_mut(id) {
+            r.lifecycle = lifecycle;
+            r.error = error;
+        }
+    }
+    pub(crate) fn binding_safe(&self, record: &SessionRecord) -> bool {
+        if record.error == Some(Failure::LegacyOwnershipAmbiguous) {
+            return false;
+        }
+        let target = record.container();
+        !self.records.read().unwrap().values().any(|r| {
+            r.session_id != record.session_id && r.token.is_some() && r.container() == target
+        })
     }
     fn session_id() -> String {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use std::time::{SystemTime, UNIX_EPOCH};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        format!("{:08x}", (nanos ^ (n << 48)) & 0xffff_ffff)
+        random_hex(16)
     }
 }
-
-fn err(status: StatusCode, detail: impl Into<String>) -> Response {
-    (status, Json(json!({ "detail": detail.into() }))).into_response()
+fn random_hex(bytes: usize) -> String {
+    let mut buf = vec![0; bytes];
+    getrandom::getrandom(&mut buf).expect("OS random source unavailable");
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
-
-/// A session/* branch nobody owns: no live record rides it and it is not a
-/// debtor waiting in the merge-debt queue. The reaper kills containers,
-/// crashes lose control planes, the v1 left one behind — the branch on the
-/// repo is the truth, and open() resumes the first orphan it finds instead
-/// of cutting a new one (contract §5: stale resume).
+pub(crate) fn mint_token() -> String {
+    random_hex(24)
+}
+fn err(status: StatusCode, detail: impl Into<String>) -> Response {
+    (status, Json(json!({"detail":detail.into()}))).into_response()
+}
+pub(crate) fn failure(state: &crate::AppState, id: &str, code: Failure) -> Response {
+    state.sessions.mark(id, Lifecycle::Failed, Some(code));
+    state.persist();
+    (StatusCode::CONFLICT,Json(json!({"error":code,"detail":"session preserved for recovery","session_id":id,"recoverable":true}))).into_response()
+}
+fn now_epoch() -> u64 {
+    crate::auth::now_epoch()
+}
+fn authorized(
+    actor: &Actor,
+    record: &SessionRecord,
+    state: &crate::AppState,
+    action: Action,
+) -> Result<(), String> {
+    authorize(
+        actor,
+        action,
+        Some(&record.project),
+        &state.auth.approvals,
+        now_epoch(),
+    )
+    .map_err(|d| d.0)?;
+    if actor.role != Role::Admin && actor.driver != record.actor.driver {
+        return Err("session belongs to another actor".into());
+    }
+    Ok(())
+}
 fn find_orphan(repo: &std::path::Path, project: &str, state: &crate::AppState) -> Option<String> {
     let refs = git(
         repo,
@@ -169,498 +292,461 @@ fn find_orphan(repo: &std::path::Path, project: &str, state: &crate::AppState) -
         ],
     )
     .ok()?;
-    let debts: Vec<String> = state
-        .sessions
-        .debts_for(project)
-        .into_iter()
-        .map(|d| d.branch)
-        .collect();
-    let live: Vec<String> = state
-        .sessions
-        .records
-        .read()
-        .unwrap()
-        .values()
-        .filter(|r| r.project == project)
-        .map(|r| r.branch.clone())
-        .collect();
+    let debts = state.sessions.debts_for(project);
+    let records = state.sessions.dump_records();
     let mut names: Vec<String> = refs
         .lines()
-        .map(|l| l.trim().trim_start_matches("origin/").to_string())
-        .filter(|b| b.starts_with("session/"))
+        .map(|l| l.trim().trim_start_matches("origin/").into())
+        .filter(|b: &String| b.starts_with("session/"))
         .collect();
     names.sort();
     names.dedup();
-    names
-        .into_iter()
-        .find(|b| !debts.contains(b) && !live.contains(b))
+    names.into_iter().find(|b| {
+        !debts.iter().any(|d| d.branch == *b)
+            && !records
+                .values()
+                .any(|r| r.project == project && r.branch == *b)
+    })
 }
-
-fn now_epoch() -> u64 {
-    crate::auth::now_epoch()
+#[derive(Default, Deserialize)]
+pub struct SessionQuery {
+    pub project: Option<String>,
 }
-
+pub async fn list(
+    _actor: Actor,
+    State(state): State<crate::AppState>,
+    Query(query): Query<SessionQuery>,
+) -> Response {
+    let mut records: Vec<_> = state
+        .sessions
+        .dump_records()
+        .into_values()
+        .filter(|r| query.project.as_ref().is_none_or(|p| p == &r.project))
+        .collect();
+    records.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    Json(json!({"sessions":records.iter().map(|r|r.view(state.sessions.runtime.as_ref())).collect::<Vec<_>>()})).into_response()
+}
+pub async fn detail(
+    _actor: Actor,
+    State(state): State<crate::AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    match state.sessions.record(&id) {
+        Some(r) => Json(r.view(state.sessions.runtime.as_ref())).into_response(),
+        None => err(StatusCode::NOT_FOUND, "unknown session"),
+    }
+}
+async fn session_image(
+    rt: &crate::runtime::Runtime,
+    project: &str,
+    repo: &std::path::Path,
+) -> Result<crate::runtime::ImageChoice, String> {
+    let (rt, project, repo) = (rt.clone(), project.to_owned(), repo.to_owned());
+    tokio::task::spawn_blocking(move || rt.ensure_session_image(&project, &repo))
+        .await
+        .map_err(|_| "image task interrupted".into())
+}
 pub async fn open(
     actor: Actor,
     State(state): State<crate::AppState>,
     AxPath(project): AxPath<String>,
 ) -> Response {
-    // The session-3 policy, consumed by the verb (DEC-15).
-    if let Err(denial) = authorize(
+    if let Err(d) = authorize(
         &actor,
         Action::OpenSession,
         Some(&project),
         &state.auth.approvals,
         now_epoch(),
     ) {
-        return err(StatusCode::FORBIDDEN, denial.0);
+        return err(StatusCode::FORBIDDEN, d.0);
     }
-
-    // Two paths, one contract. With a runtime: mirror + container + the
-    // branch cut inside the workspace and pushed at once. Without: the
-    // branch only, on the local repo (dev/tests). Both first look for an
-    // orphan session/* branch (reaper, crash, v1 leftovers) and resume it
-    // stale instead of cutting a new one (contract §5).
-    fn fresh_id_branch() -> (String, String) {
-        let id = SessionState::session_id();
-        let branch = format!("session/{id}");
-        (id, branch)
+    // Existing project slugs are shell/DNS-safe. Reject paths or shell fragments
+    // before Git and runtime names are constructed, including unknown projects.
+    if project.is_empty()
+        || !project
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return err(StatusCode::BAD_REQUEST, "invalid project slug");
     }
-    let (id, branch, resume, head, token, endpoint, image) = match &state.sessions.runtime {
-        Some(rt) => {
-            let mirror = match rt.ensure_mirror(&project) {
-                Ok(m) => m,
-                Err(e) => return err(StatusCode::NOT_FOUND, e),
-            };
-            let (id, branch, resume) = match find_orphan(&mirror, &project, &state) {
-                Some(b) => (b.trim_start_matches("session/").to_string(), b, true),
-                None => {
-                    let (id, branch) = fresh_id_branch();
-                    (id, branch, false)
-                }
-            };
-            let vm = crate::runtime::Runtime::vm_name(&project);
-            let tok = mint_token();
-            // DEC-25: the per-project session image, from [workspace] on
-            // master. The first open after a dockerfile edit pays a docker
-            // build (minutes) — off the async runtime. A failed build falls
-            // back to the base image with the shout in `image`.
-            let image = {
-                let (rt2, mirror2, p2) = (rt.clone(), mirror.clone(), project.clone());
-                match tokio::task::spawn_blocking(move || rt2.ensure_session_image(&p2, &mirror2))
-                    .await
-                {
-                    Ok(choice) => choice,
-                    Err(e) => {
-                        return err(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("image resolve: {e}"),
-                        )
-                    }
-                }
-            };
-            if let Err(e) =
-                rt.create_container(&vm, &project, "session", &id, &tok, &image.used, &[])
-            {
-                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
-            }
-            if let Err(e) = rt.wait_healthy(&state.sessions.http, &vm, &tok).await {
-                rt.destroy(&vm);
-                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
-            }
-            match rt
-                .boot_workspace(&state.sessions.http, &vm, &project, &tok, &branch, resume)
-                .await
-            {
-                Ok(head) => (
-                    id,
-                    branch,
-                    resume,
-                    head,
-                    Some(tok),
-                    Some(rt.endpoint(&project)),
-                    Some(image),
-                ),
-                Err(e) => {
-                    rt.destroy(&vm);
-                    return err(StatusCode::INTERNAL_SERVER_ERROR, e);
-                }
-            }
-        }
-        None => {
-            let Some(repos) = state.sessions.repos_dir.clone() else {
-                return err(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "SIGILED_REPOS_DIR not configured",
-                );
-            };
-            let repo = repos.join(&project);
-            if !repo.join(".git").exists() {
-                return err(StatusCode::NOT_FOUND, format!("unknown project: {project}"));
-            }
-            match find_orphan(&repo, &project, &state) {
-                Some(b) => {
-                    let head = match git(&repo, &["rev-parse", &b]) {
-                        Ok(h) => h,
-                        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
-                    };
-                    (
-                        b.trim_start_matches("session/").to_string(),
-                        b,
-                        true,
-                        head,
-                        None,
-                        None,
-                        None,
-                    )
-                }
-                None => {
-                    let (id, branch) = fresh_id_branch();
-                    if let Err(e) = git(&repo, &["branch", &branch, "master"]) {
-                        return err(StatusCode::INTERNAL_SERVER_ERROR, e);
-                    }
-                    let head = git(&repo, &["rev-parse", "master"]).unwrap_or_default();
-                    (id, branch, false, head, None, None, None)
-                }
-            }
-        }
-    };
-
-    let record = SessionRecord {
+    let id = SessionState::session_id();
+    let session_lock = state.sessions.session_lock(&id);
+    let _session = session_lock.lock().await;
+    let lock = state.sessions.merge_lock(&project);
+    let _guard = lock.lock().await;
+    let rt = state.sessions.runtime.as_ref();
+    let mut record = SessionRecord {
         session_id: id.clone(),
         project: project.clone(),
-        branch: branch.clone(),
-        head: head.clone(),
-        stale: resume,
+        branch: format!("session/{id}"),
+        head: String::new(),
+        stale: false,
         actor: actor.clone(),
-        token: token.clone(),
+        token: rt.map(|_| mint_token()),
+        binding: rt.map(|r| WorkspaceBinding {
+            container: crate::runtime::Runtime::session_container(&project, &id),
+            endpoint: r.session_endpoint(&project, &id),
+            generation: 1,
+        }),
+        lifecycle: Lifecycle::Creating,
+        generation: 1,
+        error: None,
+        image: None,
+        runtime_owned: false,
     };
-    state
-        .sessions
-        .records
-        .write()
-        .unwrap()
-        .insert(id.clone(), record);
+    state.sessions.put(record.clone());
+    if state.try_persist().is_err() {
+        return failure(&state, &id, Failure::PersistFailed);
+    }
+    let repo = if let Some(rt) = rt {
+        match rt.ensure_mirror(&project) {
+            Ok(p) => p,
+            Err(_) => return failure(&state, &id, Failure::MirrorFailed),
+        }
+    } else {
+        let Some(repos) = state.sessions.repos_dir.as_ref() else {
+            state.sessions.remove_record(&id);
+            state.persist();
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SIGILED_REPOS_DIR not configured",
+            );
+        };
+        let repo = repos.join(&project);
+        if !repo.join(".git").exists() {
+            state.sessions.remove_record(&id);
+            state.persist();
+            return err(StatusCode::NOT_FOUND, "unknown project");
+        }
+        repo
+    };
+    if let Some(branch) = find_orphan(&repo, &project, &state) {
+        record.branch = branch;
+        record.stale = true;
+    }
+    state.sessions.put(record.clone());
+    if state.try_persist().is_err() {
+        return failure(&state, &id, Failure::PersistFailed);
+    }
+    let mut image = None;
+    if let Some(rt) = rt {
+        let choice = match session_image(rt, &project, &repo).await {
+            Ok(c) => c,
+            Err(_) => return failure(&state, &id, Failure::BootFailed),
+        };
+        record.image = Some(choice.used.clone());
+        let vm = record.container();
+        let token = record.token.as_deref().unwrap();
+        if rt
+            .create_container(&vm, &project, "session", &id, token, &choice.used, &[])
+            .is_err()
+        {
+            return failure(&state, &id, Failure::CreateFailed);
+        }
+        record.runtime_owned = true;
+        state.sessions.put(record.clone());
+        if state.try_persist().is_err() {
+            return failure(&state, &id, Failure::PersistFailed);
+        }
+        if rt
+            .wait_healthy(&state.sessions.http, &vm, token)
+            .await
+            .is_err()
+        {
+            return failure(&state, &id, Failure::BootFailed);
+        }
+        record.head = match rt
+            .boot_workspace(
+                &state.sessions.http,
+                &vm,
+                &project,
+                token,
+                &record.branch,
+                record.stale,
+            )
+            .await
+        {
+            Ok(h) => h,
+            Err(_) => return failure(&state, &id, Failure::BootFailed),
+        };
+        image = Some(choice);
+    } else {
+        if !record.stale && git(&repo, &["branch", &record.branch, "master"]).is_err() {
+            return failure(&state, &id, Failure::CreateFailed);
+        }
+        record.head = match git(&repo, &["rev-parse", &record.branch]) {
+            Ok(h) => h,
+            Err(_) => return failure(&state, &id, Failure::BootFailed),
+        };
+    }
+    record.lifecycle = Lifecycle::Active;
+    state.sessions.put(record.clone());
     state.events.record(
         &project,
         now_epoch(),
         Event::SessionOpened {
             session_id: id.clone(),
-            branch: branch.clone(),
-            stale: resume,
+            branch: record.branch.clone(),
+            stale: record.stale,
         },
     );
-
-    state.persist();
-
-    // merge_debt on top when present (rule: shout, don't whisper).
-    let debts = state.sessions.debts_for(&project);
-    (
-        StatusCode::CREATED,
-        Json(json!({
-            "session_id": id, "project": project, "branch": branch,
-            "token": token, "endpoint": endpoint,
-            "head": head, "stale": resume,
-            "last_commit": if resume { json!(head) } else { serde_json::Value::Null },
-            "merge_debt": debts.first(),
-            "image": image,
-            "actor": actor,
-        })),
-    )
-        .into_response()
-}
-
-pub(crate) fn mint_token() -> String {
-    // 24 bytes of entropy, hex — same shape as the v1 token the edge and
-    // the agent already expect. Sourced from the OS via getrandom-through-
-    // std: no crypto dependency for a value that is only ever compared.
-    use std::hash::{BuildHasher, Hasher, RandomState};
-    let mut out = String::with_capacity(48);
-    while out.len() < 48 {
-        let mut h = RandomState::new().build_hasher();
-        h.write_u64(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .subsec_nanos() as u64,
-        );
-        out.push_str(&format!("{:016x}", h.finish()));
+    if state.try_persist().is_err() {
+        return failure(&state, &id, Failure::PersistFailed);
     }
-    out.truncate(48);
-    out
+    (StatusCode::CREATED,Json(json!({"session_id":id,"project":project,"branch":record.branch,"token":record.token,"endpoint":record.binding.as_ref().map(|b|&b.endpoint),"head":record.head,"stale":record.stale,"last_commit":if record.stale{json!(record.head)}else{serde_json::Value::Null},"merge_debt":state.sessions.debts_for(&project).first(),"image":image,"actor":actor,"generation":record.generation,"state":record.lifecycle}))).into_response()
 }
-
 pub async fn close(
     actor: Actor,
     State(state): State<crate::AppState>,
-    AxPath(session_id): AxPath<String>,
+    AxPath(id): AxPath<String>,
 ) -> Response {
-    let Some(record) = state
-        .sessions
-        .records
-        .read()
-        .unwrap()
-        .get(&session_id)
-        .cloned()
-    else {
-        return err(
-            StatusCode::NOT_FOUND,
-            format!("unknown session: {session_id}"),
-        );
+    let lock = state.sessions.session_lock(&id);
+    let _session = lock.lock().await;
+    let Some(record) = state.sessions.record(&id) else {
+        return err(StatusCode::NOT_FOUND, "unknown session");
     };
-    if let Err(denial) = authorize(
-        &actor,
-        Action::CloseSession,
-        Some(&record.project),
-        &state.auth.approvals,
-        now_epoch(),
-    ) {
-        return err(StatusCode::FORBIDDEN, denial.0);
+    if let Err(e) = authorized(&actor, &record, &state, Action::CloseSession) {
+        return err(StatusCode::FORBIDDEN, e);
     }
-    // With a runtime: flush the workspace first (its commits must exist
-    // before we merge), then arbitrate on the refreshed mirror.
-    let mut flushed = true;
-    if let Some(rt) = &state.sessions.runtime {
-        if let Some(tok) = &record.token {
-            let vm = crate::runtime::Runtime::vm_name(&record.project);
-            flushed = rt
-                .flush(&state.sessions.http, &vm, tok, "session close")
-                .await;
-        }
-        if let Err(e) = rt.ensure_mirror(&record.project) {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+    if record.token.is_some() && state.sessions.runtime.is_none() {
+        return failure(&state, &id, Failure::RuntimeUnavailable);
+    }
+    if !state.sessions.binding_safe(&record) {
+        return failure(&state, &id, Failure::LegacyOwnershipAmbiguous);
+    }
+    if state.sessions.runtime.is_some() && (!record.runtime_owned || record.token.is_none()) {
+        return failure(&state, &id, Failure::RuntimeNotOwned);
+    }
+    state.sessions.mark(&id, Lifecycle::Closing, None);
+    if state.try_persist().is_err() {
+        return failure(&state, &id, Failure::PersistFailed);
+    }
+    if let (Some(rt), Some(tok)) = (&state.sessions.runtime, &record.token) {
+        if !rt
+            .flush(
+                &state.sessions.http,
+                &record.container(),
+                tok,
+                "session close",
+            )
+            .await
+        {
+            return failure(&state, &id, Failure::FlushFailed);
         }
     }
-    let repos = state
-        .sessions
-        .repos_dir
-        .clone()
-        .expect("open required repos_dir");
-    let repo = repos.join(&record.project);
-
-    // The critical section shrank from the whole session to these few
-    // lines (§4.1): simultaneous closes serialize here — one wins, the
-    // other sees a moved master and takes the merge path.
     let lock = state.sessions.merge_lock(&record.project);
-    let _guard = lock.lock().await;
-
-    // With a runtime the branch lives on the remote: give the mirror a
-    // local ref to merge from.
-    if state.sessions.runtime.is_some() {
-        let _ = git(
+    let _mirror = lock.lock().await;
+    let repo = if let Some(rt) = &state.sessions.runtime {
+        match rt.ensure_mirror(&record.project) {
+            Ok(p) => p,
+            Err(_) => return failure(&state, &id, Failure::MirrorFailed),
+        }
+    } else {
+        let Some(repos) = state.sessions.repos_dir.as_ref() else {
+            return failure(&state, &id, Failure::MirrorFailed);
+        };
+        repos.join(&record.project)
+    };
+    if state.sessions.runtime.is_some()
+        && git(
             &repo,
-            &["fetch", "origin", &format!("{0}:{0}", record.branch)],
-        );
+            &["fetch", "origin", &format!("+{0}:{0}", record.branch)],
+        )
+        .is_err()
+    {
+        return failure(&state, &id, Failure::FetchFailed);
     }
-
     let touched = changed_paths(&repo, &record.branch)
         .map(|p| log_operativo_touched(&p))
         .unwrap_or(false);
-
     let outcome = match close_merge(&repo, &record.branch) {
         Ok(o) => o,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(_) => return failure(&state, &id, Failure::MergeFailed),
     };
-    let (merge_kind, sha, debt) = match outcome {
+    let (kind, sha, debt) = match outcome {
         MergeOutcome::Ff { sha } => ("ff", sha, None),
         MergeOutcome::Merged { sha } => ("merged", sha, None),
-        MergeOutcome::Debt(d) => {
-            let master = d.ours.sha.clone();
-            ("debt", master, Some(d))
-        }
+        MergeOutcome::Debt(d) => ("debt", d.ours.sha.clone(), Some(d)),
     };
-
-    match &debt {
-        None => {
-            // Clean close: publish the merged master, then drop the branch
-            // here and on the remote; the debt (if this was a debtor being
-            // resolved) is paid.
-            if let Some(rt) = &state.sessions.runtime {
-                if let Err(e) = rt.push(&record.project, "master") {
-                    // Master moved under us between merge and push: the work
-                    // is safe on the branch, the next close re-arbitrates.
-                    return err(StatusCode::CONFLICT, format!("push master: {e}"));
-                }
-                let _ = rt.push(&record.project, &format!(":{}", record.branch));
-            }
-            let _ = git(&repo, &["branch", "-D", &record.branch]);
-            state.sessions.clear_debt(&record.project, &record.branch);
+    if let Some(d) = &debt {
+        state.sessions.push_debt(&record.project, d.clone());
+    } else if let Some(rt) = &state.sessions.runtime {
+        if rt.push(&record.project, "master").is_err() {
+            return failure(&state, &id, Failure::PushFailed);
         }
-        Some(d) => {
-            // Conflict: master stayed put, the branch survives as the
-            // debtor, the queue inherits the package.
-            state.sessions.push_debt(&record.project, d.clone());
-        }
+    }
+    // The successful checkpoint and master/debt are durable before cleanup.
+    if state.try_persist().is_err() {
+        return failure(&state, &id, Failure::PersistFailed);
     }
     if let Some(rt) = &state.sessions.runtime {
-        rt.destroy(&crate::runtime::Runtime::vm_name(&record.project));
+        if !rt.destroy(&record.container()) {
+            return failure(&state, &id, Failure::CleanupFailed);
+        }
     }
-    state.sessions.records.write().unwrap().remove(&session_id);
+    if debt.is_none() {
+        if let Some(rt) = &state.sessions.runtime {
+            let _ = rt.push(&record.project, &format!(":{}", record.branch));
+        }
+        let _ = git(&repo, &["branch", "-D", &record.branch]);
+        state.sessions.clear_debt(&record.project, &record.branch);
+    }
+    state.sessions.remove_record(&id);
     state.events.record(
         &record.project,
         now_epoch(),
         Event::SessionClosed {
-            session_id: session_id.clone(),
+            session_id: id,
             merged: debt.is_none(),
             sha: sha.clone(),
             log_operativo_touched: touched,
         },
     );
-
     state.persist();
-
-    Json(json!({
-        "closed": true, "merge": merge_kind, "sha": sha, "flushed": flushed,
-        "log_operativo_touched": touched, "merge_debt": debt,
-    }))
-    .into_response()
+    Json(json!({"closed":true,"merge":kind,"sha":sha,"flushed":true,"log_operativo_touched":touched,"merge_debt":debt})).into_response()
 }
-
-/// POST /sigiled/sessions/{id}/recycle — flush, destroy, recreate from the
-/// session's own branch with a freshly minted token (contract §5): the way
-/// to hand a session to another provider or to unwedge a container. The old
-/// token is dead the moment this returns.
 pub async fn recycle(
     actor: Actor,
     State(state): State<crate::AppState>,
-    AxPath(session_id): AxPath<String>,
+    AxPath(id): AxPath<String>,
 ) -> Response {
-    let Some(record) = state
-        .sessions
-        .records
-        .read()
-        .unwrap()
-        .get(&session_id)
-        .cloned()
-    else {
-        return err(
-            StatusCode::NOT_FOUND,
-            format!("unknown session: {session_id}"),
-        );
+    let lock = state.sessions.session_lock(&id);
+    let _session = lock.lock().await;
+    let Some(mut record) = state.sessions.record(&id) else {
+        return err(StatusCode::NOT_FOUND, "unknown session");
     };
-    if let Err(denial) = authorize(
-        &actor,
-        Action::Recycle,
-        Some(&record.project),
-        &state.auth.approvals,
-        now_epoch(),
-    ) {
-        return err(StatusCode::FORBIDDEN, denial.0);
+    if let Err(e) = authorized(&actor, &record, &state, Action::Recycle) {
+        return err(StatusCode::FORBIDDEN, e);
     }
-    // Flush is best-effort by design: a wedged container is one of the two
-    // reasons to recycle, and push-early means only unpushed leftovers are
-    // at stake. The verb proceeds either way and reports honestly.
-    let mut flushed = true;
-    let (head, token, endpoint, image) = match &state.sessions.runtime {
-        Some(rt) => {
-            let vm = crate::runtime::Runtime::vm_name(&record.project);
-            if let Some(tok) = &record.token {
-                flushed = rt
-                    .flush(&state.sessions.http, &vm, tok, "session recycle")
-                    .await;
-            }
-            rt.destroy(&vm);
-            let tok = mint_token();
-            // DEC-25: the fresh container rides the image master declares
-            // NOW — a recycle after a dockerfile fix is how a session picks
-            // up its repaired toolchain without dying.
-            let image = match rt.ensure_mirror(&record.project) {
-                Ok(mirror) => {
-                    let (rt2, p2) = (rt.clone(), record.project.clone());
-                    match tokio::task::spawn_blocking(move || {
-                        rt2.ensure_session_image(&p2, &mirror)
-                    })
-                    .await
-                    {
-                        Ok(choice) => choice,
-                        Err(e) => {
-                            return err(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("image resolve: {e}"),
-                            )
-                        }
-                    }
-                }
-                Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
-            };
-            if let Err(e) = rt.create_container(
+    if record.token.is_some() && state.sessions.runtime.is_none() {
+        return failure(&state, &id, Failure::RuntimeUnavailable);
+    }
+    if !state.sessions.binding_safe(&record) {
+        return failure(&state, &id, Failure::LegacyOwnershipAmbiguous);
+    }
+    if state.sessions.runtime.is_some() && (!record.runtime_owned || record.token.is_none()) {
+        return failure(&state, &id, Failure::RuntimeNotOwned);
+    }
+    state.sessions.mark(&id, Lifecycle::Recycling, None);
+    if state.try_persist().is_err() {
+        return failure(&state, &id, Failure::PersistFailed);
+    }
+    if let (Some(rt), Some(tok)) = (&state.sessions.runtime, &record.token) {
+        if !rt
+            .flush(
+                &state.sessions.http,
+                &record.container(),
+                tok,
+                "session recycle",
+            )
+            .await
+        {
+            return failure(&state, &id, Failure::FlushFailed);
+        }
+    }
+    let lock = state.sessions.merge_lock(&record.project);
+    let _mirror = lock.lock().await;
+    let repo = if let Some(rt) = &state.sessions.runtime {
+        match rt.ensure_mirror(&record.project) {
+            Ok(p) => p,
+            Err(_) => return failure(&state, &id, Failure::MirrorFailed),
+        }
+    } else {
+        let Some(repos) = state.sessions.repos_dir.as_ref() else {
+            return failure(&state, &id, Failure::MirrorFailed);
+        };
+        repos.join(&record.project)
+    };
+    if state.sessions.runtime.is_some()
+        && git(
+            &repo,
+            &["fetch", "origin", &format!("+{0}:{0}", record.branch)],
+        )
+        .is_err()
+    {
+        return failure(&state, &id, Failure::FetchFailed);
+    }
+    record.head = match git(&repo, &["rev-parse", &record.branch]) {
+        Ok(h) => h,
+        Err(_) => return failure(&state, &id, Failure::FetchFailed),
+    };
+    let mut image = None;
+    record.generation += 1;
+    if let Some(rt) = &state.sessions.runtime {
+        let choice = match session_image(rt, &record.project, &repo).await {
+            Ok(c) => c,
+            Err(_) => return failure(&state, &id, Failure::BootFailed),
+        };
+        if !rt.destroy(&record.container()) {
+            return failure(&state, &id, Failure::CleanupFailed);
+        }
+        // The former container's branch is confirmed on origin. Persist the
+        // next binding and token before allocation; never reuse legacy aliases.
+        let slug = format!("{id}-g{}", record.generation);
+        record.binding = Some(WorkspaceBinding {
+            container: crate::runtime::Runtime::session_container(&record.project, &slug),
+            endpoint: rt.session_endpoint(&record.project, &slug),
+            generation: record.generation,
+        });
+        record.token = Some(mint_token());
+        record.image = Some(choice.used.clone());
+        record.runtime_owned = false;
+        record.lifecycle = Lifecycle::Recycling;
+        state.sessions.put(record.clone());
+        if state.try_persist().is_err() {
+            return failure(&state, &id, Failure::PersistFailed);
+        }
+        let vm = record.container();
+        let tok = record.token.as_deref().unwrap();
+        if rt
+            .create_container(&vm, &record.project, "session", &id, tok, &choice.used, &[])
+            .is_err()
+        {
+            return failure(&state, &id, Failure::CreateFailed);
+        }
+        record.runtime_owned = true;
+        state.sessions.put(record.clone());
+        if state.try_persist().is_err() {
+            return failure(&state, &id, Failure::PersistFailed);
+        }
+        if rt
+            .wait_healthy(&state.sessions.http, &vm, tok)
+            .await
+            .is_err()
+        {
+            return failure(&state, &id, Failure::BootFailed);
+        }
+        record.head = match rt
+            .boot_workspace(
+                &state.sessions.http,
                 &vm,
                 &record.project,
-                "session",
-                &session_id,
-                &tok,
-                &image.used,
-                &[],
-            ) {
-                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
-            }
-            if let Err(e) = rt.wait_healthy(&state.sessions.http, &vm, &tok).await {
-                rt.destroy(&vm);
-                return err(StatusCode::INTERNAL_SERVER_ERROR, e);
-            }
-            // resume=true: the branch already exists on the remote — the
-            // fresh container checks it out instead of cutting a new one.
-            match rt
-                .boot_workspace(
-                    &state.sessions.http,
-                    &vm,
-                    &record.project,
-                    &tok,
-                    &record.branch,
-                    true,
-                )
-                .await
-            {
-                Ok(head) => (
-                    head,
-                    Some(tok),
-                    Some(rt.endpoint(&record.project)),
-                    Some(image),
-                ),
-                Err(e) => {
-                    rt.destroy(&vm);
-                    return err(StatusCode::INTERNAL_SERVER_ERROR, e);
-                }
-            }
-        }
-        None => {
-            let Some(repos) = state.sessions.repos_dir.clone() else {
-                return err(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "SIGILED_REPOS_DIR not configured",
-                );
-            };
-            let repo = repos.join(&record.project);
-            match git(&repo, &["rev-parse", &record.branch]) {
-                Ok(sha) => (sha, None, None, None),
-                Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
-            }
-        }
-    };
-    // The record survives with the fresh token: the old one is dead the
-    // moment this swap lands (and persists).
-    {
-        let mut records = state.sessions.records.write().unwrap();
-        if let Some(r) = records.get_mut(&session_id) {
-            r.token = token.clone();
-            r.head = head.clone();
-        }
+                tok,
+                &record.branch,
+                true,
+            )
+            .await
+        {
+            Ok(h) => h,
+            Err(_) => return failure(&state, &id, Failure::BootFailed),
+        };
+        image = Some(choice);
     }
+    record.lifecycle = Lifecycle::Active;
+    record.error = None;
+    state.sessions.put(record.clone());
     state.events.record(
         &record.project,
         now_epoch(),
         Event::SessionRecycled {
-            session_id: session_id.clone(),
-            sha: head.clone(),
+            session_id: id.clone(),
+            sha: record.head.clone(),
         },
     );
-    state.persist();
-    Json(json!({
-        "session_id": session_id, "project": record.project, "branch": record.branch,
-        "token": token, "endpoint": endpoint, "sha_at_recycle": head, "flushed": flushed,
-        "image": image,
-    }))
-    .into_response()
+    if state.try_persist().is_err() {
+        return failure(&state, &id, Failure::PersistFailed);
+    }
+    Json(json!({"session_id":id,"project":record.project,"branch":record.branch,"token":record.token,"endpoint":record.binding.as_ref().map(|b|&b.endpoint),"sha_at_recycle":record.head,"flushed":true,"image":image,"generation":record.generation,"state":record.lifecycle})).into_response()
 }
 
 #[cfg(test)]
@@ -848,7 +934,8 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(b["stale"], true, "body: {b}");
         assert_eq!(b["branch"], json!(branch.clone()));
-        assert_eq!(b["session_id"], json!(id.clone()));
+        assert_ne!(b["session_id"], json!(id.clone()));
+        let id = b["session_id"].as_str().unwrap().to_string();
         assert_eq!(
             b["last_commit"].as_str().unwrap(),
             sh(&repo, &["rev-parse", &branch])

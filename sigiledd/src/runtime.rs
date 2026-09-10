@@ -48,6 +48,8 @@ impl ImageChoice {
 
 #[derive(Clone)]
 pub struct Runtime {
+    #[cfg(test)]
+    pub fake: Option<std::sync::Arc<crate::session_tests::FakeRuntime>>,
     pub network: String,
     pub image: String,
     pub owner: String,
@@ -66,6 +68,8 @@ impl Runtime {
         }
         let state = std::env::var("SIGILED_STATE_DIR").unwrap_or_else(|_| "/data".into());
         Some(Runtime {
+            #[cfg(test)]
+            fake: None,
             network: std::env::var("SIGILED_NETWORK").unwrap_or_else(|_| "mgr-net".into()),
             image: std::env::var("SIGILED_VM_IMAGE")
                 .unwrap_or_else(|_| "ghcr.io/ivan-saorin/vm-base:0.1.0".into()),
@@ -85,6 +89,12 @@ impl Runtime {
         })
     }
 
+    pub fn session_container(project: &str, id: &str) -> String {
+        format!("vm-{project}-{id}")
+    }
+    pub fn session_endpoint(&self, project: &str, id: &str) -> String {
+        self.endpoint(&format!("{project}-{id}"))
+    }
     pub fn vm_name(project: &str) -> String {
         format!("vm-{project}")
     }
@@ -162,6 +172,10 @@ impl Runtime {
     // --- containers ---------------------------------------------------------
 
     fn docker(&self, args: &[&str]) -> Result<String, String> {
+        #[cfg(test)]
+        if let Some(fake) = &self.fake {
+            return fake.docker(args);
+        }
         let out = Command::new("docker")
             .args(args)
             .output()
@@ -308,7 +322,7 @@ impl Runtime {
         image: &str,
         extra_env: &[(String, String)],
     ) -> Result<(), String> {
-        self.destroy(container); // stale container safety, as v1 — own name only
+        // Docker create owns the name atomically. Never pre-delete an incumbent.
         let key = self.key_path(project);
         if !key.exists() {
             return Err(format!(
@@ -341,13 +355,20 @@ impl Runtime {
         }
         args.push(image.into());
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        self.docker(&arg_refs)?;
-        self.docker(&[
-            "cp",
-            &key.to_string_lossy(),
-            &format!("{container}:/secrets/deploy_key"),
-        ])?;
-        self.docker(&["start", container])?;
+        self.docker(&arg_refs)
+            .map_err(|_| "container creation failed".to_string())?;
+        let initialized = self
+            .docker(&[
+                "cp",
+                &key.to_string_lossy(),
+                &format!("{container}:/secrets/deploy_key"),
+            ])
+            .and_then(|_| self.docker(&["start", container]));
+        if initialized.is_err() {
+            // create above succeeded; cleanup cannot target an incumbent.
+            self.destroy(container);
+            return Err("container initialization failed".into());
+        }
         Ok(())
     }
 
@@ -363,6 +384,14 @@ impl Runtime {
         container: &str,
         token: &str,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(fake) = &self.fake {
+            if fake.pause_health.load(std::sync::atomic::Ordering::SeqCst) {
+                fake.health_entered.notify_one();
+                fake.health_release.notified().await;
+            }
+            return fake.healthy(container, token);
+        }
         let url = self.agent_url(container, "/health");
         for _ in 0..30 {
             let ok = http
@@ -389,6 +418,11 @@ impl Runtime {
         container: &str,
         token: &str,
     ) -> Result<u64, String> {
+        #[cfg(test)]
+        if let Some(fake) = &self.fake {
+            fake.healthy(container, token)?;
+            return Ok(7200);
+        }
         let r = http
             .get(self.agent_url(container, "/health"))
             .bearer_auth(token)
@@ -413,6 +447,10 @@ impl Runtime {
         cmd: &str,
         timeout_secs: u64,
     ) -> Result<serde_json::Value, String> {
+        #[cfg(test)]
+        if let Some(fake) = &self.fake {
+            return fake.exec(container, token, cmd);
+        }
         http.post(self.agent_url(container, "/exec"))
             .bearer_auth(token)
             .json(&serde_json::json!({ "cmd": cmd, "timeout_secs": timeout_secs }))
@@ -475,8 +513,7 @@ impl Runtime {
     }
 
     /// Commit anything left uncommitted, else make sure HEAD is pushed.
-    /// An unreachable container is not an error: push-early means only
-    /// already-pushed work exists (the v1 learned this the hard way).
+    /// A failed checkpoint preserves the container; unpushed work may exist.
     pub async fn flush(
         &self,
         http: &reqwest::Client,
@@ -520,6 +557,7 @@ mod tests {
 
     fn rt() -> Runtime {
         Runtime {
+            fake: None,
             network: "mgr-net".into(),
             image: "ghcr.io/example-org/vm-base:0.1.0".into(),
             owner: "example-org".into(),

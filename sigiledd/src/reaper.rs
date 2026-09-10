@@ -37,11 +37,19 @@ pub async fn reap_pass(state: &crate::AppState, idle_max: u64) -> usize {
     let mut reaped = 0;
     for rec in state.sessions.live_records() {
         let Some(tok) = &rec.token else { continue };
-        let vm = crate::runtime::Runtime::vm_name(&rec.project);
+        let vm = rec.container();
         match rt.idle_secs(state.sessions.http(), &vm, tok).await {
             Ok(idle) if idle >= idle_max => {
-                reap(state, &rec.session_id, &format!("idle {idle}s")).await;
-                reaped += 1;
+                if reap_generation(
+                    state,
+                    &rec.session_id,
+                    &format!("idle {idle}s"),
+                    Some(rec.generation),
+                )
+                .await
+                {
+                    reaped += 1;
+                }
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(
@@ -57,34 +65,74 @@ pub async fn reap_pass(state: &crate::AppState, idle_max: u64) -> usize {
 
 /// Auto-close one session the reaper way: flush, destroy, drop the record.
 /// The branch survives on the repo as the orphan open() will resume.
-pub async fn reap(state: &crate::AppState, session_id: &str, reason: &str) {
+#[cfg(test)]
+pub async fn reap(state: &crate::AppState, session_id: &str, reason: &str) -> bool {
+    reap_generation(state, session_id, reason, None).await
+}
+pub(crate) async fn reap_generation(
+    state: &crate::AppState,
+    session_id: &str,
+    reason: &str,
+    expected: Option<u64>,
+) -> bool {
+    use crate::sessions::{Failure, Lifecycle};
+    let lock = state.sessions.session_lock(session_id);
+    let _guard = lock.lock().await;
     let Some(record) = state.sessions.record(session_id) else {
-        return;
+        return false;
     };
+    if expected.is_some_and(|g| g != record.generation || record.lifecycle != Lifecycle::Active) {
+        return false;
+    }
+    if record.token.is_some() && state.sessions.runtime.is_none() {
+        crate::sessions::failure(state, session_id, Failure::RuntimeUnavailable);
+        return false;
+    }
+    if !state.sessions.binding_safe(&record) {
+        crate::sessions::failure(state, session_id, Failure::LegacyOwnershipAmbiguous);
+        return false;
+    }
+    if state.sessions.runtime.is_some() && (!record.runtime_owned || record.token.is_none()) {
+        crate::sessions::failure(state, session_id, Failure::RuntimeNotOwned);
+        return false;
+    }
+    state.sessions.mark(session_id, Lifecycle::Closing, None);
+    if state.try_persist().is_err() {
+        crate::sessions::failure(state, session_id, Failure::PersistFailed);
+        return false;
+    }
     if let Some(rt) = &state.sessions.runtime {
-        let vm = crate::runtime::Runtime::vm_name(&record.project);
-        if let Some(tok) = &record.token {
-            let flushed = rt
-                .flush(state.sessions.http(), &vm, tok, &format!("reaper {reason}"))
-                .await;
-            if !flushed {
-                tracing::warn!(
-                    session = session_id,
-                    "reaper flush failed — only already-pushed work survives"
-                );
-            }
+        let Some(tok) = &record.token else {
+            crate::sessions::failure(state, session_id, Failure::FlushFailed);
+            return false;
+        };
+        if !rt
+            .flush(
+                state.sessions.http(),
+                &record.container(),
+                tok,
+                "session reap",
+            )
+            .await
+        {
+            crate::sessions::failure(state, session_id, Failure::FlushFailed);
+            return false;
         }
-        rt.destroy(&vm);
+        if !rt.destroy(&record.container()) {
+            crate::sessions::failure(state, session_id, Failure::CleanupFailed);
+            return false;
+        }
     }
     state.sessions.remove_record(session_id);
     state.events.record(
         &record.project,
         crate::auth::now_epoch(),
         crate::events::Event::SessionReaped {
-            session_id: session_id.to_string(),
-            branch: record.branch.clone(),
+            session_id: session_id.into(),
+            branch: record.branch,
         },
     );
     state.persist();
-    tracing::info!(session = session_id, project = %record.project, reason, "session reaped");
+    tracing::info!(session=session_id,project=%record.project,reason,"session reaped");
+    true
 }

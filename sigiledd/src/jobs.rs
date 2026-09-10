@@ -160,13 +160,18 @@ pub fn fires_between(
 /// The project's jobs, read from sigiled.toml (mgr.toml fallback) ON MASTER.
 /// Errors map straight to verb responses: Ok(vec![]) = no jobs declared,
 /// Err(Some(422 detail)) = broken manifest, Err(None) = unknown project.
-fn jobs_of(state: &crate::AppState, project: &str) -> Result<Vec<JobManifest>, Option<String>> {
-    manifest_of(state, project).map(|m| m.jobs)
+async fn jobs_of(
+    state: &crate::AppState,
+    project: &str,
+) -> Result<Vec<JobManifest>, Option<String>> {
+    manifest_of(state, project).await.map(|m| m.jobs)
 }
 
 /// The whole manifest ON MASTER, same error mapping as jobs_of. A repo with
 /// no manifest file is a legal empty manifest, not an error.
-fn manifest_of(state: &crate::AppState, project: &str) -> Result<Manifest, Option<String>> {
+async fn manifest_of(state: &crate::AppState, project: &str) -> Result<Manifest, Option<String>> {
+    let lock = state.sessions.merge_lock(project);
+    let _mirror = lock.lock().await;
     let repo = match &state.sessions.runtime {
         Some(rt) => rt.ensure_mirror(project).map_err(|_| None)?,
         None => {
@@ -203,7 +208,7 @@ pub async fn run(
     ) {
         return err(StatusCode::FORBIDDEN, denial.0);
     }
-    let jobs = match jobs_of(&state, &project) {
+    let jobs = match jobs_of(&state, &project).await {
         Ok(j) => j,
         Err(Some(detail)) => return err(StatusCode::UNPROCESSABLE_ENTITY, detail),
         Err(None) => return err(StatusCode::NOT_FOUND, format!("unknown project: {project}")),
@@ -255,7 +260,7 @@ async fn scheduler_tick(
 ) {
     let mut registry_changed = false;
     for p in state.registry.snapshot() {
-        let manifest = match manifest_of(state, &p.name) {
+        let manifest = match manifest_of(state, &p.name).await {
             Ok(m) => m,
             Err(Some(e)) => {
                 tracing::warn!(project = %p.name, %e, "broken manifest — project's jobs disabled");
@@ -353,6 +358,7 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
     let container = crate::runtime::Runtime::job_container(&project, &jm.name);
     let http = state.sessions.http().clone();
     let mut exit: Option<i64> = None;
+    let mut acquired = false;
     let outcome: Result<(String, Option<String>), String> = async {
         let mut extra: Vec<(String, String)> = Vec::new();
         for (env_name, stack_var) in &jm.secrets {
@@ -360,6 +366,8 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
                 .map_err(|_| format!("secret {env_name}: stack env {stack_var} is not set"))?;
             extra.push((env_name.clone(), v));
         }
+        let lock = state.sessions.merge_lock(&project);
+        let mirror_guard = lock.lock().await;
         let mirror = rt.ensure_mirror(&project)?;
         // DEC-25: jobs ride the project's declared image too — but batch has
         // no operator watching a shout, so a broken declaration FAILS the
@@ -370,6 +378,7 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
                 .await
                 .map_err(|e| format!("image resolve: {e}"))?
         };
+        drop(mirror_guard);
         if let Some(reason) = image.build_error {
             return Err(format!("session image: {reason}"));
         }
@@ -383,6 +392,7 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
             &image.used,
             &extra,
         )?;
+        acquired = true;
         rt.wait_healthy(&http, &container, &tok).await?;
         rt.boot_workspace(&http, &container, &project, &tok, &branch, false)
             .await?;
@@ -403,7 +413,9 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
         Ok(run_verdict(timed_out, exit, flushed))
     }
     .await;
-    rt.destroy(&container);
+    if acquired {
+        rt.destroy(&container);
+    }
     let (final_state, detail) = match outcome {
         Ok((s, d)) => (s, d),
         Err(e) => ("error".to_string(), Some(e)),

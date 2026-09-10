@@ -47,7 +47,15 @@ impl AppState {
     /// after each mutation: the state file is always one rename behind the
     /// truth, never more.
     pub fn persist(&self) {
-        self.store.save(&store::StateSnapshot {
+        if self.try_persist().is_err() {
+            tracing::error!("state persist failed; disk state is stale");
+        }
+    }
+    pub fn try_persist(&self) -> Result<(), String> {
+        // Serialize snapshot creation as well as atomic file replacement.
+        static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _save = SAVE.lock().unwrap();
+        self.store.try_save(&store::StateSnapshot {
             projects: self.registry.snapshot(),
             events: self.events.dump(),
             debts: self.sessions.dump_debts(),
@@ -55,7 +63,7 @@ impl AppState {
             sessions: self.sessions.dump_records(),
             apps: self.apps.dump(),
             job_runs: self.jobs.dump(),
-        });
+        })
     }
 
     /// Boot-time inverse of persist().
@@ -105,6 +113,8 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/projects/{project}/jobs/{job}/run", post(jobs::run))
         .route("/projects/{project}/jobs/{job}/runs", get(jobs::runs))
         .route("/projects/{project}/sessions", post(sessions::open))
+        .route("/sessions", get(sessions::list))
+        .route("/sessions/{session_id}", get(sessions::detail))
         .route("/sessions/{session_id}/close", post(sessions::close))
         .route("/sessions/{session_id}/recycle", post(sessions::recycle))
         .route("/auth/elevate", post(auth::elevate))
@@ -176,3 +186,6 @@ async fn main() {
     }
     axum::serve(listener, app(state)).await.expect("serve");
 }
+
+#[cfg(test)]
+mod session_tests;
