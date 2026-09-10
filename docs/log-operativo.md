@@ -1,3 +1,11 @@
+## 2026-09-10 — D2 fix round 1: unsafe provenance-link coverage (M1)
+
+Independent review approved D2 with one nonblocking coverage finding. Added controlled javascript:, data:, HTTP-userinfo and HTTPS-userinfo source-reference fixtures to the actual Memory browser-assets test. Each remains visible inert provenance text with no Open source reference link; ordinary HTTPS retains its source link with noopener/noreferrer. The harness blocks external requests and verifies rendering attempted none.
+
+Verification: only the amended Memory actual-assets suite was run, using the existing Playwright/headless Chromium runtime and controlled loopback fixtures; numeric target/d2-fix1-memory-ui.exit is 0 and the separate full log records both M1 and the existing Memory scenarios passing. No production implementation, API, routing or consumer contract changed. No unchanged backend, shared-browser, provider or full-workspace suite was repeated. Complete first-class read receipts and logs are retained in the orchestration evidence package.
+
+Current/next: M1 coverage is closed pending scoped re-review; D3's verified source ownership association and E's live release checks remain as recorded below. No live data, deployment, inference or session-lifecycle action occurred. The existing session remains open for parent review.
+
 ## 2026-09-10 — D2 Memory browser and fixed typed adapter
 
 Where we were: accepted B3b/C2 common browser and accepted D1 Memory curation contract, with no deployed D1 upgrade. Where we are going: a common Memory working surface followed by D3 verified namespace/document enrollment and E live release verification.

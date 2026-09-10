@@ -10,6 +10,18 @@ const id = 'm_00000000-0000-4000-8000-000000000001';
 const chunk = (id, text) => ({ id, idx: 'atlas', text, source: 'git', ref: 'https://example.test/controlled-fixture', path: 'docs/decision.md', span: '1-4', ts: 1789041600, sha: 'fixture-indexed-abc', tags: ['controlled-fixture'], target: { kind: 'document', source: 'git', ref: 'https://example.test/controlled-fixture', path: 'docs/decision.md' }, curation: overlay() });
 let manual = { id, revision: '9007199254740993', text: 'A controlled manual memory', tags: ['controlled-fixture'], actor, created_by: actor, updated_at: 1789041600, deleted: false, projection: 'pending' };
 const imported = chunk('source1', 'Imported controlled fixture: <img src=x onerror=alert(1)>');
+// Synthetic provenance only; unsafe references must stay inert text.
+const unsafeSourceLinks = new Map([
+    ['unsafe-javascript', 'javascript:window.__unsafeMemoryLink=true'],
+    ['unsafe-data', 'data:text/html,<script>window.__unsafeMemoryLink=true</script>'],
+    ['unsafe-http-userinfo', 'http://fixture-user:fixture-password@example.test/controlled-source'],
+    ['unsafe-https-userinfo', 'https://fixture-user:fixture-password@example.test/controlled-source'],
+].map(([id, ref]) => {
+    const record = chunk(id, 'Controlled unsafe source-reference fixture ' + id);
+    record.ref = ref;
+    record.target.ref = ref;
+    return [id, record];
+}));
 const legacy = chunk('legacy1', 'Legacy manual provenance');
 legacy.source = 'manual';
 legacy.ref = 'memory:' + id;
@@ -52,7 +64,8 @@ const server = http.createServer(async (req, res) => {
             if (u.pathname.includes('/chunks/')) {
                 if (detailDelay)
                     await new Promise(r => setTimeout(r, detailDelay));
-                return reply(u.pathname.endsWith('legacy1') ? legacy : imported);
+                const fixture = unsafeSourceLinks.get(u.pathname.split('/').pop());
+                return reply(fixture || (u.pathname.endsWith('legacy1') ? legacy : imported));
             }
             if (u.pathname.endsWith('/history'))
                 return reply({ items: [manual], next_after: null });
@@ -127,6 +140,14 @@ const server = http.createServer(async (req, res) => {
         page.setDefaultTimeout(5000);
         const errors = [];
         page.on('pageerror', e => errors.push(String(e)));
+        const externalRequests = [];
+        await page.route('**/*', route => {
+            if (new URL(route.request().url()).origin !== base) {
+                externalRequests.push(route.request().url());
+                return route.abort();
+            }
+            return route.continue();
+        });
         await page.goto(base + '/ui/memory?index=atlas');
         await page.getByRole('heading', { name: 'Memory', exact: true, level: 1 }).waitFor();
         await page.getByRole('button', { name: 'New manual memory', exact: true }).waitFor();
@@ -135,6 +156,25 @@ const server = http.createServer(async (req, res) => {
         assert.equal(await page.locator('img').count(), 0);
         assert.equal(await page.getByRole('button', { name: 'Edit source', exact: true }).isDisabled(), true);
         assert.equal(await page.getByLabel('Memory text', { exact: true }).count(), 0);
+        const sourceLink = page.getByRole('link', { name: 'Open source reference', exact: true });
+        assert.equal(await sourceLink.getAttribute('href'), imported.ref, 'ordinary HTTPS provenance remains navigable');
+        assert.equal(await sourceLink.getAttribute('target'), '_blank');
+        assert.match(await sourceLink.getAttribute('rel'), /noopener/);
+        assert.match(await sourceLink.getAttribute('rel'), /noreferrer/);
+        for (const fixture of unsafeSourceLinks.values()) {
+            await page.goto(base + '/ui/memory?index=atlas&memory=' + fixture.id);
+            await page.getByRole('heading', { name: 'Source document', exact: true }).waitFor();
+            await page.locator('.memory-detail').getByText(fixture.text, { exact: true }).waitFor();
+            await page.locator('.memory-provenance').getByText(fixture.ref, { exact: true }).waitFor();
+            assert.equal(await page.getByRole('link', { name: 'Open source reference', exact: true }).count(), 0, fixture.id + ' must not become a source link');
+            assert.equal(await page.locator('.memory-detail a[href^="javascript:"], .memory-detail a[href^="data:"]').count(), 0);
+            assert.equal(await page.evaluate(() => window.__unsafeMemoryLink), undefined);
+        }
+        assert.deepEqual(externalRequests, [], 'provenance rendering must not fetch any source reference');
+        await page.goto(base + '/ui/memory?index=atlas&memory=source1');
+        await page.getByRole('heading', { name: 'Source document', exact: true }).waitFor();
+        assert.equal(await page.getByRole('link', { name: 'Open source reference', exact: true }).getAttribute('href'), imported.ref);
+        console.log('PASS M1: javascript/data and HTTP/HTTPS userinfo references render as inert provenance text; ordinary HTTPS retains its safe source link; no external requests');
         await page.getByLabel('Annotation', { exact: true }).fill('A correction that survives indexing');
         await page.getByRole('button', { name: 'Refresh', exact: true }).click();
         await page.waitForTimeout(100);
