@@ -57,6 +57,8 @@ fn legacy_owned() -> bool {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
+    #[serde(default)]
+    pub handoff: Option<serde_json::Value>,
     pub session_id: String,
     pub project: String,
     pub branch: String,
@@ -91,6 +93,12 @@ impl std::fmt::Debug for SessionRecord {
     }
 }
 impl SessionRecord {
+    pub fn handoff_pending(&self) -> bool {
+        self.handoff
+            .as_ref()
+            .is_some_and(|v| !matches!(v["phase"].as_str(), Some("complete" | "failed")))
+    }
+
     pub fn container(&self) -> String {
         self.binding
             .as_ref()
@@ -393,6 +401,7 @@ async fn open_inner(
     }
     let rt = state.sessions.runtime.as_ref();
     let mut record = SessionRecord {
+        handoff: None,
         session_id: id.clone(),
         project: project.clone(),
         branch: format!("session/{id}"),
@@ -577,6 +586,9 @@ pub(crate) async fn close_expected(
     if let Err(e) = authorized(&actor, &record, &state, Action::CloseSession) {
         return err(StatusCode::FORBIDDEN, e);
     }
+    if record.handoff_pending() {
+        return err(StatusCode::CONFLICT, "handoff_recovery_required");
+    }
     if record.token.is_some() && state.sessions.runtime.is_none() {
         return failure(&state, &id, Failure::RuntimeUnavailable);
     }
@@ -678,6 +690,9 @@ pub async fn recycle(
     };
     if let Err(e) = authorized(&actor, &record, &state, Action::Recycle) {
         return err(StatusCode::FORBIDDEN, e);
+    }
+    if record.handoff_pending() {
+        return err(StatusCode::CONFLICT, "handoff_recovery_required");
     }
     if record.token.is_some() && state.sessions.runtime.is_none() {
         return failure(&state, &id, Failure::RuntimeUnavailable);

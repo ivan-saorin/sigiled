@@ -29,6 +29,7 @@ struct Agent {
     repository_root: PathBuf,
     editor_address: String,
     checkpoint_busy: Arc<std::sync::atomic::AtomicBool>,
+    handoff_observation: std::sync::Mutex<serde_json::Value>,
     process: tokio::sync::Mutex<Option<Process>>,
     activity: std::sync::Mutex<Activity>,
     sync: Arc<tokio::sync::Mutex<()>>,
@@ -504,6 +505,7 @@ async fn main() {
         repository_root: "/workspace".into(),
         editor_address: "127.0.0.1:8091".into(),
         checkpoint_busy: Default::default(),
+        handoff_observation: Default::default(),
         process: Default::default(),
         activity: Default::default(),
         sync: Default::default(),
@@ -533,6 +535,11 @@ fn router(a: Arc<Agent>) -> Router {
         .route("/stop", post(stop))
         .route("/checkpoint", post(checkpoint))
         .route("/finish", post(finish))
+        .route(
+            "/handoff",
+            post(handoff).layer(axum::extract::DefaultBodyLimit::max(1100000)),
+        )
+        .route("/handoff-status/{id}", get(handoff_status))
         .route("/activity", post(activity))
         .route(
             "/file-target",
@@ -623,7 +630,7 @@ async fn file_target_probe(State(a): State<Arc<Agent>>, Json(probe): Json<FilePr
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn agent() -> Arc<Agent> {
+    pub(super) fn agent() -> Arc<Agent> {
         Arc::new(Agent {
             config: Config {
                 token: "control-generation-one-0123456789".into(),
@@ -638,6 +645,7 @@ mod tests {
             repository_root: "/workspace".into(),
             editor_address: "127.0.0.1:0".into(),
             checkpoint_busy: Default::default(),
+            handoff_observation: Default::default(),
             process: Default::default(),
             activity: Default::default(),
             sync: Default::default(),
@@ -1081,5 +1089,125 @@ mod tests {
         assert_eq!(&echo, b"ping");
         fake.await.unwrap();
         server.abort();
+    }
+}
+
+async fn handoff(
+    State(a): State<Arc<Agent>>,
+    Json(r): Json<sigil_ide_agent::handoff::Request>,
+) -> Response {
+    if r.generation != a.config.generation.to_string()
+        || sigil_ide_agent::handoff::validate(&r).is_err()
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"invalid_handoff_generation_or_bundle"})),
+        )
+            .into_response();
+    }
+    {
+        let mut observation = a.handoff_observation.lock().unwrap();
+        if observation["phase"] == "busy" {
+            return (StatusCode::CONFLICT, Json(json!({"error":"handoff_busy"}))).into_response();
+        }
+        *observation = json!({"operation_id":r.operation_id,"phase":"busy"});
+    }
+    let operation_id = r.operation_id.clone();
+    match tokio::spawn(async move {
+        let execute = async {
+            let mut process = a.process.lock().await;
+            if a.activity.lock().unwrap().busy() {
+                return Err("user_command_running");
+            }
+            stop_locked(&a, &mut process).await?;
+            let serial = a.sync.clone().lock_owned().await;
+            let repo = repository(&a);
+            let result = tokio::task::spawn_blocking(move || {
+                let _serial = serial;
+                sigil_ide_agent::handoff::apply(&repo, r)
+            })
+            .await
+            .map_err(|_| "handoff_interrupted")?;
+            drop(process);
+            result
+        }
+        .await;
+        match execute {
+            Ok(r) => {
+                *a.handoff_observation.lock().unwrap() =
+                    json!({"operation_id":operation_id,"phase":"complete","receipt":r});
+                Json(r).into_response()
+            }
+            Err(e) => {
+                *a.handoff_observation.lock().unwrap() =
+                    json!({"operation_id":operation_id,"phase":"failed","error":e});
+                (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error":e,"work_preserved":true})),
+                )
+                    .into_response()
+            }
+        }
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"handoff_interrupted","work_preserved":true})),
+        )
+            .into_response(),
+    }
+}
+
+async fn handoff_status(
+    State(a): State<Arc<Agent>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let v = a.handoff_observation.lock().unwrap();
+    Json(
+        json!({"contract":"sigil-handoff-v1","generation":a.config.generation.to_string(),"operation_id":id,"observation":if v["operation_id"]==id{v.clone()}else{json!({"phase":"unknown"})}}),
+    )
+}
+
+#[cfg(test)]
+mod handoff_owner_tests {
+    use super::*;
+    #[tokio::test]
+    async fn handoff_rejects_unknown_editor_before_files_and_publishes_terminal_failure() {
+        let mut a = super::tests::agent();
+        let dir = std::env::temp_dir().join(format!("handoff-owner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".editor-running"), []).unwrap();
+        Arc::get_mut(&mut a).unwrap().config.profile = dir.to_string_lossy().into();
+        let r = sigil_ide_agent::handoff::Request {
+            generation: u64::MAX.to_string(),
+            operation_id: "operation1".into(),
+            run_id: "run1".into(),
+            slug: "fixture".into(),
+            files: vec![
+                sigil_ide_agent::handoff::File {
+                    path: "docs/design/fixture/cover.md".into(),
+                    content: "cover".into(),
+                },
+                sigil_ide_agent::handoff::File {
+                    path: "docs/design/fixture/dossier.md".into(),
+                    content: "dossier".into(),
+                },
+            ],
+        };
+        let response = handoff(State(a.clone()), Json(r)).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["error"],
+            "editor_ownership_unknown"
+        );
+        let Json(status) = handoff_status(State(a), axum::extract::Path("operation1".into())).await;
+        assert_eq!(status["observation"]["phase"], "failed");
+        assert!(dir.join(".editor-running").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

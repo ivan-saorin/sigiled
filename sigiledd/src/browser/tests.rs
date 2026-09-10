@@ -1807,3 +1807,70 @@ async fn review_c2_i1_large_valid_inventory() {
 async fn review_c2_i1_populated_detail() {
     large_review_projection(true).await;
 }
+
+#[tokio::test]
+async fn research_routes_require_exact_origin_csrf_and_live_browser_login() {
+    let f = Fixture::new().await;
+    let (cookie, session) = f.signed_in().await;
+    for path in [
+        "/browser/api/projects/demo/research",
+        "/browser/api/research/run1",
+        "/browser/api/research/run1/handoff",
+    ] {
+        let body = if path.ends_with("handoff") {
+            json!({"session_id":"fixture","generation":"9007199254740993","bundle_digest":"x"})
+        } else if path.ends_with("/run1") {
+            json!({"action":"resume","expected_revision":"9007199254740993"})
+        } else {
+            json!({"operation_id":"operation1","problem":"fixture"})
+        };
+        for (origin, csrf) in [
+            ("https://evil.test", session["csrf_token"].as_str().unwrap()),
+            ("https://sigil.test", "wrong"),
+        ] {
+            assert_eq!(
+                f.request(reqwest::Method::POST, path)
+                    .header("cookie", &cookie)
+                    .header("origin", origin)
+                    .header("x-sigil-csrf", csrf)
+                    .json(&body)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        assert_eq!(
+            f.request(reqwest::Method::POST, path)
+                .header("origin", "https://sigil.test")
+                .header("x-sigil-csrf", session["csrf_token"].as_str().unwrap())
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let b = f.state.browser.inner().unwrap();
+    {
+        let store = b.store.lock().unwrap();
+        let session = store
+            .sessions
+            .get(cookie.split_once('=').unwrap().1)
+            .unwrap();
+        session
+            .last_seen
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+    assert_eq!(
+        f.request(reqwest::Method::GET, "/browser/api/research")
+            .header("cookie", cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}

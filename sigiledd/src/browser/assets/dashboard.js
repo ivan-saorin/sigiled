@@ -1,5 +1,7 @@
 /* Sigil browser shell. Data enters the DOM only through textContent/text nodes. */
 'use strict';
+const researchDrafts = new Map();
+let researchSelection = 0;
 const $ = id => document.getElementById(id);
 const el = (tag,attrs = {
 }
@@ -108,7 +110,7 @@ function showAuth() {
   ),button('Check sign-in',async() => {
     try {
       await checkSession();
-      notice('Signed in. Review your draft and choose Save when ready.','good');
+      notice((route?.view==="research"||route?.tab==="research")?"Signed in. Review your research before starting or retrying.":route?.view==="models"?"Signed in. Model observations can be refreshed.":"Signed in. Review your draft and choose Save when ready.","good");
       await refresh();
     }
     catch {
@@ -224,6 +226,8 @@ function renderRoute() {
   else if(['overview','projects'].includes(route.view)) {
     renderOverviewShell();
   }
+  else if(route.view === "research") { heading("Research","Inspect runs and their actual stage outcomes"); $("content").append(researchShell(null)); return; }
+  else if(route.view === "models") { heading("Models","Models and recent observed requests");const root=el("section",{id:"models-root"},el("p",{role:"status"}),el("div",{class:"models-data"}));root.intent=0;$("content").append(root);modelsView(root);return; }
   else {
     heading(label(route.view),'Shared workspace');
     $('content').append(empty(route.view === 'memory'?'Memory curation is pending its reviewed browser adapter. Existing project memory declarations appear on each project.':route.view === 'research'?'Research orchestration is pending its reviewed service adapter. No research has been started from this dashboard.':'Model inventory and inference are pending the reviewed Models adapter. No model calls have been made.'));
@@ -234,6 +238,7 @@ function renderRoute() {
   else $('connection').textContent = 'Sign in to load project observations';
 }
 function renderOverviewShell() {
+  if(route.view==="overview")$("content").append(el("section",{},el("h2",{},"Research attention"),el("div",{id:"research-attention"},"Loading research observations…")));
   heading(route.view === 'overview'?'Overview':'Projects','Your projects and ongoing work',link('New project','/ui/projects/new', {
     class:'button primary'
   }
@@ -640,9 +645,7 @@ function renderProject(p) {
     }
     ,'Memory curation is pending its browser adapter.'),facts([['Sharing',label(p.memory?.sharing || 'private')]]));
     break;
-    case'research':panel.append(el('h2', {
-    }
-    ,'Research'),empty('Research is pending its reviewed orchestration adapter. No workflow has been started from this dashboard.'));
+    case'research':panel.append(target.querySelector("#research-root") || researchShell(route.project));
     break;
     default:panel.append(empty('This project tab is not available.'));
   }
@@ -665,6 +668,8 @@ async function loadJob(name,offset = 0) {
   }
 }
 async function refresh() {
+  if(session && !document.hidden && route.view==="research") {$("research-root")?.load();return;}
+  if(session && !document.hidden && route.view==="models") {const root=$("models-root");if(root)modelsView(root);return;}
   if(!session || document.hidden || route.newProject || !['overview','projects'].includes(route.view))return;
   controller?.abort();
   controller = new AbortController();
@@ -681,6 +686,7 @@ async function refresh() {
       current = p;
       renderProject(p);
       if(route.tab === 'pending')await loadItems(signal,g);
+      if(route.tab==="research")await $("research-root")?.load();
     }
     else {
       let offset = 0,rows = [],data,inventoryRevision = null,inventoryTotal = null;
@@ -715,6 +721,7 @@ async function refresh() {
       renderProjects();
       if($('attention')) {
         replaceLive($('attention'),attentionList(attention));
+        researchAttention();
         if(data.attention.total>attention.length)$('attention').append(el('p', {
           class:'metadata'
         }
@@ -1047,3 +1054,122 @@ checkSession().then(() => refresh()).catch(e => {
   if(e.status !== 401)notice(errorText(e),'error');
 }
 );
+
+// Research operation drafts survive auth recovery and rendered instances.
+function inspectText(title,value) {return el('details',{},el('summary',{},title),el('pre',{class:'research-text'},typeof value==='string'?value:JSON.stringify(value,null,2)));}
+function researchFailure(e) {return ({workspace_changes_checkpoint_and_retry:"The workspace has uncommitted changes. Save and checkpoint them, then retry this handoff.",handoff_quarantined_recheck_operation:"The handoff result is not confirmed. The workspace is protected; recheck this same handoff.",editor_ownership_unknown:"The editor could not be safely paused. Workspace recovery is required.",workspace_changed:"The workspace changed during handoff. Your edits are preserved.",research_service_update_or_storage_repair_required:'Research service update or storage repair required. Existing runs remain readable.',research_operation_storage_required:'Durable research operation storage must be configured.',service_authorization_required:'Sign in again, then deliberately retry. Completed stages are preserved.',service_state_conflict:'The run changed or is no longer eligible. Refresh before retrying.',research_revision_conflict:'The run changed. Refresh and review its current stage.',research_project_association_required:'This run has no verified project association in Sigil.',research_operation_store_repair_required:'Operation storage needs repair. Keep the existing operation; do not start a replacement.'})[e.message]||errorText(e);}
+function researchShell(project) {
+ const root=el('section',{id:'research-root'}),message=el('p',{role:'status'}),list=el('div',{class:'research-list'}),detail=el('div',{class:'research-detail'});
+ root.append(message);
+ if(project)researchForm(root,project);
+ else root.append(el('p',{},'Start research from a project’s Research tab. Older or externally created runs remain unassociated.'));
+ root.append(el('div',{class:'research-layout'},list,detail));
+ root.load=async(cursor=null)=>{
+  const intent=++root.loadIntent;message.textContent='Loading research observations…';
+  try {
+   const q=new URLSearchParams();if(project)q.set('project',project);if(cursor)q.set('cursor',cursor);
+   const data=await request('/browser/api/research?'+q);
+   $("connection").textContent=data.state==="observed"?"Research observed "+date(data.observed_at):"Research observations unavailable";root.ready=data.readiness==="ready";if(root.startButton)root.startButton.disabled=!root.accepted && (!root.ready || root.pending);
+   if(!root.isConnected || intent!==root.loadIntent)return;
+   message.textContent=data.state==='observed'?`Observed ${date(data.observed_at)}. ${data.readiness==='ready'?'Research service ready.':'Research service update or storage repair required before starting or resuming.'}`:'Research service unavailable. Previous observations may be stale. Retry to check again.';
+   if(data.state!=='observed')return;
+   const rows=data.runs.map(r=>el('article',{},button(r.problem,()=>researchDetail(root,detail,r.run_id)),el('p',{},badge(r.status),' ',r.association.project||'Unassociated'),el('small',{},r.updated_at||r.created_at)));
+   replaceLive(list,el('div',{},rows.length?rows:empty('No research runs in this page.'),data.next_cursor?button('Next page',()=>root.load(data.next_cursor)):null));
+   const selected=new URLSearchParams(location.search).get('run');if(selected && !detail.childNodes.length)researchDetail(root,detail,selected);
+  }catch(e){if(root.isConnected && intent===root.loadIntent)message.textContent=researchFailure(e)+' Previous observations may be stale.';}
+ };
+ root.loadIntent=0;root.load();return root;
+}
+function researchForm(root,project) {
+ let d=researchDrafts.get(project);if(!d){d={id:crypto.randomUUID(),problem:'',context:'',pending:false,sent:null,accepted:null,papers:4,aperture:1};researchDrafts.set(project,d);}
+ const form=el('form',{class:'research-form'}),problem=el('textarea',{id:'research-problem',required:true,maxlength:32768,rows:3}),context=el('textarea',{id:'research-context',maxlength:32768,rows:3}),count=el('input',{type:'number',id:'research-papers',min:1,max:10,value:4}),aperture=el('input',{type:'number',id:'research-aperture',min:1,max:3,value:1});
+ problem.value=d.problem;context.value=d.context;count.value=d.papers||4;aperture.value=d.aperture||1;count.oninput=()=>{d.papers=Number(count.value);};aperture.oninput=()=>{d.aperture=Number(aperture.value);};problem.oninput=()=>{d.problem=problem.value;};context.oninput=()=>{d.context=context.value;};
+ const feedback=el('p',{role:'status'}),start=el('button',{type:'submit',class:'primary'},d.accepted?'View run':d.sent?'Retry start':'Start research');root.startButton=start;root.accepted=!!d.accepted;start.disabled=!d.accepted;
+ form.append(el('h2',{},'New research'),el('label',{for:'research-problem'},'Problem'),problem,el('label',{for:'research-context'},'Context'),context,el('div',{class:'research-options'},el('label',{for:'research-papers'},'Papers per category',count),el('label',{for:'research-aperture'},'Search plan variations',aperture)),el('p',{},'Starting research can use paid model providers. The service completes all research stages automatically.'),start,feedback);
+ form.onsubmit=async(e)=>{
+  e.preventDefault();if(d.accepted){researchDetail(root,root.querySelector(".research-detail"),d.accepted);return;}if(d.pending)return;d.pending=true;root.pending=true;start.disabled=true;
+  try {
+   if(!d.sent)d.sent={operation_id:d.id,problem:d.problem,context:d.context,options:{papers_per_category:Number(d.papers),aperture:Number(d.aperture)}};
+   await checkSession();
+   const result=await request(`/browser/api/projects/${encodeURIComponent(project)}/research`,{method:"POST",body:JSON.stringify(d.sent)});
+   d.accepted=result.run_id;root.accepted=true;feedback.replaceChildren("Research accepted. "+(d.context!==d.sent.context||d.problem!==d.sent.problem?"Newer edits remain unsent. Choose New research to use them. ":""),button("New research",()=>{researchDrafts.set(project,{...d,id:crypto.randomUUID(),sent:null,accepted:null,pending:false});const next=researchShell(project);root.replaceWith(next);}));
+   start.textContent='View run';root.load();
+  }catch(e){feedback.textContent=researchFailure(e)+' The start result may be unknown. Retry start reuses the original submitted problem and options; newer edits stay unsent.';start.textContent='Retry start';}
+  finally{d.pending=false;root.pending=false;start.disabled=!d.accepted && !root.ready;}
+ };
+ root.append(form);
+ const recoveryList=el('div',{});root.append(recoveryList);
+ request(`/browser/api/projects/${encodeURIComponent(project)}/research/operations`).then(data=>{
+  if(!root.isConnected)return;
+  for(const operation of data.operations.filter(o=>o.handoff && o.handoff.phase!=="complete")){recoveryList.append(button("Recover project handoff: "+operation.problem,async()=>{try{const p=await request(`/browser/api/research/${encodeURIComponent(operation.run_id)}/handoff`);if(root.isConnected)recoveryList.append(handoffPanel(p,operation.run_id));}catch(e){feedback.textContent=researchFailure(e);}}));}
+  for(const operation of data.operations.filter(o=>o.state==='acceptance_unknown')){
+   let busy=false;const b=button('Recover '+operation.problem,async()=>{if(busy)return;busy=true;b.disabled=true;try{await checkSession();const r=await request(`/browser/api/projects/${encodeURIComponent(project)}/research/operations/${encodeURIComponent(operation.operation_id)}/recover`,{method:'POST'});researchDetail(root,root.querySelector('.research-detail'),r.run_id);b.remove();root.load();}catch(e){feedback.textContent=researchFailure(e);}finally{busy=false;b.disabled=false;}});recoveryList.append(b);
+  }
+ }).catch(e=>{if(root.isConnected)feedback.textContent=researchFailure(e);});
+}
+async function researchDetail(root,target,id) {
+ const intent=++researchSelection;target.replaceChildren(empty('Loading run…'));
+ try {
+  const r=await request('/browser/api/research/'+encodeURIComponent(id));
+  if(!root.isConnected || intent!==researchSelection)return;
+  const url=new URL(location.href);url.searchParams.set('run',id);history.replaceState({},'',url);
+  const feedback=el('p',{role:'status'});let pending=false;
+  const perform=async(action,output)=>{
+   if(pending)return;pending=true;
+   try{await checkSession();await request('/browser/api/research/'+encodeURIComponent(id),{method:'POST',body:JSON.stringify({action,expected_revision:r.revision,...(output===undefined?{}:{output})})});if(root.isConnected && intent===researchSelection){await researchDetail(root,target,id);root.load();}}
+   catch(e){feedback.textContent=researchFailure(e)+' No automatic retry was made. Refresh the run before another action.';}
+   finally{pending=false;}
+  };
+  target.replaceChildren(el('h2',{},r.problem),el('p',{},badge(r.status),' ',r.association.project||'Unassociated'),feedback);
+  if(r.detail)target.append(el('p',{class:'warning'},r.detail));
+  target.append(el('ol',{class:'stage-timeline'},r.stages.map(s=>el('li',{},el('strong',{},label(s.stage)),' ',badge(s.status),el('p',{},s.computed_by||'No computation provenance recorded'),s.detail?el('p',{class:'warning'},s.detail):null,s.catalog_attempt?el('small',{},'Catalog attempt '+s.catalog_attempt):null))));
+  if(r.status==='failed')target.append(el('p',{},'Completed stages stay intact. An explicit resume may repeat unfinished work that was not checkpointed.'),button('Resume unfinished stages',()=>perform('resume')));
+  if(r.awaiting)target.append(el('p',{class:'warning'},'Waiting for caller until '+r.awaiting.deadline),inspectText('Exact caller stage payload',r.awaiting));
+  if(r.artifacts.arxiv_only)target.append(el('p',{class:'warning'},'Evidence is arXiv only; wider web evidence did not contribute.'));
+  if(r.status==='done' && !r.artifacts.outcome)target.append(el('p',{class:'warning'},'Stages finished without a decision. Supply a valid convergence result to regenerate the dossier and enable handoff.'));
+  if(r.awaiting || (r.status==='done'&&!r.artifacts.outcome)){
+   const input=el('textarea',{'aria-label':'Stage result JSON',rows:7}),stage=r.awaiting?.stage||'converge';
+   target.append(el('details',{},el('summary',{},'Submit an existing '+stage+' result'),el('p',{},'Paste the exact SDE stage output JSON. The service validates its schema and citations.'),input,button('Submit stage result',()=>{try{perform(stage,JSON.parse(input.value));}catch{feedback.textContent='Enter valid JSON before submitting.';}})));
+  }
+  target.append(inspectText('Corpus',r.artifacts.corpus),inspectText('Decision',r.artifacts.outcome),inspectText('Dossier',r.artifacts.dossier||'Not available'),inspectText('Catalog provenance',r.catalog_attempts));
+  if(r.artifacts.adhd_run_id)target.append(button('Inspect ADHD run '+r.artifacts.adhd_run_id,async()=>{try{const a=await request(`/browser/api/research/${encodeURIComponent(id)}/adhd`);if(root.isConnected && intent===researchSelection)target.append(inspectText('Recorded ADHD detail',a));}catch(e){feedback.textContent=researchFailure(e);}}));
+  if(r.handoff_available && r.association.project)target.append(button('Preview project handoff',async()=>{try{const p=await request(`/browser/api/research/${encodeURIComponent(id)}/handoff`);if(root.isConnected && intent===researchSelection)target.append(handoffPanel(p,id));}catch(e){feedback.textContent=researchFailure(e);}}));
+ }catch(e){if(root.isConnected && intent===researchSelection)target.replaceChildren(empty(researchFailure(e)),button('Retry run',()=>researchDetail(root,target,id)));}
+}
+async function modelsView(root) {
+ const intent=++root.intent;const feedback=root.querySelector('[role=status]');feedback.textContent='Loading model observations…';
+ try {
+  const d=await request('/browser/api/models');if(!root.isConnected||intent!==root.intent)return;
+  feedback.textContent='Observed '+date(d.observed_at);$("connection").textContent="Observed "+date(d.observed_at)+([d.status,d.info,d.usage].some(s=>s.state!=="observed")?"; some model observations unavailable":"");const body=root.querySelector('.models-data');body.replaceChildren();
+  body.append(el('p',{},'Recent observation window. Records may be missing, and requests are not attributed to projects. This is not complete billing. Unknown token counts remain unknown.'));
+  if(d.status.state==='observed'){const s=d.status.data;body.append(el('h2',{},'Bound model slots'),makeTable(['Slot','Provider kind','Model','Download','Loaded'],s.slots.map(s=>[s.provider+'/'+s.size,s.kind,s.model,s.download_error?'Download error':s.download_progress?JSON.stringify(s.download_progress):s.downloaded?'Downloaded':'Not downloaded',s.loaded?'Loaded':'Not loaded'])),inspectText('Local model lock holder',s.lock));}else body.append(empty('Model status '+label(d.status.state)));
+  if(d.usage.state==='observed')body.append(el('h2',{},'Recent requests'),makeTable(['Model','Time','Input tokens','Output tokens','Status'],d.usage.data.entries.map(u=>[u.provider+'/'+u.size+' '+u.model,new Date(u.ts_ms).toLocaleString(),u.input_tokens??'Unknown',u.output_tokens??'Unknown',u.status])));else body.append(empty('Recent usage '+label(d.usage.state)));
+  if(d.info.state==='observed')body.append(inspectText('Available models and downloaded artifacts',d.info.data));else body.append(empty('Model catalog '+label(d.info.state)));
+ }catch(e){if(root.isConnected&&intent===root.intent)feedback.textContent=researchFailure(e)+' Previous model observations may be stale.';}
+}
+
+function handoffPanel(p,id) {
+ const panel=el('section',{class:'handoff-preview'},el('h3',{},'Handoff to '+p.project));
+ panel.append(el('p',{},'Save your editor buffers before continuing. This action pauses the editor and commits only these dossier files to the project’s session branch. It does not merge to master or index memory.'));
+ for(const file of p.bundle.files)panel.append(inspectText(file.path,file.content));
+ const feedback=el('p',{role:'status'});let busy=false,completed=false;
+ const commit=button(p.recovery?'Recover this handoff':'Pause editor and commit dossier',async()=>{
+  if(busy)return;busy=true;commit.disabled=true;
+  try{
+   await checkSession();
+   const workspace=p.recovery||await request(`/browser/api/projects/${encodeURIComponent(p.project)}/ide`,{method:'POST',body:JSON.stringify({idempotency_key:'research-handoff-'+id})});
+   const receipt=await request(`/browser/api/research/${encodeURIComponent(id)}/handoff`,{method:'POST',body:JSON.stringify({session_id:workspace.session_id,generation:workspace.generation,bundle_digest:p.bundle.digest})});
+   completed=true;commit.textContent="Dossier committed";
+   feedback.replaceChildren('Committed and pushed on the session branch: '+receipt.commit+'. '+(receipt.dirty?'Concurrent changes remain in the workspace. ':'')+'Master acceptance and memory indexing are still pending. ',button('Open IDE',()=>openIDE(p.project)));
+  }catch(e){feedback.textContent=researchFailure(e)+' Work is preserved. Retry this handoff after resolving the reported condition.';}
+  finally{busy=false;commit.disabled=completed;}
+ });panel.append(commit,feedback);return panel;
+}
+async function researchAttention() {
+ const target=document.getElementById('research-attention');if(!target)return;const g=generation;
+ try {const data=await request('/browser/api/research');if(g!==generation||!target.isConnected)return;
+  if(data.state!=='observed'){target.textContent='Research attention unavailable; existing observations may be stale.';return;}
+  const runs=data.runs.filter(r=>['failed','awaiting_caller'].includes(r.status));
+  replaceLive(target,el('div',{},runs.length?runs.map(r=>el('p',{},badge(r.status),' ',link(r.problem,'/ui/research?run='+encodeURIComponent(r.run_id)))):empty('No research failures or caller waits in the latest page.'),data.next_cursor?link('Review further research pages','/ui/research'):null));
+ }catch{if(g===generation&&target.isConnected)target.textContent='Research attention unavailable.';}
+}

@@ -37,7 +37,7 @@ pub fn lock(root: &Path) -> Result<Lock, Error> {
     Ok(Lock(file))
 }
 impl Repository {
-    fn git(&self, args: &[&str], deadline: Instant) -> Result<String, Error> {
+    pub(crate) fn git(&self, args: &[&str], deadline: Instant) -> Result<String, Error> {
         let mut command = crate::bounded_process::git_command();
         command
             .arg("-C")
@@ -64,7 +64,7 @@ impl Repository {
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim().into())
     }
-    fn validate(&self, deadline: Instant) -> Result<String, Error> {
+    pub(crate) fn validate(&self, deadline: Instant) -> Result<String, Error> {
         if !self.branch.starts_with("session/")
             || self.branch.contains(['\n', ':', ' '])
             || self.remote.is_empty()
@@ -163,7 +163,7 @@ impl Repository {
 mod tests {
     use super::*;
     use std::process::Command;
-    fn git(root: &Path, args: &[&str]) -> String {
+    pub(crate) fn git(root: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .arg("-C")
             .arg(root)

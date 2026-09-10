@@ -3,6 +3,7 @@ mod config;
 mod dashboard;
 pub(crate) mod ide_gateway;
 mod provider;
+mod research;
 use crate::{
     auth::{self, Actor},
     AppState,
@@ -37,6 +38,7 @@ struct Inner {
     provider: provider::Provider,
     store: Mutex<Store>,
     gateway: ide_gateway::Gateway,
+    research: research::Services,
 }
 #[derive(Default)]
 struct Store {
@@ -91,6 +93,7 @@ impl BrowserState {
             provider: provider::Provider::new(),
             store: Mutex::new(Store::default()),
             gateway: ide_gateway::Gateway::default(),
+            research: research::Services::default(),
         }))))
     }
     fn inner(&self) -> Result<Arc<Inner>, Error> {
@@ -630,6 +633,29 @@ pub fn router(state: AppState) -> Router {
         .route("/ui", get(dashboard::shell))
         .route("/ui/{*path}", get(dashboard::shell))
         .route("/browser/assets/{name}", get(dashboard::asset))
+        .route("/browser/api/research", get(research::list))
+        .route(
+            "/browser/api/research/{id}",
+            get(research::detail).post(research::mutate),
+        )
+        .route("/browser/api/research/{id}/adhd", get(research::adhd))
+        .route(
+            "/browser/api/research/{id}/handoff",
+            get(research::handoff_preview).post(research::apply_handoff),
+        )
+        .route("/browser/api/models", get(research::models))
+        .route(
+            "/browser/api/projects/{project}/research",
+            post(research::create),
+        )
+        .route(
+            "/browser/api/projects/{project}/research/operations",
+            get(research::operations),
+        )
+        .route(
+            "/browser/api/projects/{project}/research/operations/{id}/recover",
+            post(research::recover),
+        )
         .route("/browser/api/projects", post(dashboard::create))
         .route(
             "/browser/api/projects/{project}/ide",

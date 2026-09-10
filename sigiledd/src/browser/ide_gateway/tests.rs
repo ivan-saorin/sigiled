@@ -8,6 +8,7 @@ async fn fixture() -> (Fixture, access::Binding, String) {
     let generation = 9007199254740993;
     let actor: crate::auth::Actor = serde_json::from_value(s["actor"].clone()).unwrap();
     let r = SessionRecord {
+        handoff: None,
         session_id: id.clone(),
         project: "demo".into(),
         branch: format!("session/{id}"),

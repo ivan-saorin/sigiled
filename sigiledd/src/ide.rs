@@ -217,6 +217,9 @@ async fn operation_inner(
     if crate::sessions::authorized(&actor, &r, &state, Action::OpenSession).is_err() {
         return response(StatusCode::FORBIDDEN, "session_not_authorized");
     }
+    if r.handoff_pending() {
+        return response(StatusCode::CONFLICT, "handoff_recovery_required");
+    }
     if r.lifecycle != Lifecycle::Active
         || r.generation != op.generation
         || !r.runtime_owned
@@ -462,6 +465,9 @@ impl std::fmt::Debug for Binding {
     }
 }
 pub async fn flush_record(state: &crate::AppState, record: &SessionRecord, label: &str) -> bool {
+    if record.handoff_pending() {
+        return false;
+    }
     if record
         .binding
         .as_ref()

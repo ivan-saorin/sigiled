@@ -2,3 +2,5 @@
 
 #active .attention a{margin-left:0}
 .skip:not(:focus){clip-path:inset(50%);width:1px;height:1px;overflow:hidden;padding:0;white-space:nowrap}
+
+.research-layout{display:grid;grid-template-columns:minmax(220px,1fr) minmax(0,2fr);gap:28px}.research-form{max-width:720px;margin:0 0 28px}.research-form textarea{display:block;width:100%;margin:6px 0 15px}.research-options{display:flex;gap:24px}.research-options input{display:block;width:100px}.research-list article{padding:14px 0;border-bottom:1px solid #d7dfe9}.research-list article button{text-align:left}.research-text{white-space:pre-wrap;overflow-wrap:anywhere;max-height:500px;overflow:auto;background:#fff;padding:14px}.stage-timeline{padding-left:22px}.stage-timeline li{padding:8px 0}.research-detail details{margin:16px 0}.research-detail textarea{width:100%}@media(max-width:760px){.research-layout{grid-template-columns:1fr}.research-options{flex-wrap:wrap}}

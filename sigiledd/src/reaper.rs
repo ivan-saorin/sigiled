@@ -101,6 +101,9 @@ async fn reap_generation_min(
     if expected.is_some_and(|g| g != record.generation || record.lifecycle != Lifecycle::Active) {
         return false;
     }
+    if record.handoff_pending() {
+        return false;
+    }
     if record.token.is_some() && state.sessions.runtime.is_none() {
         crate::sessions::failure(state, session_id, Failure::RuntimeUnavailable);
         return false;

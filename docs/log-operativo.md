@@ -1,3 +1,11 @@
+## 2026-09-10 — Browser research, model observations and guarded dossier handoff
+
+Starting from accepted Sigil135c5600 and reviewed SDE af836b3f, added caller-token-bound reserved service adapters, stable actor/project durable create recovery, full-u64 browser revisions, Research/Models views, derived research attention, and explicit validated stage submissions. Browser defaults to automatic stage completion and preserves newer drafts/login recovery without replay. Models is read-only and labels incomplete recent usage.
+
+Expanded handoff ownership per controller ruling: narrow companion bundle/status endpoints, owned-editor pause, clean-workspace precondition, immutable private-index dossier commit, durable generation-bound lifecycle quarantine, partial-write/push recovery and separate session/master/indexed receipts. Existing workspace commit stages all; this path never uses it. Close/recycle/reap/IDE guards honor pending markers and old snapshots default safely.
+
+Focused research/security/recovery/lifecycle9/9, unknown-editor1/1, actual-assets browser and B2 race11/11 passed; all-target Clippy/fmt/diff checks pass. Helper suite4/5 and two scoped replay checks retain unresolved termination-unconfirmed failures before dossier writes; no shared supervisor/budgets changed and no full-suite green claim. See docs/browser-research.md and controller work/research-adapter-report.md for limits and exact evidence. No deployment, inference, model lifecycle, memory write or source merge occurred. Leave this session clean/open for independent review; next step is review plus the recorded runtime-validation prerequisite.
+
 # SIGILED â€” Log operativo
 
 
