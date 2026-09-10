@@ -179,7 +179,9 @@ impl Declaration {
     }
 }
 pub(crate) fn preview_port(port: u16) -> bool {
-    port >= 1024 && !matches!(port, 2375 | 2376 | 8080 | 8090 | 8091)
+    port >= 1024
+        && port != crate::runtime::WORKSPACE_AGENT_PORT
+        && !matches!(port, 2375 | 2376 | 8080 | 8090 | 8091)
 }
 
 #[cfg(test)]

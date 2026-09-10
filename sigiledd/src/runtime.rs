@@ -13,6 +13,9 @@
 //
 // Docker is driven through the CLI (docker-cli in the image): the v1 used
 // the Python SDK, here shelling keeps the dependency list untouched.
+/// Fixed workspace-agent transport contract, also excluded from browser previews.
+pub(crate) const WORKSPACE_AGENT_PORT: u16 = 8000;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -541,7 +544,7 @@ impl Runtime {
     // --- workspace agent client --------------------------------------------
 
     fn agent_url(&self, container: &str, path: &str) -> String {
-        format!("http://{container}:8000{path}")
+        format!("http://{container}:{WORKSPACE_AGENT_PORT}{path}")
     }
 
     pub async fn wait_healthy(

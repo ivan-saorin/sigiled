@@ -68,7 +68,7 @@ mod preview_tests {
         let id = "a".repeat(32);
         let origin = preview_origin("preview.example.test", &id, u64::MAX, 65535).unwrap();
         assert!(origin[8..].split('.').all(|s| s.len() <= 63));
-        for port in [0, 22, 2375, 2376, 8080, 8090, 8091] {
+        for port in [0, 22, 2375, 2376, 8000, 8080, 8090, 8091] {
             assert!(preview_origin("preview.example.test", &id, 1, port).is_err());
         }
     }

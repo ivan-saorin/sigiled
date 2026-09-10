@@ -1241,3 +1241,32 @@ async fn human_allocation_rechecks_debt_after_waiting_for_project_lock() {
     assert_eq!(task.await.unwrap().status(), StatusCode::CONFLICT);
     assert!(state.sessions.dump_records().is_empty());
 }
+
+#[tokio::test]
+async fn workspace_agent_port_is_never_a_preview_even_with_invalid_registry_data() {
+    let mut declaration = crate::declaration::Declaration::default();
+    declaration.ide.preview_ports = vec![8000];
+    assert!(
+        declaration.validate(None).is_err(),
+        "workspace agent port must be rejected by declaration validation"
+    );
+    assert!(targets::preview_origin("preview.example.test", &"a".repeat(32), 1, 8000).is_err());
+    let (f, mut binding, _) = fixture().await;
+    let mut d = f.state.registry.descriptor("demo");
+    d.declaration.ide.preview_ports = vec![8000];
+    f.state
+        .registry
+        .descriptors
+        .write()
+        .unwrap()
+        .insert("demo".into(), d);
+    binding.port = Some(8000);
+    binding.origin = format!(
+        "https://{}-g{}-p8000.preview.example.test",
+        binding.session, binding.generation
+    );
+    assert!(
+        access::record(&f.state, &binding).is_err(),
+        "runtime grant check must reject invalid persisted/mutated declarations before forwarding"
+    );
+}
