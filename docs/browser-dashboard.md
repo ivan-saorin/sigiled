@@ -51,3 +51,12 @@ Drafts stay in current-tab memory across app navigation, polling and 401s. Expir
 Rust fixtures use the actual B1 login, browser handlers and loopback GitHub doubles. They cover authorization, CSRF, body limits, durable CAS/audit/restart, failed saves, safe links, and partial project retry/two tabs without any live mutation. Controlled Edge fixtures exercise the actual committed assets at desktop/mobile widths with synthetic identities/data. They are not proof of live IdP, project provisioning or downstream compatibility.
 
 Release still requires B1 origin/IdP/edge configuration, a persistent writable state directory with backups and single-process ownership, real origin/cookie/CSRF checks, and separately approved live provisioning checks. IDE/workspace actions, research/model adapters and memory curation remain incomplete until their reviewed APIs are integrated. No deployment was performed for B2.
+
+
+## B2 review fixes: delayed edits and selection ownership
+
+Work-item drafts track an edit version from submission through both session revalidation and the mutation response. Save merges returned ID/revision/audit metadata into that same draft object. Fields typed after submission remain intact and are labelled unsaved; the next deliberate save submits them against the returned revision even without another input event. Pending saves are shared across re-rendered views of that draft, so navigation cannot start a duplicate save.
+
+Item reads, job-history reads and editor instances have independent selection identities. A completion may populate its own cached entry, but only the current initiating selection/editor can replace the editor or navigate. New item and page navigation invalidate older selection intents. A create completed while away retains its original draft alias until return, then resolves to the saved item ID without replay; choosing a different item or New item keeps that newer intent. Existing job-history surfaces remain attached across summary polling, including in-flight reads.
+
+Native same-page fragment navigation remains available to the keyboard skip link. Attention and active-work sections use the same focus-preserving replacements as the project and work-item lists. Deterministic current-asset regressions are in `sigiledd/tests/browser-races.cjs`; it uses only synthetic loopback fixtures and the same environment settings as `browser-ui.cjs`.

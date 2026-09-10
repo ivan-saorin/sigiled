@@ -50,6 +50,8 @@ const heading = (name,subtitle,action) => {
 ;
 let session = null,route = null,generation = 0,controller = null,current = null,lastObserved = null;
 const drafts = new Map();
+const itemFields = ['title','description','state','owner','source_link'];
+let itemSelection = 0, jobSelection = 0, editorIdentity = 0, activeDraft = null, pendingItem = null;
 let projects = [],attention = [];
 class ApiError extends Error {
   constructor(status,body) {
@@ -161,6 +163,8 @@ document.addEventListener('click',e => {
   const a = e.target.closest('a');
   if(a && !e.defaultPrevented && e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !a.target) {
     const u = new URL(a.href);
+    // Let native fragment navigation move keyboard focus to the skip target.
+    if(u.hash && u.origin === location.origin && u.pathname === location.pathname && u.search === location.search)return;
     if(u.origin === location.origin && (u.pathname === '/' || u.pathname.startsWith('/ui/'))) {
       e.preventDefault();
       navigate(u.pathname+u.search);
@@ -194,6 +198,11 @@ $('signout').onclick = async() => {
 $('refresh').onclick = () => refresh();
 function renderRoute() {
   generation++;
+  itemSelection++;
+  jobSelection++;
+  editorIdentity++;
+  activeDraft = null;
+  pendingItem = null;
   controller?.abort();
   current = null;
   lastObserved = null;
@@ -595,20 +604,20 @@ function renderProject(p) {
   }
   // Keep a selected history surface across summary polls.
   const oldHistory=target.querySelector('#job-history');
-  if(oldHistory?.hasChildNodes()&&panel.querySelector('#job-history'))panel.querySelector('#job-history').replaceWith(oldHistory);
+  if(oldHistory&&panel.querySelector('#job-history'))panel.querySelector('#job-history').replaceWith(oldHistory);
   replaceLive(target,panel);
 }
 async function loadJob(name,offset = 0) {
-  const g = generation,target = $('job-history');
+  const g = generation,selection = ++jobSelection,target = $('job-history');
   try {
     const data = await request(`/browser/api/projects/${encodeURIComponent(route.project)}/jobs/${encodeURIComponent(name)}/runs?offset=${offset}&limit=20`);
-    if(g !== generation || !target.isConnected)return;
+    if(g !== generation || selection !== jobSelection || !target.isConnected)return;
     target.replaceChildren(el('h3', {
     }
     ,`${name} history`),data.items.length?makeTable(['Started','Finished','State','Branch'],data.items.map(r => [date(r.started_at),date(r.finished_at),badge(r.state),r.branch])):empty('No recorded runs.'),pager(offset,data.total,data.next_offset,n => loadJob(name,n)));
   }
   catch(e) {
-    if(g === generation)target.replaceChildren(empty(errorText(e)));
+    if(g === generation && selection === jobSelection && target.isConnected)target.replaceChildren(empty(errorText(e)));
   }
 }
 async function refresh() {
@@ -661,7 +670,7 @@ async function refresh() {
       attention = data.attention.items;
       renderProjects();
       if($('attention')) {
-        $('attention').replaceChildren(attentionList(attention));
+        replaceLive($('attention'),attentionList(attention));
         if(data.attention.total>attention.length)$('attention').append(el('p', {
           class:'metadata'
         }
@@ -669,7 +678,7 @@ async function refresh() {
       }
       if($('active')) {
         const working = rows.filter(p => p.session_count>0);
-        $('active').replaceChildren(working.length?el('ul', {
+        replaceLive($('active'),working.length?el('ul', {
           class:'attention'
         }
         ,working.map(p => el('li', {
@@ -808,7 +817,7 @@ async function loadItems(signal,g) {
     }
     ));
     const id = route.query.get('item');
-    if(id && !drafts.has(itemKey(project,id)))await selectItem(id,false);
+    if(id && !drafts.has(itemKey(project,id)) && !(pendingItem?.id === id && pendingItem.selection === itemSelection))await selectItem(id,false);
   }
   catch(e) {
     if(e.name === 'AbortError' || g !== generation)return;
@@ -818,189 +827,163 @@ async function loadItems(signal,g) {
 function itemKey(project,id) {
   return`item:${project}:${id||'new'}`;
 }
+function chooseNewItem() {
+  itemSelection++;
+  pendingItem = null;
+  const key = itemKey(route.project,null), previous = drafts.get(key);
+  // A new intent during an in-flight create owns a different draft. The old
+  // response still has its object reference and will be stored under its ID.
+  if(previous?._saving || previous?.revision)drafts.delete(key);
+  updateQuery({item:null});
+  renderItemEditor();
+}
 async function selectItem(id,changeUrl = true) {
-  const g = generation,project = route.project;
+  const g = generation,project = route.project,selection = ++itemSelection;
+  pendingItem = {id,selection};
+  if(changeUrl)updateQuery({item:id});
+  renderItemEditor();
+  const key = itemKey(project,id);
   try {
-    const item = await request(`/browser/api/projects/${encodeURIComponent(project)}/work-items/${encodeURIComponent(id)}`);
-    if(g !== generation)return;
-    if(changeUrl)updateQuery({
-      item:id
+    if(!drafts.has(key)) {
+      const item = await request(`/browser/api/projects/${encodeURIComponent(project)}/work-items/${encodeURIComponent(id)}`);
+      // Cache this result under its own identity, never over an edited draft.
+      if(!drafts.has(key))drafts.set(key,{...item});
     }
-    );
-    const key = itemKey(project,id);
-    if(!drafts.has(key))drafts.set(key, {
-      ...item
-    }
-    );
+    if(g !== generation || selection !== itemSelection || route.query.get('item') !== id)return;
+    pendingItem = null;
     renderItemEditor();
+  } catch(e) {
+    if(g === generation && selection === itemSelection){pendingItem = null;notice(errorText(e),'error');}
   }
-  catch(e) {
-    if(g === generation)notice(errorText(e),'error');
-  }
+}
+function saveMessage(draft) {
+  return draft._dirty?`Saved revision ${draft.revision}. Newer edits are unsaved.`:`Saved revision ${draft.revision}.`;
+}
+function syncEditor(draft) {
+  if(activeDraft !== draft || !$('editor'))return;
+  const form = $('editor').querySelector('form');
+  if(!form)return;
+  form.querySelector('[type=submit]').disabled = Boolean(draft._saving);
+  const summary = form.querySelector('[data-revision-summary]');
+  if(summary)summary.textContent = `Revision ${draft.revision}. Updated ${date(draft.updated_at)}`;
+  const status = form.querySelector('.form-status');
+  status.className = draft._error?'form-status error':'form-status';
+  status.textContent = draft._saving?'Saving submitted version…':draft._error || draft._message || (draft._dirty?'Unsaved changes.':'');
 }
 function renderItemEditor() {
   const target = $('editor');
   if(!target)return;
-  const project = route.project,id = route.query.get('item'),key = itemKey(project,id);
-  let draft = drafts.get(key);
+  const project = route.project;
+  let id = route.query.get('item'),key = itemKey(project,id),draft = drafts.get(key);
+  const identity = ++editorIdentity;
   if(!draft) {
     if(id) {
-      target.replaceChildren(empty('Loading work item…'));
+      activeDraft = null;
+      target.replaceChildren(empty('Loading work item…'),button('New item',chooseNewItem));
       return;
     }
-    draft = {
-      id:crypto.randomUUID(),title:'',description:'',state:'open',owner:'',source_link:''
-    }
-    ;
+    draft = {id:crypto.randomUUID(),title:'',description:'',state:'open',owner:'',source_link:''};
     drafts.set(key,draft);
   }
-  const form = el('form', {
-    class:'form'
+  // A create may finish while this page is away. Its original draft alias
+  // resolves to the saved ID on return without replaying or losing newer edits.
+  if(!id && draft.revision) {
+    id = draft.id;
+    if(drafts.get(key) === draft)drafts.delete(key);
+    key = itemKey(project,id);
+    drafts.set(key,draft);
+    updateQuery({item:id});
   }
-  );
-  form.append(el('h2', {
-  }
-  ,id?'Edit work item':'New work item'));
-  inputField(form,'title','Title',draft.title, {
-    attrs: {
-      required:true
-    }
-  }
-  );
-  inputField(form,'description','Description',draft.description, {
-    multiline:true,max:8000
-  }
-  );
-  const state = el('select', {
-    name:'state',id:'field-state','aria-label':'State'
-  }
-  ,['open','blocked','done'].map(v => el('option', {
-    value:v
-  }
-  ,label(v))));
+  activeDraft = draft;
+  const g = generation,selection = itemSelection;
+  const form = el('form',{class:'form'});
+  const ownsEditor = () => g === generation && selection === itemSelection && identity === editorIdentity && activeDraft === draft && form.isConnected;
+  form.append(el('h2',{},id?'Edit work item':'New work item'));
+  inputField(form,'title','Title',draft.title,{attrs:{required:true}});
+  inputField(form,'description','Description',draft.description,{multiline:true,max:8000});
+  const state = el('select',{name:'state',id:'field-state','aria-label':'State'},['open','blocked','done'].map(v=>el('option',{value:v},label(v))));
   state.value = draft.state;
-  form.append(el('label', {
-  }
-  ,'State',state));
+  form.append(el('label',{},'State',state));
   inputField(form,'owner','Owner',draft.owner);
-  inputField(form,'source_link','Source link (optional)',draft.source_link, {
-    max:2048
-  }
-  );
-  form.append(el('p', {
-    class:'form-note'
-  }
-  ,'Use an HTTPS URL or a /ui/ app path. Updates are recorded with your signed-in identity.'),el('div', {
-    class:'actions'
-  }
-  ,el('button', {
-    type:'submit',class:'primary'
-  }
-  ,'Save work item'),button('New item',() => {
-    updateQuery({
-      item:null
-    }
-    );
-    renderItemEditor();
-  }
-  )),el('div', {
-    class:'form-status',role:'status'
-  }
-  ));
+  inputField(form,'source_link','Source link (optional)',draft.source_link,{max:2048});
+  form.append(el('p',{class:'form-note'},'Use an HTTPS URL or a /ui/ app path. Updates are recorded with your signed-in identity.'),
+    el('div',{class:'actions'},el('button',{type:'submit',class:'primary'},'Save work item'),button('New item',chooseNewItem)),
+    el('div',{class:'form-status',role:'status'}));
   if(id) {
-    form.append(button('Load latest revision',async() => {
+    let latestRequest = 0;
+    form.append(button('Load latest revision',async()=> {
+      const attempt = ++latestRequest;
       try {
         const latest = await request(`/browser/api/projects/${encodeURIComponent(project)}/work-items/${encodeURIComponent(id)}`);
+        if(!ownsEditor() || attempt !== latestRequest)return;
         const status = form.querySelector('.form-status');
-        status.replaceChildren(el('p', {
-        }
-        ,`Saved revision ${latest.revision}. Your draft is unchanged. Review the saved version below, then explicitly use its revision to save your draft.`),el('details', {
-          open:true
-        }
-        ,el('summary', {
-        }
-        ,'Latest saved fields'),el('pre', {
-        }
-        ,JSON.stringify({
-          title:latest.title,description:latest.description,state:latest.state,owner:latest.owner,source_link:latest.source_link
-        }
-        ,null,2))),button('Use latest revision for this draft',() => {
-          draft.revision = latest.revision;
-          status.textContent = `Draft now based on revision ${latest.revision}. Choose Save to apply it.`;
-        }
-        ));
+        status.replaceChildren(el('p',{},`Saved revision ${latest.revision}. Your draft is unchanged. Review the saved version below, then explicitly use its revision to save your draft.`),
+          el('details',{open:true},el('summary',{},'Latest saved fields'),el('pre',{},JSON.stringify(Object.fromEntries(itemFields.map(name=>[name,latest[name]])),null,2))),
+          button('Use latest revision for this draft',()=> {
+            if(!ownsEditor() || attempt !== latestRequest)return;
+            draft.revision = latest.revision;
+            draft._error = null;
+            draft._message = `Draft now based on revision ${latest.revision}. Choose Save to apply it.`;
+            syncEditor(draft);
+          }));
+      } catch(e) {
+        if(ownsEditor() && attempt === latestRequest)form.querySelector('.form-status').textContent = errorText(e);
       }
-      catch(e) {
-        form.querySelector('.form-status').textContent = errorText(e);
-      }
-    }
-    ),el('p', {
-      class:'metadata','data-revision-summary':true
-    }
-    ,`Revision ${draft.revision}. Updated ${date(draft.updated_at)}`),diagnostics({
-      creator:draft.creator,editor:draft.editor,audit:draft.audit
-    }
-    ));
+    }),el('p',{class:'metadata','data-revision-summary':true},`Revision ${draft.revision}. Updated ${date(draft.updated_at)}`),
+    diagnostics({creator:draft.creator,editor:draft.editor,audit:draft.audit}));
   }
   form.oninput = () => {
-    for(const name of['title','description','state','owner','source_link'])draft[name] = form.elements[name].value;
-  }
-  ;
+    for(const name of itemFields)draft[name] = form.elements[name].value;
+    draft._editVersion = (draft._editVersion || 0)+1;
+    draft._dirty = true;
+    draft._message = draft.revision?`Revision ${draft.revision}. Unsaved changes.`:'Unsaved changes.';
+    if(!draft._saving)syncEditor(draft);
+  };
   form.onsubmit = async e => {
     e.preventDefault();
-    if(!form.reportValidity())return;
-    const submit = form.querySelector('[type=submit]'),status = form.querySelector('.form-status');
-    submit.disabled = true;
-    status.className = 'form-status';
-    status.textContent = 'Saving…';
-    const fields = Object.fromEntries(['title','description','state','owner','source_link'].map(name => [name,draft[name]]));
+    if(draft._saving || !form.reportValidity())return;
+    // Snapshot before session revalidation. Edits during either await belong to
+    // this same draft and must not be replaced by the submitted version.
+    const submittedVersion = draft._editVersion || 0;
+    const fields = Object.fromEntries(itemFields.map(name=>[name,draft[name]]));
+    const expectedRevision = draft.revision;
+    draft._saving = true;
+    draft._error = null;
+    syncEditor(draft);
     try {
-      if(!session)throw new ApiError(401, {
-        error:'login_required'
-      }
-      );
+      if(!session)throw new ApiError(401,{error:'login_required'});
       await checkSession();
-      const saved = await request(`/browser/api/projects/${encodeURIComponent(project)}/work-items${id?'/'+encodeURIComponent(id):''}`, {
-        method:id?'PATCH':'POST',body:JSON.stringify(id? {
-          expected_revision:draft.revision,fields
-        }
-        : {
-          id:draft.id,fields
-        }
-        )
+      const saved = await request(`/browser/api/projects/${encodeURIComponent(project)}/work-items${id?'/'+encodeURIComponent(id):''}`,{
+        method:id?'PATCH':'POST',body:JSON.stringify(id?{expected_revision:expectedRevision,fields}:{id:draft.id,fields})
+      });
+      const changed = (draft._editVersion || 0) !== submittedVersion;
+      for(const [name,value] of Object.entries(saved))if(!itemFields.includes(name) || !changed)draft[name] = value;
+      draft._dirty = changed;
+      draft._saving = false;
+      draft._message = saveMessage(draft);
+      drafts.set(itemKey(project,saved.id),draft);
+      // A later item/New-item/page selection has sole authority over navigation.
+      // Otherwise keep the original new alias so return navigation finds it.
+      if(!id && ownsEditor()) {
+        if(drafts.get(key) === draft)drafts.delete(key);
+        updateQuery({item:saved.id});
+        withFocus(target,renderItemEditor);
       }
-      );
-      if(id) {
-        Object.assign(draft,saved);
-        form.querySelector('[data-revision-summary]').textContent = `Revision ${saved.revision}. Updated ${date(saved.updated_at)}`;
-      }
-      else {
-        drafts.set(itemKey(project,saved.id),saved);
-        drafts.delete(key);
-        if(route.project === project && route.tab === 'pending') {
-          updateQuery({
-            item:saved.id
-          }
-          );
-          renderItemEditor();
-        }
-      }
-      if(form.isConnected)status.textContent = `Saved revision ${saved.revision}.`;
-      else if(route.project === project && route.tab === 'pending' && route.query.get('item') === saved.id && $('editor'))$('editor').querySelector('.form-status').textContent = `Saved revision ${saved.revision}.`;
-      await refresh();
-    }
-    catch(error) {
+      syncEditor(draft);
+      // Publication is complete. Do not let a later refresh hold this save open.
+      void refresh();
+    } catch(error) {
       if(error.status === 401)showAuth();
-      status.className = 'form-status error';
-      status.textContent = errorText(error);
+      draft._error = errorText(error);
+    } finally {
+      draft._saving = false;
+      syncEditor(draft);
     }
-    finally {
-      submit.disabled = false;
-    }
-  }
-  ;
+  };
   target.replaceChildren(form);
+  syncEditor(draft);
 }
+
 document.addEventListener('visibilitychange',() => {
   if(document.hidden)controller?.abort();
   else refresh();
