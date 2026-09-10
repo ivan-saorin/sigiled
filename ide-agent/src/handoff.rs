@@ -241,6 +241,23 @@ fn index_git(
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().into())
 }
+// The path ceases to belong to this guard after publication. A successor
+// writer may immediately create a new index.lock; dropping us must leave it alone.
+struct IndexLock(std::path::PathBuf, bool);
+impl IndexLock {
+    fn publish(&mut self, index: &Path) -> Result<(), &'static str> {
+        std::fs::rename(&self.0, index).map_err(|_| "handoff_index_publish_failed")?;
+        self.1 = false;
+        Ok(())
+    }
+}
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        if self.1 {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+}
 pub fn apply(repo: &Repository, r: Request) -> Result<Receipt, &'static str> {
     validate(&r)?;
     let _lock = durable::lock(&repo.root).map_err(|_| "workspace_busy")?;
@@ -374,14 +391,6 @@ pub fn apply(repo: &Repository, r: Request) -> Result<Receipt, &'static str> {
         .create_new(true)
         .open(&index_lock_path)
         .map_err(|_| "workspace_busy")?;
-    struct IndexLock(std::path::PathBuf, bool);
-    impl Drop for IndexLock {
-        fn drop(&mut self) {
-            if self.1 {
-                let _ = std::fs::remove_file(&self.0);
-            }
-        }
-    }
     let mut index_guard = IndexLock(index_lock_path.clone(), true);
     if std::fs::read(repo.root.join(".git/index")).ok().as_ref() != Some(&original_index) {
         return Err("workspace_index_changed");
@@ -407,9 +416,7 @@ pub fn apply(repo: &Repository, r: Request) -> Result<Receipt, &'static str> {
             &j.base,
         ])?;
     }
-    std::fs::rename(&index_lock_path, repo.root.join(".git/index"))
-        .map_err(|_| "handoff_index_publish_failed")?;
-    index_guard.1 = false;
+    index_guard.publish(&repo.root.join(".git/index"))?;
     drop(index_guard);
     std::fs::File::open(repo.root.join(".git"))
         .and_then(|f| f.sync_all())
@@ -625,5 +632,75 @@ mod tests {
         drop(dir);
         std::fs::write(repo.root.join(&r.files[0].path), &r.files[0].content).unwrap();
         assert!(apply(&repo, r).unwrap().pushed);
+    }
+    // Actual filesystem coverage without native Git: these exercise the exact
+    // publication guard and no-follow bundle readers used by apply.
+    fn filesystem_fixture(label: &str) -> Repository {
+        let root = std::env::temp_dir().join(format!("handoff-fs-{}-{label}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        Repository {
+            root,
+            branch: "session/test".into(),
+            remote: "unused".into(),
+        }
+    }
+    #[test]
+    fn final_filesystem_successor_index_lock_survives_publication_guard_drop() {
+        let repo = filesystem_fixture("successor-lock");
+        let path = repo.root.join("index.lock");
+        let target = repo.root.join("index");
+        std::fs::write(&path, "approved-index").unwrap();
+        let mut guard = IndexLock(path.clone(), true);
+        guard.publish(&target).unwrap();
+        let mut successor = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        successor.write_all(b"successor-owned").unwrap();
+        drop(guard);
+        assert_eq!(std::fs::read(&path).unwrap(), b"successor-owned");
+        assert_eq!(std::fs::read(&target).unwrap(), b"approved-index");
+        // A failed publication still removes only this operation's lock.
+        let owned = repo.root.join("owned.lock");
+        std::fs::write(&owned, "owned").unwrap();
+        let mut failed = IndexLock(owned.clone(), true);
+        assert_eq!(
+            failed.publish(&repo.root.join("missing/index")),
+            Err("handoff_index_publish_failed")
+        );
+        drop(failed);
+        assert!(!owned.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"successor-owned");
+        drop(successor);
+        std::fs::remove_dir_all(repo.root).unwrap();
+    }
+    #[test]
+    fn final_filesystem_nonregular_targets_are_rejected_without_reading_or_replacing() {
+        use std::os::unix::fs::FileTypeExt;
+        for kind in ["fifo", "directory"] {
+            let repo = filesystem_fixture(kind);
+            let mut r = request();
+            // An empty FIFO would otherwise look like valid empty content.
+            r.files[0].content.clear();
+            drop(directory(&repo.root, &r.slug, true).unwrap());
+            let path = repo.root.join(&r.files[0].path);
+            if kind == "fifo" {
+                let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            } else {
+                std::fs::create_dir(&path).unwrap();
+            }
+            assert_eq!(write_bundle(&repo, &r, true), Err("handoff_target_changed"));
+            assert_eq!(verify_files(&repo, &r), Err("handoff_target_changed"));
+            assert!(!repo.root.join(&r.files[1].path).exists());
+            let metadata = path.symlink_metadata().unwrap();
+            assert!(if kind == "fifo" {
+                metadata.file_type().is_fifo()
+            } else {
+                metadata.is_dir()
+            });
+            std::fs::remove_dir_all(repo.root).unwrap();
+        }
     }
 }

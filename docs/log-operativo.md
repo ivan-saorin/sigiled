@@ -1,3 +1,16 @@
+## 2026-09-10 — B3b pre-review filesystem coverage and custody clarification
+
+Follow-up to a740015c: extracted the unchanged index rename/disarm operation into
+IndexLock::publish for actual-filesystem regression coverage. Successor-lock
+preservation, failed-publication cleanup and FIFO/directory rejection passed 2/2
+with no native Git calls. Source-checked the helper's shared cleanup and awaited
+blocking/detached ownership chain: termination-unconfirmed is a nonreturning
+cleanup diagnostic, not a terminal Error; pending survives timeout/unknown and
+helper restart. Documented the mediated-route guards and external-writer limits.
+Earlier helper 4/5 and both failed replay observations remain qualified; no replay,
+full-suite rerun, supervisor change or deployment. See docs/browser-research.md
+and the appended controller report for exact test names, proof limits and receipts.
+
 ## 2026-09-10 — Browser research, model observations and guarded dossier handoff
 
 Starting from accepted Sigil135c5600 and reviewed SDE af836b3f, added caller-token-bound reserved service adapters, stable actor/project durable create recovery, full-u64 browser revisions, Research/Models views, derived research attention, and explicit validated stage submissions. Browser defaults to automatic stage completion and preserves newer drafts/login recovery without replay. Models is read-only and labels incomplete recent usage.

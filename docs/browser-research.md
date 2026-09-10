@@ -56,3 +56,48 @@ SessionRecord.handoff defaults to None for old snapshots. A pending or unknown-p
 Fake HTTP engines and actual browser assets only. Focused research/security/recovery/lifecycle tests pass9/9; unknown-editor helper test passes1/1; real-assets browser fixture and existing11-case browser race regression pass. All-target Clippy with only the existing too_many_arguments exception, fmt and diff checks pass.
 
 The initial helper bundle suite passed4/5; its exact replay fixture failed under subprocess termination-unconfirmed. An unchanged isolated check failed before journal creation, and one instrumented diagnostic failed after journal creation but before dossier writes; neither failure reached the later content/index equality checks. Keep exact logs, durations and actual exits in the B3b report. This is unresolved validation, not a fully green handoff suite or proven environmental diagnosis. Earlier Sigil full-suite199/2 and slow lifecycle reliability are also unresolved. No shared supervisor deadline or cleanup policy was changed. A release requires independently reviewing these source changes, resolving the remaining helper/supervisor validation, a durable SDE deployment/live probe, reviewed controller+helper images, actual OIDC/edge/provider/policy readiness, and an authorized real user path check.
+
+
+### Native Git custody clarification (B3b pre-review follow-up)
+
+The helper imports shared/bounded_process.rs directly. Its Error enum has no
+TerminationUnconfirmed variant. The diagnostic "repository subprocess termination
+unconfirmed; retaining mirror ownership" is emitted inside Group::finish, which
+continues waiting and does not return until waitid, complete process/thread group
+inspection and its observer report two quiet passes, then the leader is reaped.
+Every error after spawn unwinds through Group::drop and the same cleanup loop.
+The control-plane registry's separate outer deadline/error must not be confused
+with a return from this helper call.
+
+The custody chain is handoff's detached tokio::spawn owner -> awaited
+spawn_blocking handle -> apply -> output_until -> Group. While cleanup is
+unconfirmed, apply retains its platform flock (and index lock if reached), the
+blocking closure retains the owned sync guard, the detached owner retains the
+editor process mutex, and helper observation remains busy. Native Git errors
+cannot publish failed before that awaited closure returns. Caller cancellation
+drops only a JoinHandle; it does not cancel the detached owning task. A blocking
+panic must unwind its Group before joining; an outer panic leaves busy rather
+than fabricating a terminal observation. A process abort/restart loses the
+in-memory observation and returns unknown for the old operation; it cannot clear
+Sigil's durable pending marker.
+
+Sigil persists pending before POST. HTTP timeout/cancellation, busy, unknown and
+unrecognized phases preserve it. close, recycle, reaper, IDE mutation and
+flush_record reject pending/unknown phases. Matching authenticated recovery alone
+may consume the owned helper's terminal status; an arbitrary error response or
+missing operation does not release authority. Same-process start/stop/finish are
+blocked on the editor process mutex, checkpoint/autosave on sync, and a second
+handoff is rejected while busy. Existing code cannot fence arbitrary external
+terminal/filesystem writers or a direct privileged workspace API caller; the
+handoff protects approved commit content with immutable objects and base/index/
+ref-CAS checks. Do not describe the A1 lock as universal writer serialization.
+After companion restart, normal Sigil paths remain quarantined; bypassing Sigil
+with a directly custodied helper control token is outside that lifecycle gate.
+
+Final filesystem tests exercise the production IndexLock::publish method with
+an actual successor index.lock created before the old guard drops, plus failed
+publication cleanup; and actual FIFO/directory targets through both recovery
+write_bundle and verify_files. The empty FIFO case rejects before content reads,
+without waiting for a writer. These tests avoid native Git and passed 2/2. They
+do not replace the retained failing full commit replay evidence or establish
+its native failure cause. No shared subprocess supervisor or budgets changed.
