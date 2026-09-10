@@ -63,3 +63,7 @@ Native same-page fragment navigation remains available to the keyboard skip link
 
 
 A form reopened while its original create is still pending resolves the method and item ID from the shared draft at each later submission. Once creation returns a revision, the next Save is PATCH to that ID with the returned expected revision, even if this rendered form began in New item mode. Completion does not replace the currently focused input or its selection. The review fixtures cover both newly typed fields and the unchanged-input case for this return-before-completion ordering.
+
+## C2 workspace integration
+
+Workspace actions are now supplied by [ide-gateway.md](ide-gateway.md) when explicitly configured and backed by durable state. Open IDE preserves this page and shared drafts, exposes a usable popup-blocked launch link, and retains its allocation key across explicit authentication recovery. `window.Sigil.openIDE(project, target?)` accepts the narrow server-validated file target. Workspace checkpoint/finish use actual human authority and generation strings. Live readiness remains separately gated.

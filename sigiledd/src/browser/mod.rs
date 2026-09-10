@@ -1,6 +1,7 @@
 //! Browser-only authentication boundary; machine routes never consume cookies.
 mod config;
 mod dashboard;
+pub(crate) mod ide_gateway;
 mod provider;
 use crate::{
     auth::{self, Actor},
@@ -35,6 +36,7 @@ struct Inner {
     config: Config,
     provider: provider::Provider,
     store: Mutex<Store>,
+    gateway: ide_gateway::Gateway,
 }
 #[derive(Default)]
 struct Store {
@@ -88,6 +90,7 @@ impl BrowserState {
             config,
             provider: provider::Provider::new(),
             store: Mutex::new(Store::default()),
+            gateway: ide_gateway::Gateway::default(),
         }))))
     }
     fn inner(&self) -> Result<Arc<Inner>, Error> {
@@ -406,6 +409,7 @@ pub(crate) struct BrowserContext {
     pub subject: String,
     pub display_name: Option<String>,
     pub(crate) access_token: String,
+    session_id: String,
     csrf: String,
     absolute: u64,
     idle_expires: u64,
@@ -433,79 +437,99 @@ impl FromRequestParts<AppState> for BrowserContext {
         if parts.method != Method::GET && parts.method != Method::HEAD {
             b.mutation(&parts.headers, &s)?;
         }
-        let mut c = s.credentials.lock().await;
-        // Recheck after awaiting a concurrent refresh.
-        {
-            let store = b.store.lock().unwrap();
-            if !store.sessions.contains_key(&id) || !b.live(&s, auth::now_epoch()) {
-                return Err(Error::login());
-            }
-        }
-        if c.expires <= auth::now_epoch() + 30 {
-            let mut guard = RefreshGuard {
-                b: b.clone(),
-                id: id.clone(),
-                armed: true,
-            };
-            let refresh = c.refresh.take().ok_or_else(Error::login)?;
-            let tokens = b
-                .provider
-                .exchange(
-                    &b.config,
-                    &[("grant_type", "refresh_token"), ("refresh_token", &refresh)],
-                )
-                .await?;
-            let verified = b
-                .provider
-                .verify(
-                    &b.config,
-                    &state.auth,
-                    &tokens,
-                    Some(&s.nonce),
-                    Some(&s.subject),
-                )
-                .await?;
-            // Never acquire credentials while holding store; logout can remove without waiting for IdP.
-            let mut store = b.store.lock().unwrap();
-            b.prune(&mut store);
-            if !store.sessions.contains_key(&id) {
-                return Err(Error::login());
-            }
-            *c = Credentials {
-                actor: verified.actor,
-                display_name: verified.display_name,
-                access: tokens.access_token,
-                refresh: tokens.refresh_token.or(Some(refresh)),
-                expires: verified.expires,
-            };
-            guard.armed = false;
-        }
-        let now = auth::now_epoch();
-        {
-            let mut store = b.store.lock().unwrap();
-            b.prune(&mut store);
-            if !store.sessions.contains_key(&id) {
-                return Err(Error::login());
-            }
-            s.last_seen.store(now, std::sync::atomic::Ordering::Relaxed);
-        }
-        Ok(Self {
-            actor: c.actor.clone(),
-            issuer: b.config.issuer.clone(),
-            subject: s.subject.clone(),
-            display_name: c.display_name.clone(),
-            access_token: c.access.clone(),
-            csrf: s.csrf.clone(),
-            absolute: s.absolute,
-            idle_expires: (now + b.config.idle_seconds).min(s.absolute),
-        })
+        resolve_session(state, &id, true).await
     }
 }
+async fn resolve_session(
+    state: &AppState,
+    id: &str,
+    activity: bool,
+) -> Result<BrowserContext, Error> {
+    let b = state.browser.inner()?;
+    let id = id.to_owned();
+    let s = {
+        let mut store = b.store.lock().unwrap();
+        b.prune(&mut store);
+        store.sessions.get(&id).cloned().ok_or_else(Error::login)?
+    };
+    let mut c = s.credentials.lock().await;
+    // Recheck after awaiting a concurrent refresh.
+    {
+        let store = b.store.lock().unwrap();
+        if !store.sessions.contains_key(&id) || !b.live(&s, auth::now_epoch()) {
+            return Err(Error::login());
+        }
+    }
+    if c.expires <= auth::now_epoch() + 30 {
+        let mut guard = RefreshGuard {
+            b: b.clone(),
+            id: id.clone(),
+            armed: true,
+        };
+        let refresh = c.refresh.take().ok_or_else(Error::login)?;
+        let tokens = b
+            .provider
+            .exchange(
+                &b.config,
+                &[("grant_type", "refresh_token"), ("refresh_token", &refresh)],
+            )
+            .await?;
+        let verified = b
+            .provider
+            .verify(
+                &b.config,
+                &state.auth,
+                &tokens,
+                Some(&s.nonce),
+                Some(&s.subject),
+            )
+            .await?;
+        // Never acquire credentials while holding store; logout can remove without waiting for IdP.
+        let mut store = b.store.lock().unwrap();
+        b.prune(&mut store);
+        if !store.sessions.contains_key(&id) {
+            return Err(Error::login());
+        }
+        *c = Credentials {
+            actor: verified.actor,
+            display_name: verified.display_name,
+            access: tokens.access_token,
+            refresh: tokens.refresh_token.or(Some(refresh)),
+            expires: verified.expires,
+        };
+        guard.armed = false;
+    }
+    let now = auth::now_epoch();
+    {
+        let mut store = b.store.lock().unwrap();
+        b.prune(&mut store);
+        if !store.sessions.contains_key(&id) {
+            return Err(Error::login());
+        }
+        if activity {
+            s.last_seen.store(now, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    Ok(BrowserContext {
+        session_id: id.clone(),
+        actor: c.actor.clone(),
+        issuer: b.config.issuer.clone(),
+        subject: s.subject.clone(),
+        display_name: c.display_name.clone(),
+        access_token: c.access.clone(),
+        csrf: s.csrf.clone(),
+        absolute: s.absolute,
+        idle_expires: (s.last_seen.load(std::sync::atomic::Ordering::Relaxed)
+            + b.config.idle_seconds)
+            .min(s.absolute),
+    })
+}
+
 async fn inspect(c: BrowserContext, State(state): State<AppState>) -> Json<serde_json::Value> {
     // A deliberate use of credential only as internal state: no serialized token or generic proxy.
     debug_assert!(!c.access_token.is_empty());
     Json(
-        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"project_creation":true,"work_items":state.work_items.available(),"workspace_actions":false,"memory_adapter":false},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
+        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"project_creation":true,"work_items":state.work_items.available(),"workspace_actions":state.browser.inner().is_ok_and(|b|b.config.ide_domain.is_some()) && state.store.durable(),"memory_adapter":false},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
     )
 }
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Error> {
@@ -532,7 +556,7 @@ async fn overview(
     state: State<AppState>,
     q: axum::extract::Query<crate::overview::Page>,
 ) -> Response {
-    crate::overview::root(c.actor, state, q).await
+    ide_gateway::browser_response(crate::overview::root(c.actor, state, q).await).await
 }
 async fn detail(
     c: BrowserContext,
@@ -540,7 +564,7 @@ async fn detail(
     p: axum::extract::Path<String>,
     q: axum::extract::Query<crate::overview::Page>,
 ) -> Response {
-    crate::overview::detail(c.actor, state, p, q).await
+    ide_gateway::browser_response(crate::overview::detail(c.actor, state, p, q).await).await
 }
 async fn boundary(request: axum::extract::Request, next: Next) -> Response {
     let limit = dashboard::body_limit(request.method(), request.uri().path());
@@ -607,6 +631,18 @@ pub fn router(state: AppState) -> Router {
         .route("/ui/{*path}", get(dashboard::shell))
         .route("/browser/assets/{name}", get(dashboard::asset))
         .route("/browser/api/projects", post(dashboard::create))
+        .route(
+            "/browser/api/projects/{project}/ide",
+            post(ide_gateway::launch),
+        )
+        .route(
+            "/browser/api/sessions/{session}/ide",
+            get(ide_gateway::status).post(ide_gateway::operation),
+        )
+        .route(
+            "/browser/api/sessions/{session}/preview",
+            post(ide_gateway::preview_launch),
+        )
         .route(
             "/browser/api/projects/{project}/work-items",
             get(dashboard::list_items).post(dashboard::create_item),

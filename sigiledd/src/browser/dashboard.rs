@@ -174,5 +174,20 @@ pub(super) fn body_limit(method: &Method, path: &str) -> usize {
     {
         return 16384;
     }
+    if method == Method::POST
+        && parts.len() == 6
+        && parts[1..4] == ["browser", "api", "projects"]
+        && crate::project::valid_name(parts[4])
+        && parts[5] == "ide"
+    {
+        return 4096;
+    }
+    if method == Method::POST
+        && parts.len() == 6
+        && parts[1..4] == ["browser", "api", "sessions"]
+        && matches!(parts[5], "ide" | "preview")
+    {
+        return 1024;
+    }
     0
 }

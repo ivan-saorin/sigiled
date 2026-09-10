@@ -19,12 +19,15 @@ pub struct Ide {
     pub enabled: bool,
     #[serde(default = "provider")]
     pub provider: String,
+    #[serde(default)]
+    pub preview_ports: Vec<u16>,
 }
 impl Default for Ide {
     fn default() -> Self {
         Self {
             enabled: true,
             provider: provider(),
+            preview_ports: vec![],
         }
     }
 }
@@ -107,6 +110,18 @@ impl Declaration {
         {
             return Err("invalid project metadata".into());
         }
+        if self.ide.preview_ports.len() > 32
+            || self.ide.preview_ports.iter().any(|p| !preview_port(*p))
+            || self
+                .ide
+                .preview_ports
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != self.ide.preview_ports.len()
+        {
+            return Err("invalid or duplicate preview ports".into());
+        }
         if self.ide.provider != "code-server" {
             return Err("unsupported IDE provider".into());
         }
@@ -163,6 +178,10 @@ impl Declaration {
         Ok(())
     }
 }
+pub(crate) fn preview_port(port: u16) -> bool {
+    port >= 1024 && !matches!(port, 2375 | 2376 | 8080 | 8090 | 8091)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,6 +15,8 @@ use std::path::PathBuf;
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct StateSnapshot {
     #[serde(default)]
+    pub browser_allocations: HashMap<String, String>,
+    #[serde(default)]
     pub ecosystem: std::collections::BTreeMap<String, crate::ecosystem::Descriptor>,
     #[serde(default)]
     pub projects: Vec<crate::project::ProjectRecord>,
@@ -38,6 +40,9 @@ pub struct Store {
 }
 
 impl Store {
+    pub(crate) fn durable(&self) -> bool {
+        self.path.is_some()
+    }
     /// SIGILED_STATE_DIR unset = ephemeral run (dev, tests): every save is a
     /// no-op and boot starts fresh — loudly, once.
     pub fn from_env() -> Self {

@@ -124,6 +124,7 @@ async function checkSession() {
   $('auth').hidden = true;
   $('operator').textContent = session.identity.display_name || 'Signed-in operator';
   $('signout').hidden = false;
+  for(const project of workspaceLaunches.keys())syncWorkspaceLaunch(project);
   return session;
 }
 function notice(text,type = '') {
@@ -486,16 +487,59 @@ function capability(name,p) {
   }
   ,label(c?.reason || `${name}_adapter_not_configured`)));
 }
+const workspaceLaunches = new Map();
+function launchDraft(project) {
+  if(!workspaceLaunches.has(project)) {
+    const storageKey=`sigil-ide-operation:${project}`;
+    let key;try{key=sessionStorage.getItem(storageKey);}catch{}
+    if(!key){key=crypto.randomUUID();try{sessionStorage.setItem(storageKey,key);}catch{}}
+    workspaceLaunches.set(project,{key,storageKey,pending:false});
+  }
+  return workspaceLaunches.get(project);
+}
+function workspaceLaunch(project) {
+  const node=el('div',{'data-workspace-launch':project});
+  fillWorkspaceLaunch(node,project);return node;
+}
+function fillWorkspaceLaunch(node,project) {
+  const draft=launchDraft(project),enabled=session?.features?.workspace_actions===true;
+  const open=button(draft.pending?'Opening workspace…':'Open IDE',()=>openIDE(project));open.disabled=!enabled||draft.pending;
+  node.replaceChildren(el('div',{class:'actions'},open));
+  if(draft.result?.launch_url)node.append(el('a',{href:draft.result.launch_url,target:'_blank',rel:'noopener noreferrer'},'Continue to IDE'),el('p',{class:'metadata'},'Your workspace is ready. This page and its unsaved drafts stay open.'));
+  else node.append(el('p',{class:'metadata',role:'status'},draft.error || (enabled?'Open your own workspace. Saved files can be checkpointed and pushed.':'IDE access needs deployment setup.')));
+  if(draft.absent)node.append(button('Start a new workspace',()=>{draft.key=crypto.randomUUID();try{sessionStorage.setItem(draft.storageKey,draft.key);}catch{}draft.absent=false;return openIDE(project);}));
+}
+function syncWorkspaceLaunch(project) {for(const node of document.querySelectorAll('[data-workspace-launch]'))if(node.dataset.workspaceLaunch===project)fillWorkspaceLaunch(node,project);}
+async function openIDE(project,target) {
+  const draft=launchDraft(project);if(draft.pending)return;
+  const submittedTarget=target?structuredClone(target):undefined;
+  let popup;try{popup=window.open('about:blank','_blank');if(popup){popup.opener=null;popup.document.title='Opening workspace';popup.document.body.textContent='Sigil is preparing your workspace. Your dashboard stays open.';}}catch{}
+  draft.pending=true;draft.error=null;draft.result=null;syncWorkspaceLaunch(project);
+  try {
+    await checkSession();
+    const result=await request(`/browser/api/projects/${encodeURIComponent(project)}/ide`,{method:'POST',body:JSON.stringify({idempotency_key:draft.key,...(submittedTarget?{target:submittedTarget}:{})})});
+    draft.result=result;
+    if(popup&&!popup.closed)popup.location.replace(result.launch_url);
+    return result;
+  }catch(e){if(popup&&!popup.closed)popup.close();if(e.status===401)showAuth();draft.error=errorText(e);draft.absent=e.body?.error==='allocation_absent_or_closed';}
+  finally{draft.pending=false;syncWorkspaceLaunch(project);}
+}
+function workspaceControls(record) {
+  const node=el('div',{class:'actions'});
+  if(!session?.features?.workspace_actions || session.actor?.driver!==record.actor?.driver)return node;
+  const status=el('p',{class:'metadata',role:'status'});let busy=false;
+  for(const action of ['checkpoint','finish']) {
+    const control=button(action==='checkpoint'?'Checkpoint & push':'Finish workspace',async()=>{
+      if(busy)return;if(action==='finish'&&!confirm('Save your editor buffers first. Finish stops the editor, pushes saved files and attempts to merge. Failures preserve the workspace. Continue?'))return;
+      busy=true;status.textContent='Checking workspace…';
+      try{await checkSession();const observed=await request(`/browser/api/sessions/${encodeURIComponent(record.session_id)}/ide`);if(typeof observed.generation!=='string')throw new Error('Workspace generation unavailable');const result=await request(`/browser/api/sessions/${encodeURIComponent(record.session_id)}/ide`,{method:'POST',body:JSON.stringify({action,generation:observed.generation})});status.textContent=action==='finish'?`Workspace finished. Merge: ${result.merge||'recorded'}.`:'Saved files checkpointed and pushed. Unsaved buffers remain in the editor.';if(action==='finish'){const draft=launchDraft(record.project||route.project);try{sessionStorage.removeItem(draft.storageKey);}catch{}workspaceLaunches.delete(record.project||route.project);}}
+      catch(e){if(e.status===401)showAuth();status.textContent=errorText(e)+' Your workspace is preserved. Check status and deliberately retry.';}finally{busy=false;}
+    });node.append(control);
+  }
+  node.append(status);return node;
+}
 function renderProject(p) {
-  heading(p.display_name || p.name,p.description || p.name,el('div', {
-  }
-  ,el('button', {
-    type:'button',disabled:true
-  }
-  ,'Open IDE'),el('div', {
-    class:'metadata'
-  }
-  ,'IDE integration pending')));
+  heading(p.display_name || p.name,p.description || p.name,workspaceLaunch(p.name));
   const target = $('project-data');
   if(!target)return;
   const panel = el('section', {
@@ -524,7 +568,7 @@ function renderProject(p) {
     ,'Workspaces'),capability('workspace',p),el('p', {
       class:'muted'
     }
-    ,'Closing this browser does not close or merge a workspace. IDE launch, checkpoint and finish controls await the reviewed IDE adapter.'));
+    ,'Closing this browser does not close or merge a workspace. Save editor buffers before checkpointing or finishing.'));
     const sessions = p.sessions?.items || [];
     panel.append(sessions.length?makeTable(['Workspace','Operator','Branch','Lifecycle','Readiness'],sessions.map(s => [s.session_id || s.id,el('div', {
     }
@@ -538,11 +582,11 @@ function renderProject(p) {
     ,badge(s.state || s.lifecycle),el('div', {
       class:'metadata'
     }
-    ,`Generation ${s.generation??'not observed'}`)),el('div', {
+    ,'Saved files and merge outcomes are checked separately.')),el('div', {
     }
     ,badge(s.ready === true?'ready':'pending'),el('p', {
     }
-    ,label(s.error || s.readiness?.reason || 'readiness_not_observed')),diagnostics(s))])):empty('No workspace sessions recorded for this project.'));
+    ,label(s.error || s.readiness?.reason || 'readiness_not_observed')),workspaceControls(s),diagnostics(s))])):empty('No workspace sessions recorded for this project.'));
     break;
     case'app':panel.append(el('h2', {
     }
@@ -995,7 +1039,7 @@ document.addEventListener('visibilitychange',() => {
 setInterval(() => refresh(),30000);
 // Shared narrow helpers for later reviewed browser adapters. Credentials stay in the server.
 window.Sigil = {
-  el,request,navigate,showAuth,checkSession
+  el,request,navigate,showAuth,checkSession,openIDE
 }
 ;
 renderRoute();

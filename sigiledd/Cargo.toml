@@ -37,5 +37,19 @@ base64 = "0.22"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dependencies.hyper]
+version = "1"
+features = ["client", "http1"]
+
+[dependencies.hyper-util]
+version = "0.1"
+features = ["tokio"]
+
+[dependencies.http-body-util]
+version = "0.1"
+
+[dependencies.futures-util]
+version = "0.3"
+
 [dev-dependencies]
 sigil-ide-agent = { path = "../ide-agent" }

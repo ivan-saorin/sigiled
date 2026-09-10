@@ -713,3 +713,7 @@ release acceptance remain required; see `ide-runtime.md` for precise limits.
 ## 2026-09-10 — C1/C3 review fixes (source only)
 
 Lifecycle now consumes a generation-bound clean finish receipt after owned editor quiescence and retryable preference publication. Saved changes during push block close/recycle/reap. Host PAT routing applies only to master, retaining actual session branch deletion. Activity uses stable execution IDs; layer USER inspection uses the captured image ID. Deterministic Git/process/handler fixtures cover the review failures. Prior full regression qualification remains 199 control-plane passes / 2 timing failures; no timing deadlines changed, deployment or live policy mutation performed.
+
+## 2026-09-10 — C2 browser IDE gateway source
+
+Implemented B1 human launch/access, durable actor/project allocation, generation-scoped HTTP/WS gateway and revocation, declared isolated preview ports, shared controls and file navigation. Added focused local transport/browser evidence with code-server 4.136.2 and Chromium 151.0.7922.34. No live deployment/lifecycle or policy changes. See [ide-gateway.md](ide-gateway.md); known supervisor timing/termination qualifications remain Stage E work.

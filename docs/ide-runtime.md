@@ -188,3 +188,7 @@ preserving workspace files and the live profile. Then retry ordinary start or
 finish so pending preferences and saved Git work receive their normal checks.
 If termination or ownership cannot be proved, keep the workspace and marker.
 This manual custody recovery was not exercised against a live runtime here.
+
+## C2 authenticated gateway
+
+See [ide-gateway.md](ide-gateway.md) for generation origins, B1 authority, declared isolated previews, resource-document restrictions and live release gates. The companion now supports authenticated bounded `/file-target` existence/containment probes. `/editor` and `/editor/` both preserve provider root queries. Lifecycle and strict finish receipts are unchanged.

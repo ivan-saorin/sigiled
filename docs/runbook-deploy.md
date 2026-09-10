@@ -182,3 +182,9 @@ WebSocket revocation and live browser acceptance are still required. Back up
 session state plus separately retained operator profile volumes; never roll an
 IDE-used live generation back to a binary unaware of its checkpoint/activity
 binding. Source tests and local provider smoke are not a production deployment.
+
+### C2 gateway release and rollback
+
+Read [ide-gateway.md](ide-gateway.md) and the commented isolated wildcard edge example. Provision both actual wildcard DNS/TLS names and validate the candidate edge in its installed version before enabling the explicit readiness acknowledgments. Keep machine paths and caller JWTs unchanged. Verify a real human launch, resource/worker/terminal socket authority, logout revocation, isolated preview denial of IDE controls, explicit finish failure recovery, and dynamic project appearance. Record live receipts; source/loopback checks cannot complete deployment.
+
+Rollback disables IDE/preview wildcard routing and readiness configuration together, revoking browser access while preserving workspaces, state intents and profile volumes. Keep a C1-aware controller available for safe recovery/finish. Do not roll back to a binary that can destroy an IDE-used generation without the strict receipt. Never remove runtime containers or profile volumes as a browser rollback shortcut.

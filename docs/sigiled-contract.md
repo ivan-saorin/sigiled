@@ -582,3 +582,7 @@ edge deployment remain separate release prerequisites.
 ### IDE lifecycle durability receipt (C1/C3 review correction)
 
 IDE-used close, recycle and reap require internal companion POST /finish: owned editor process group stopped, pending preferences published, and the expected session commit pushed with a verified clean working tree. Receipt: state=finished, exact generation, valid pushed SHA and dirty=false. Concurrent saved changes or failed verification preserve the workspace. Manual checkpoint alone is insufficient for destruction. Public IDE action names remain start/stop/checkpoint/finish. Activity command events now require a stable execution_id alongside the existing generation string; unmatched/duplicate ends cannot release another known command.
+
+## C2 browser IDE access
+
+[ide-gateway.md](ide-gateway.md) defines the implemented human launch, safe status, checkpoint/finish and isolated preview adapters. Browser generation fields are canonical decimal strings; machine contracts stay numeric. Durable actor/project allocation intents survive lost responses and never adopt agent sessions. Runtime tokens remain server-side. Feature readiness defaults off pending actual deployment validation.

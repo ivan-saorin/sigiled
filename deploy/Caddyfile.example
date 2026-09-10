@@ -178,3 +178,41 @@ auth.{$DOMAIN} {
 #	  -H 'Authorization: Bearer not-a-token' https://search.{$DOMAIN}/
 #	# 401 — a bad credential is still refused, which is the check that
 #	# actually matters after widening what counts as a good one.
+
+# C2 isolated browser origins — disabled example. Supply real wildcard DNS
+# and already-provisioned wildcard certificates; none are assumed to exist.
+# Do not import the service forward_auth/bearer snippets here. Sigiled checks
+# its own B1-derived host-only grant on every request/upgrade. Do not rewrite
+# paths or add dashboard CSP, CORS, identity headers, caching or cookie domains.
+# TLS files below are explicit operator-mounted paths, not automatic issuance.
+#
+# *.ide.example.com {
+#     tls /etc/caddy/certs/ide.fullchain.pem /etc/caddy/certs/ide.key
+#     reverse_proxy sigiled:8080 {
+#         header_up Host {host}
+#         header_up -X-Authentik-Username
+#         header_up -X-Authentik-Groups
+#         header_up -X-Authentik-Email
+#         transport http {
+#             dial_timeout 3s
+#             response_header_timeout 90s
+#         }
+#     }
+# }
+# *.preview.example.com {
+#     tls /etc/caddy/certs/preview.fullchain.pem /etc/caddy/certs/preview.key
+#     reverse_proxy sigiled:8080 {
+#         header_up Host {host}
+#         header_up -X-Authentik-Username
+#         header_up -X-Authentik-Groups
+#         header_up -X-Authentik-Email
+#         transport http {
+#             dial_timeout 3s
+#             response_header_timeout 90s
+#         }
+#     }
+# }
+# Leave access logging disabled on these hosts or explicitly redact Cookie,
+# Authorization, control bodies and provider WS query values. Launch tickets
+# travel only in fragments and same-origin POST bodies. Verify upgrade support
+# and exact external HTTPS authority in the actual edge before release.

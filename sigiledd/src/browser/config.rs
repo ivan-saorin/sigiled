@@ -5,6 +5,8 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct Config {
     pub origins: Vec<String>,
+    pub ide_domain: Option<String>,
+    pub preview_domain: Option<String>,
     pub dashboard_origin: String,
     pub issuer: String,
     pub authorization: String,
@@ -51,6 +53,13 @@ impl Config {
             "ALLOW_LOOPBACK_HTTP",
             "IDLE_SECONDS",
             "ABSOLUTE_SECONDS",
+            "PREVIEW_DOMAIN",
+            "PREVIEW_DNS_TLS_READY",
+            "IDE_DOMAIN",
+            "IDE_DNS_TLS_READY",
+            "IDE_OIDC_READY",
+            "IDE_PROVIDER_READY",
+            "IDE_POLICY_READY",
         ];
         if env
             .keys()
@@ -140,7 +149,55 @@ impl Config {
         };
         let absolute_seconds = duration("ABSOLUTE_SECONDS", 28800, 86400)?;
         let idle_seconds = duration("IDLE_SECONDS", 900, absolute_seconds)?;
+        let ide_domain = get("IDE_DOMAIN").map(str::to_owned);
+        if let Some(domain) = &ide_domain {
+            if !super::ide_gateway::valid_domain(domain) || overlaps(&origins, domain) {
+                return Err("browser: invalid isolated IDE domain");
+            }
+            for key in [
+                "IDE_DNS_TLS_READY",
+                "IDE_OIDC_READY",
+                "IDE_PROVIDER_READY",
+                "IDE_POLICY_READY",
+            ] {
+                if get(key) != Some("true") {
+                    return Err("browser: IDE prerequisites not explicitly ready");
+                }
+            }
+        } else if [
+            "IDE_DNS_TLS_READY",
+            "IDE_OIDC_READY",
+            "IDE_PROVIDER_READY",
+            "IDE_POLICY_READY",
+        ]
+        .iter()
+        .any(|k| get(k).is_some())
+        {
+            return Err("browser: IDE domain required");
+        }
+        let preview_domain = get("PREVIEW_DOMAIN").map(str::to_owned);
+        if let Some(preview) = &preview_domain {
+            if get("PREVIEW_DNS_TLS_READY") != Some("true") {
+                return Err("browser: preview DNS/TLS not ready");
+            }
+            let Some(ide) = &ide_domain else {
+                return Err("browser: preview requires IDE gateway");
+            };
+            if !super::ide_gateway::valid_domain(preview)
+                || preview == ide
+                || preview.ends_with(&format!(".{ide}"))
+                || ide.ends_with(&format!(".{preview}"))
+                || overlaps(&origins, preview)
+            {
+                return Err("browser: separate preview domain required");
+            }
+        }
+        if preview_domain.is_none() && get("PREVIEW_DNS_TLS_READY").is_some() {
+            return Err("browser: preview domain required");
+        }
         Ok(Some(Self {
+            preview_domain,
+            ide_domain,
             origins,
             dashboard_origin,
             issuer,
@@ -203,4 +260,13 @@ pub(super) fn return_path(path: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"/-_.~".contains(&b))
         && !path.split('/').any(|s| s == "." || s == "..")
         && !path.starts_with("/browser/")
+}
+
+fn overlaps(origins: &[String], domain: &str) -> bool {
+    origins.iter().any(|o| {
+        Url::parse(o)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .is_some_and(|host| host == domain || host.ends_with(&format!(".{domain}")))
+    })
 }

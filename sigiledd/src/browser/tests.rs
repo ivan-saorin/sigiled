@@ -101,11 +101,11 @@ async fn token(State(fake): State<Fake>, Form(form): Form<HashMap<String, String
     }
     Json(body).into_response()
 }
-struct Fixture {
-    state: AppState,
+pub(super) struct Fixture {
+    pub(super) state: AppState,
     fake: Fake,
-    base: String,
-    client: reqwest::Client,
+    pub(super) base: String,
+    pub(super) client: reqwest::Client,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 impl Drop for Fixture {
@@ -136,6 +136,12 @@ impl Fixture {
         Self::with_github(None).await
     }
     async fn with_github(github: Option<crate::github::GitHub>) -> Self {
+        Self::with_options(github, false).await
+    }
+    pub(super) async fn gateway() -> Self {
+        Self::with_options(None, true).await
+    }
+    async fn with_options(github: Option<crate::github::GitHub>, gateway: bool) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let fake = Fake {
@@ -163,8 +169,39 @@ impl Fixture {
             bootstrap_bearer: Some("synthetic-bootstrap".into()),
             ..auth::AuthConfig::default()
         });
+        let mut browser_config = config_map(&fake.origin);
+        if gateway {
+            browser_config.insert(
+                "SIGILED_BROWSER_IDE_DOMAIN".into(),
+                "ide.example.test".into(),
+            );
+            browser_config.insert(
+                "SIGILED_BROWSER_PREVIEW_DOMAIN".into(),
+                "preview.example.test".into(),
+            );
+            browser_config.insert(
+                "SIGILED_BROWSER_PREVIEW_DNS_TLS_READY".into(),
+                "true".into(),
+            );
+            state.store = crate::store::Store::at_dir(
+                &state.sessions.repos_dir.as_ref().unwrap().join("state"),
+            );
+            state.registry.insert(crate::project::ProjectRecord::new(
+                "demo",
+                &crate::manifest::Manifest::parse("").unwrap(),
+                None,
+            ));
+            for k in [
+                "IDE_DNS_TLS_READY",
+                "IDE_OIDC_READY",
+                "IDE_PROVIDER_READY",
+                "IDE_POLICY_READY",
+            ] {
+                browser_config.insert(format!("SIGILED_BROWSER_{k}"), "true".into());
+            }
+        }
         state.browser = BrowserState::configured(
-            Config::from_map(&config_map(&fake.origin)).unwrap(),
+            Config::from_map(&browser_config).unwrap(),
             &state.auth.config,
         )
         .unwrap();
@@ -221,7 +258,7 @@ impl Fixture {
         .await
         .unwrap()
     }
-    async fn signed_in(&self) -> (String, Value) {
+    pub(super) async fn signed_in(&self) -> (String, Value) {
         let (state, binding) = self.start().await;
         let response = self.callback(&state, &binding).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -1485,4 +1522,124 @@ async fn dashboard_project_partial_retry_two_tabs_and_approval() {
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     assert_eq!(generated.load(Ordering::SeqCst), 2);
     task.abort();
+}
+
+#[tokio::test]
+async fn ide_gateway_disabled_is_explicit_and_authenticated() {
+    let f = Fixture::new().await;
+    let (cookie, session) = f.signed_in().await;
+    let r = f
+        .request(reqwest::Method::POST, "/browser/api/projects/demo/ide")
+        .header("cookie", cookie)
+        .header("origin", "https://sigil.test")
+        .header("x-sigil-csrf", session["csrf_token"].as_str().unwrap())
+        .json(&json!({"idempotency_key":"one-operation"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::CONFLICT,
+        "gateway must return explicit disabled capability"
+    );
+    assert_eq!(
+        r.json::<Value>().await.unwrap()["error"],
+        "ide_gateway_not_configured"
+    );
+}
+
+#[tokio::test]
+async fn ide_parent_authority_shares_refresh_and_does_not_invent_idle_activity() {
+    let f = Fixture::new().await;
+    let (state, binding) = f.start().await;
+    let r = f.callback(&state, &binding).await;
+    let cookie = response_cookie(&r, SESSION);
+    let id = cookie.split_once('=').unwrap().1;
+    f.expire_access(&cookie);
+    let b = f.state.browser.inner().unwrap();
+    let session = b.store.lock().unwrap().sessions[id].clone();
+    let before = auth::now_epoch() - 60;
+    session.last_seen.store(before, Ordering::Relaxed);
+    let (a, c) = tokio::join!(
+        resolve_session(&f.state, id, false),
+        resolve_session(&f.state, id, false)
+    );
+    assert!(
+        a.is_ok() && c.is_ok(),
+        "IDE must use actual B1 credential refresh authority"
+    );
+    assert_eq!(f.fake.refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        session.last_seen.load(Ordering::Relaxed),
+        before,
+        "background validation is not activity"
+    );
+    assert!(resolve_session(&f.state, id, true).await.is_ok());
+    assert!(session.last_seen.load(Ordering::Relaxed) > before);
+    b.store.lock().unwrap().sessions.remove(id);
+    assert!(
+        resolve_session(&f.state, id, true).await.is_err(),
+        "revocation wins over valid cached credentials"
+    );
+}
+
+#[test]
+fn gateway_readiness_and_origin_configuration_fail_closed() {
+    let mut base = config_map("https://idp.test");
+    base.insert(
+        "SIGILED_BROWSER_IDE_DOMAIN".into(),
+        "ide.example.test".into(),
+    );
+    for k in [
+        "IDE_DNS_TLS_READY",
+        "IDE_OIDC_READY",
+        "IDE_PROVIDER_READY",
+        "IDE_POLICY_READY",
+    ] {
+        base.insert(format!("SIGILED_BROWSER_{k}"), "true".into());
+    }
+    assert!(Config::from_map(&base).is_ok());
+    for key in [
+        "IDE_DNS_TLS_READY",
+        "IDE_OIDC_READY",
+        "IDE_PROVIDER_READY",
+        "IDE_POLICY_READY",
+    ] {
+        let mut map = base.clone();
+        map.remove(&format!("SIGILED_BROWSER_{key}"));
+        assert!(Config::from_map(&map).is_err());
+    }
+    let mut shared = base.clone();
+    shared.insert(
+        "SIGILED_BROWSER_ORIGINS".into(),
+        "https://dashboard.ide.example.test:8443".into(),
+    );
+    assert!(
+        Config::from_map(&shared).is_err(),
+        "cookie hostname isolation also applies across ports"
+    );
+    let mut orphan = base.clone();
+    orphan.insert(
+        "SIGILED_BROWSER_PREVIEW_DNS_TLS_READY".into(),
+        "true".into(),
+    );
+    assert!(
+        Config::from_map(&orphan).is_err(),
+        "preview readiness needs an explicit domain"
+    );
+    for domain in [
+        "ide.example.test",
+        "child.ide.example.test",
+        "EXAMPLE.TEST",
+        "127.0.0.1",
+        "https://preview.example.test",
+    ] {
+        let mut map = base.clone();
+        map.insert("SIGILED_BROWSER_PREVIEW_DOMAIN".into(), domain.into());
+        map.insert(
+            "SIGILED_BROWSER_PREVIEW_DNS_TLS_READY".into(),
+            "true".into(),
+        );
+        assert!(Config::from_map(&map).is_err(), "{domain}");
+    }
 }

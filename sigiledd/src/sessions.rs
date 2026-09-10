@@ -115,6 +115,7 @@ pub struct SessionState {
     debts: Arc<RwLock<HashMap<String, Vec<MergeDebt>>>>,
     merge_locks: Locks,
     session_locks: Locks,
+    pub(crate) browser_allocations: Arc<Mutex<HashMap<String, String>>>,
 }
 impl Default for SessionState {
     fn default() -> Self {
@@ -130,6 +131,7 @@ impl Default for SessionState {
             debts: Arc::default(),
             merge_locks: Arc::default(),
             session_locks: Arc::default(),
+            browser_allocations: Arc::default(),
         }
     }
 }
@@ -143,6 +145,7 @@ impl SessionState {
             debts: Arc::default(),
             merge_locks: Arc::default(),
             session_locks: Arc::default(),
+            browser_allocations: Arc::default(),
         }
     }
     pub fn debts_for(&self, project: &str) -> Vec<MergeDebt> {
@@ -350,6 +353,15 @@ pub async fn open(
     State(state): State<crate::AppState>,
     AxPath(project): AxPath<String>,
 ) -> Response {
+    open_inner(actor, state, project, None, true).await
+}
+async fn open_inner(
+    actor: Actor,
+    state: crate::AppState,
+    project: String,
+    selected_id: Option<String>,
+    allow_orphan: bool,
+) -> Response {
     if let Err(d) = authorize(
         &actor,
         Action::OpenSession,
@@ -368,11 +380,17 @@ pub async fn open(
     {
         return err(StatusCode::BAD_REQUEST, "invalid project slug");
     }
-    let id = SessionState::session_id();
+    let id = selected_id.unwrap_or_else(SessionState::session_id);
     let session_lock = state.sessions.session_lock(&id);
     let _session = session_lock.lock_owned().await;
+    if state.sessions.record(&id).is_some() {
+        return err(StatusCode::CONFLICT, "allocation identity already exists");
+    }
     let lock = state.sessions.merge_lock(&project);
     let _guard = lock.lock_owned().await;
+    if !allow_orphan && !state.sessions.debts_for(&project).is_empty() {
+        return err(StatusCode::CONFLICT, "merge debt requires resolution");
+    }
     let rt = state.sessions.runtime.as_ref();
     let mut record = SessionRecord {
         session_id: id.clone(),
@@ -421,9 +439,11 @@ pub async fn open(
         }
         repo
     };
-    if let Some(branch) = find_orphan(&repo, &project, &state) {
-        record.branch = branch;
-        record.stale = true;
+    if allow_orphan {
+        if let Some(branch) = find_orphan(&repo, &project, &state) {
+            record.branch = branch;
+            record.stale = true;
+        }
     }
     state.sessions.put(record.clone());
     if state.try_persist().is_err() {
@@ -831,6 +851,27 @@ pub async fn recycle(
     Json(json!({"session_id":id,"project":record.project,"branch":record.branch,"token":record.token,"endpoint":record.binding.as_ref().map(|b|&b.endpoint),"sha_at_recycle":record.head,"flushed":true,"image":image,"generation":record.generation,"state":record.lifecycle})).into_response()
 }
 
+pub(crate) async fn open_human(
+    actor: Actor,
+    state: crate::AppState,
+    project: String,
+    id: String,
+) -> Response {
+    if !actor.driver.starts_with("human:")
+        || id.len() != 32
+        || !id.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return err(StatusCode::FORBIDDEN, "human allocation required");
+    }
+    if !state.sessions.debts_for(&project).is_empty() {
+        return err(StatusCode::CONFLICT, "merge debt requires resolution");
+    }
+    open_inner(actor, state, project, Some(id), false).await
+}
+pub(crate) fn reserve_id() -> String {
+    SessionState::session_id()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1132,3 +1173,5 @@ mod tests {
         assert!(repo.join("left.txt").exists() && repo.join("right.txt").exists());
     }
 }
+
+// Private browser allocation entry; machine callers never select an identity.

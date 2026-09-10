@@ -1,3 +1,5 @@
+#[path = "../../shared/file_target.rs"]
+mod file_target;
 use axum::{
     body::Body,
     extract::{Request, State},
@@ -430,7 +432,12 @@ async fn editor(State(_a): State<Arc<Agent>>, mut request: Request) -> Response 
     else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let uri = if path.is_empty() { "/" } else { path };
+    let normalized = if path.is_empty() || path.starts_with('?') {
+        format!("/{path}")
+    } else {
+        path.to_owned()
+    };
+    let uri = normalized.as_str();
     let Ok(uri) = uri.parse() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
@@ -527,7 +534,12 @@ fn router(a: Arc<Agent>) -> Router {
         .route("/checkpoint", post(checkpoint))
         .route("/finish", post(finish))
         .route("/activity", post(activity))
+        .route(
+            "/file-target",
+            post(file_target_probe).layer(axum::extract::DefaultBodyLimit::max(4096)),
+        )
         .route("/editor", axum::routing::any(editor))
+        .route("/editor/", axum::routing::any(editor))
         .route("/editor/{*path}", axum::routing::any(editor))
         .layer(axum::middleware::from_fn_with_state(a.clone(), gate))
         .with_state(a)
@@ -574,6 +586,38 @@ async fn checkpoint(State(a): State<Arc<Agent>>) -> Response {
         )
             .into_response(),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileProbe {
+    generation: String,
+    target: file_target::FileTarget,
+}
+async fn file_target_probe(State(a): State<Arc<Agent>>, Json(probe): Json<FileProbe>) -> Response {
+    if probe.generation != a.config.generation.to_string() || !probe.target.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_file_target"})),
+        )
+            .into_response();
+    }
+    let valid = std::fs::canonicalize(&a.repository_root)
+        .ok()
+        .and_then(|root| {
+            std::fs::canonicalize(root.join(&probe.target.path))
+                .ok()
+                .map(|p| p.starts_with(root) && p.is_file())
+        })
+        .unwrap_or(false);
+    if !valid {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"source_missing_or_moved"})),
+        )
+            .into_response();
+    }
+    Json(json!({"exists":true,"generation":a.config.generation.to_string()})).into_response()
 }
 
 #[cfg(test)]
@@ -923,13 +967,48 @@ mod tests {
         server.abort();
     }
     #[tokio::test]
+    async fn file_target_probe_checks_generation_missing_and_symlink_escape() {
+        let root = std::env::temp_dir().join(format!("gateway-file-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("source.txt"), "source").unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", root.join("escape.txt")).unwrap();
+        let mut a = agent();
+        Arc::get_mut(&mut a).unwrap().repository_root = root.clone();
+        let (url, server) = serve(a.clone()).await;
+        let http = reqwest::Client::new();
+        for (path, generation, expected) in [
+            ("source.txt", u64::MAX.to_string(), StatusCode::OK),
+            ("missing.txt", u64::MAX.to_string(), StatusCode::NOT_FOUND),
+            ("escape.txt", u64::MAX.to_string(), StatusCode::NOT_FOUND),
+            ("../outside", "1".into(), StatusCode::BAD_REQUEST),
+            ("source.txt", "1".into(), StatusCode::BAD_REQUEST),
+        ] {
+            let response = http
+                .post(format!("{url}/file-target"))
+                .bearer_auth(&a.config.token)
+                .json(&json!({"generation":generation,"target":{"path":path,"line":2,"column":3}}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            assert!(!response.text().await.unwrap().contains(&a.config.token));
+        }
+        server.abort();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
     async fn authenticated_relay_has_fixed_upstream_and_transports_http_and_upgrade() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let upstream = tokio::net::TcpListener::bind("127.0.0.1:8091")
             .await
             .unwrap();
         let fake = tokio::spawn(async move {
-            for upgrade in [false, true] {
+            for (upgrade, path) in [
+                (false, "/fixture?q=1"),
+                (false, "/?folder=%2Fworkspace&payload=kept"),
+                (false, "/?folder=%2Fworkspace&payload=kept"),
+                (true, "/fixture"),
+            ] {
                 let (mut socket, _) = upstream.accept().await.unwrap();
                 let mut request = Vec::new();
                 loop {
@@ -941,7 +1020,10 @@ mod tests {
                     }
                 }
                 let request = String::from_utf8(request).unwrap();
-                assert!(request.starts_with("GET /fixture"));
+                assert!(
+                    request.starts_with(&format!("GET {path} HTTP/1.1")),
+                    "query and root path must survive relay"
+                );
                 assert!(!request.to_lowercase().contains("authorization:"));
                 assert!(!request.to_lowercase().contains("cookie:"));
                 if upgrade {
@@ -966,6 +1048,19 @@ mod tests {
             .unwrap();
         assert!(!r.headers().contains_key("set-cookie"));
         assert_eq!(r.text().await.unwrap(), "ok");
+        for path in [
+            "/editor?folder=%2Fworkspace&payload=kept",
+            "/editor/?folder=%2Fworkspace&payload=kept",
+        ] {
+            let r = http
+                .get(format!("{url}{path}"))
+                .bearer_auth(&a.config.token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::OK);
+            assert_eq!(r.text().await.unwrap(), "ok");
+        }
         let mut socket = tokio::net::TcpStream::connect(url.trim_start_matches("http://"))
             .await
             .unwrap();
