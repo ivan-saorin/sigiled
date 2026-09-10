@@ -82,7 +82,7 @@ async fn status(State(a): State<Arc<Agent>>) -> Json<serde_json::Value> {
     };
     let activity = a.activity.lock().unwrap();
     Json(
-        json!({"generation":a.config.generation,"session":a.config.session,"state":state,"idle_secs":activity.idle_secs(),"activity_contract":"terminal-observation-v3","activity_observation":activity.observation(),"busy":activity.busy() || a.checkpoint_busy.load(std::sync::atomic::Ordering::SeqCst),"durability":*a.last.lock().unwrap()}),
+        json!({"generation":a.config.generation,"session":a.config.session,"state":state,"idle_secs":activity.idle_secs(),"activity_contract":"terminal-observation-v4","activity_observation":activity.observation(),"busy":activity.busy() || a.checkpoint_busy.load(std::sync::atomic::Ordering::SeqCst),"durability":*a.last.lock().unwrap()}),
     )
 }
 async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
@@ -859,6 +859,68 @@ mod tests {
         assert!(
             sigil_ide_agent::profile::pending(std::path::Path::new(&a.config.profile)).unwrap()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn old_first_observer_custody_blocks_helper_stop_and_finish() {
+        let mut a = agent();
+        let root =
+            std::env::temp_dir().join(format!("old-observer-evidence-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("repo")).unwrap();
+        let inner = Arc::get_mut(&mut a).unwrap();
+        inner.repository_root = root.join("repo");
+        inner.profile_root = root.join("snapshots");
+        inner.config.profile = root.join("profile").to_string_lossy().into();
+        let _cleanup = StopFixture(a.clone());
+        a.activity.lock().unwrap().require_observation();
+        let mut command = std::process::Command::new("sleep");
+        command.arg("60");
+        *a.process.lock().await = Some(Process::start(&mut command).unwrap());
+        let snapshot = |observer: &str, sequence: &str, running: bool| json!({"event":"observation","generation":a.config.generation.to_string(),"observation":{"observer":observer,"sequence":sequence,"terminals":if running{json!([{"id":"old-terminal","integrated":true}])}else{json!([])},"executions":if running{json!(["old-running-command"])}else{json!([])},"event":if running{Some("command_start")}else{None}}});
+        assert_eq!(
+            activity(
+                State(a.clone()),
+                Json(serde_json::from_value(snapshot("old-extension", "1", true)).unwrap())
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        let began = std::time::Instant::now();
+        for (observer, sequence) in [
+            ("v3:new-extension", "1"),
+            ("old-extension", "1"),
+            ("v3:new-extension", "2"),
+            ("old-extension", "3"),
+            ("v3:new-extension", "4"),
+        ] {
+            activity(
+                State(a.clone()),
+                Json(serde_json::from_value(snapshot(observer, sequence, false)).unwrap()),
+            )
+            .await;
+            for response in [
+                stop_inner(State(a.clone())).await,
+                finish_action(State(a.clone())).await,
+            ] {
+                assert_eq!(response.status(), StatusCode::CONFLICT);
+                let body = axum::body::to_bytes(response.into_body(), 4096)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"],
+                    "terminal_observation_unavailable"
+                );
+            }
+            assert!(
+                a.process.lock().await.as_mut().unwrap().running(),
+                "owned writer survives every denial"
+            );
+        }
+        assert!(
+            began.elapsed().as_secs() < 10,
+            "deny before any freshness expiry"
+        );
+        a.process.lock().await.as_mut().unwrap().stop().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]

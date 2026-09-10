@@ -80,10 +80,6 @@ impl Activity {
             self.conflict = true;
             return false;
         }
-        if !value.observer.starts_with("v3:") {
-            self.incomplete = true;
-            return false;
-        }
         if self.conflict || sequence <= self.sequence {
             return false;
         }
@@ -91,6 +87,13 @@ impl Activity {
         // Retain the watermark even on incomplete newer evidence, so a delayed
         // complete packet cannot undo the newly observed uncertainty.
         self.sequence = sequence;
+        // Version rejection is not proof that this observer has no writers.
+        // Retain its single bounded custody identity before rejecting telemetry;
+        // another observer cannot discharge it with an empty snapshot.
+        if !self.observer.as_ref().unwrap().starts_with("v3:") {
+            self.incomplete = true;
+            return false;
+        }
         if value.terminals.len() > 256
             || value.executions.len() > 4096
             || value.terminals.iter().any(|t| !id(&t.id))
@@ -249,6 +252,44 @@ mod observation_tests {
         }
     }
     #[test]
+    fn old_first_active_observer_retains_custody_against_new_and_delayed_traffic() {
+        let mut a = Activity::default();
+        a.require_observation();
+        a.last = Instant::now() - std::time::Duration::from_secs(100);
+        let mut old = snapshot(1, true);
+        old.observer = "old-extension".into();
+        old.terminals[0].id = "old-terminal".into();
+        old.executions.push("old-running-command".into());
+        old.event = Some("command_start".into());
+        assert!(!a.observe(old));
+        assert!(a.busy());
+        assert_eq!(a.observation(), "incomplete");
+        let mut new = snapshot(1, true);
+        new.observer = "v3:new-extension".into();
+        new.terminals.clear();
+        a.observe(new);
+        assert!(a.busy(), "empty B must not release old A's running command");
+        assert_eq!(a.observation(), "conflict");
+        for n in 2..5 {
+            let mut delayed = snapshot(n, true);
+            delayed.observer = "old-extension".into();
+            delayed.terminals.clear();
+            a.observe(delayed);
+            let mut repeated = snapshot(n, true);
+            repeated.observer = "v3:new-extension".into();
+            repeated.terminals.clear();
+            a.observe(repeated);
+            assert!(a.busy());
+            assert_eq!(a.observation(), "conflict");
+        }
+        a.observed_at = Some(Instant::now() - std::time::Duration::from_secs(100));
+        assert!(a.busy());
+        assert!(
+            a.idle_secs() >= 100,
+            "rejected telemetry cannot renew activity"
+        );
+    }
+    #[test]
     fn old_extension_cannot_establish_new_contract_and_duplicate_capacity_is_benign() {
         let mut a = Activity::default();
         a.require_observation();
@@ -257,6 +298,17 @@ mod observation_tests {
         assert!(!a.observe(old));
         assert!(a.busy());
         assert_eq!(a.observation(), "incomplete");
+        assert!(!a.observe(snapshot(3, true)));
+        assert!(a.busy());
+        assert_eq!(
+            a.observation(),
+            "conflict",
+            "even empty old telemetry retains custody"
+        );
+        // Ordering is tested on a separate freshly custodied observer, not an
+        // automatic old-to-new upgrade or a reset of the preceding conflict.
+        let mut a = Activity::default();
+        a.require_observation();
         assert!(a.observe(snapshot(3, true)));
         assert!(!a.busy());
         let mut delayed = snapshot(2, true);

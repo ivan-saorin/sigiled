@@ -1007,7 +1007,7 @@ async fn ide_used_lifecycle_preserves_save_during_push_for_close_recycle_and_rea
             };
             match path {
                 "status" => Ok(
-                    json!({"state":"ready","generation":rec.generation,"idle_secs":10000,"busy":false,"activity_contract":"terminal-observation-v3","activity_observation":"ready"}),
+                    json!({"state":"ready","generation":rec.generation,"idle_secs":10000,"busy":false,"activity_contract":"terminal-observation-v4","activity_observation":"ready"}),
                 ),
                 "stop" => Ok(json!({"state":"stopped"})),
                 "checkpoint" | "finish" => {
@@ -1099,6 +1099,7 @@ async fn ide_missing_observation_never_authorizes_finish_or_idle() {
         Some("conflict"),
         Some("incomplete"),
         Some("wrong-contract"),
+        Some("old-v3-helper"),
     ] {
         *fake.ide_hook.lock().unwrap() = Some(Arc::new(move |path, rec| {
             assert_eq!(
@@ -1106,7 +1107,7 @@ async fn ide_missing_observation_never_authorizes_finish_or_idle() {
                 "uncertain observations must not reach a destructive command"
             );
             Ok(
-                json!({"generation":rec.generation,"state":"ready","busy":false,"idle_secs":10000,"activity_contract":observation.map(|v|if v=="wrong-contract"{"terminal-observation-v2"}else{"terminal-observation-v3"}),"activity_observation":observation}),
+                json!({"generation":rec.generation,"state":"ready","busy":false,"idle_secs":10000,"activity_contract":observation.map(|v|if v=="wrong-contract"{"terminal-observation-v2"}else if v=="old-v3-helper"{"terminal-observation-v3"}else{"terminal-observation-v4"}),"activity_observation":observation.map(|v|if matches!(v,"wrong-contract"|"old-v3-helper"){"ready"}else{v})}),
             )
         }));
         assert_eq!(
@@ -1123,7 +1124,7 @@ async fn ide_missing_observation_never_authorizes_finish_or_idle() {
 
 #[tokio::test]
 async fn ide_fresh_real_helper_conflict_and_capacity_deny_lifecycle() {
-    for kind in ["conflict", "capacity", "overflow"] {
+    for kind in ["old-first", "conflict", "capacity", "overflow"] {
         let (state, fake) = setup();
         let opened = open(&state).await;
         let id = opened["session_id"].as_str().unwrap();
@@ -1171,15 +1172,23 @@ async fn ide_fresh_real_helper_conflict_and_capacity_deny_lifecycle() {
         let send = |observer: &str, sequence: &str, terminals: Value| {
             http.post(format!("{url}/activity")).bearer_auth("fixture-helper-activity-token-0000").json(&json!({"generation":record.generation.to_string(),"event":"observation","observation":{"observer":observer,"sequence":sequence,"terminals":terminals,"executions":[]}})).send()
         };
-        assert_eq!(
-            send("v3:A", "1", json!([])).await.unwrap().status(),
-            StatusCode::NO_CONTENT
-        );
-        let initial = crate::ide::idle_record(&state, &record, 0).await.unwrap();
-        assert_eq!(initial, 0);
+        if kind == "old-first" {
+            let response=http.post(format!("{url}/activity")).bearer_auth("fixture-helper-activity-token-0000").json(&json!({"generation":record.generation.to_string(),"event":"observation","observation":{"observer":"old-extension","sequence":"1","terminals":[{"id":"old-terminal","integrated":true}],"executions":["old-running-command"],"event":"command_start"}})).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(crate::ide::idle_record(&state, &record, 0).await.is_err());
+        } else {
+            assert_eq!(
+                send("v3:A", "1", json!([])).await.unwrap().status(),
+                StatusCode::NO_CONTENT
+            );
+            assert_eq!(
+                crate::ide::idle_record(&state, &record, 0).await.unwrap(),
+                0
+            );
+        }
         let began = std::time::Instant::now();
         let (observer, sequence, terminals) = match kind {
-            "conflict" => ("v3:B", "1", json!([])),
+            "conflict" | "old-first" => ("v3:B", "1", json!([])),
             "capacity" => (
                 "v3:A",
                 "10",
@@ -1232,6 +1241,28 @@ async fn ide_fresh_real_helper_conflict_and_capacity_deny_lifecycle() {
         .await
         .unwrap();
         assert!(crate::ide::idle_record(&state, &record, 0).await.is_err());
+        if kind == "old-first" {
+            for (observer, sequence) in [
+                ("old-extension", "1"),
+                ("v3:B", "2"),
+                ("old-extension", "3"),
+                ("v3:B", "4"),
+            ] {
+                send(observer, sequence, json!([])).await.unwrap();
+                assert!(crate::ide::idle_record(&state, &record, 0).await.is_err());
+                assert!(!crate::ide::flush_record(&state, &record, "fixture").await);
+                assert_eq!(
+                    crate::ide::request(&state, &record, "stop")
+                        .await
+                        .unwrap_err(),
+                    "terminal_observation_unavailable"
+                );
+            }
+            assert_eq!(destructive.load(Ordering::SeqCst), 0);
+            assert!(state.sessions.record(id).is_some());
+            assert!(fake.live.lock().unwrap().contains_key(&record.container()));
+            assert!(began.elapsed().as_secs() < 10);
+        }
         crate::ide::FIXTURE_ENDPOINTS.lock().unwrap().remove(id);
         server.abort();
     }

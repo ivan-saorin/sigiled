@@ -43,7 +43,7 @@ const {chromium}=require('/workspace/target/gateway-browser/node_modules/playwri
   diagnostics.expectConsole(`Refused to execute script from '${url.origin+prefix}/static/node_modules/vsda/rust/web/vsda.js' because its MIME type ('application/json') is not executable, and strict MIME type checking is enabled.`);
 
   await until(async()=>(await helperStatus()).activity_observation==='ready','extension startup must establish observation');
-  const before=await helperStatus();assert.equal(before.busy,false);assert.equal(before.activity_contract,'terminal-observation-v3');
+  const before=await helperStatus();assert.equal(before.busy,false);assert.equal(before.activity_contract,'terminal-observation-v4');
   fs.writeFileSync(root+'/activity-upgrade-observed.json',JSON.stringify({contract:before.activity_contract,observation:before.activity_observation,newObserverAccepted:true}));
   await frame.locator('.monaco-editor .view-lines').first().click({position:{x:40,y:10}});
   await page.keyboard.press('Control+a');await page.keyboard.type('Saved through actual browser editor\n');await page.keyboard.press('Control+s');

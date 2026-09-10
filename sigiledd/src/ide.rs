@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 pub const PROVIDER: &str = "4.136.2";
-pub const HELPER: &str = "3";
+pub const HELPER: &str = "4";
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Binding {
     pub provider: String,
@@ -750,7 +750,7 @@ fn safe_response(
         let d = &value["durability"];
         let durability = json!({"state":d["state"].as_str().filter(|s|matches!(*s,"saved_to_disk"|"dirty"|"pushed"|"paused")).unwrap_or("unknown"),"dirty":d["dirty"].as_bool(),"committed":sha(&d["committed"]),"pushed":sha(&d["pushed"]),"checkpointed":d["checkpointed"].as_bool(),"merged":false,"error":d["error"].as_str().map(safe_error)});
         Ok(
-            json!({"state":state,"generation":generation,"idle_secs":value["idle_secs"].as_u64().ok_or("provider_response_invalid")?,"busy":value["busy"].as_bool().ok_or("provider_response_invalid")?,"activity_contract":value["activity_contract"].as_str().filter(|s|*s=="terminal-observation-v3"),"activity_observation":value["activity_observation"].as_str().filter(|s|matches!(*s,"ready"|"not_required"|"missing"|"stale"|"unsupported"|"conflict"|"incomplete")),"durability":durability}),
+            json!({"state":state,"generation":generation,"idle_secs":value["idle_secs"].as_u64().ok_or("provider_response_invalid")?,"busy":value["busy"].as_bool().ok_or("provider_response_invalid")?,"activity_contract":value["activity_contract"].as_str().filter(|s|*s=="terminal-observation-v4"),"activity_observation":value["activity_observation"].as_str().filter(|s|matches!(*s,"ready"|"not_required"|"missing"|"stale"|"unsupported"|"conflict"|"incomplete")),"durability":durability}),
         )
     } else {
         Ok(json!({"state":state,"generation":generation,"sha":sha(&value["sha"])}))
@@ -823,7 +823,7 @@ pub(crate) static FIXTURE_ENDPOINTS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(Default::default);
 
 fn observation_authority(status: &serde_json::Value) -> Result<(), &'static str> {
-    if status["activity_contract"] != "terminal-observation-v3"
+    if status["activity_contract"] != "terminal-observation-v4"
         || !matches!(
             status["activity_observation"].as_str(),
             Some("ready" | "not_required")
