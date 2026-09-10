@@ -447,6 +447,7 @@ window.SigilMemory = (() => {
         function renderDocument(data) {
             const key = n + '|document|' + selected;
             if (view?.key === key) {
+                view.refreshSource?.(data.source_edit);
                 const c = detail.querySelector('.memory-curation');
                 c?.observe?.(data.curation);
                 if (view.sha !== data.sha || view.text !== data.text) {
@@ -467,12 +468,46 @@ window.SigilMemory = (() => {
             const href = safe(data.ref);
             if (href)
                 holder.append(el('a', { href, target: '_blank', rel: 'noopener noreferrer' }, 'Open source reference'));
-            const sourceEdit = data.source_edit, sourceFeedback = note('');
-            holder.append(p(sourceEdit?.verified ? 'Indexed accepted commit: ' + sourceEdit.indexed_commit + '. Current accepted commit: ' + sourceEdit.current_accepted_commit + '. The current workspace file is checked when opening; missing or moved files are reported.' : 'Current checkout: not observed. Project association is not verified; source editing needs project enrollment.'), b('Edit source', async () => { const result = await S.openIDE(sourceEdit.project, { path: sourceEdit.path }); sourceFeedback.textContent = result?.launch_url ? 'Opening the current workspace file.' : 'Source moved or missing, or the workspace could not open. ' + (result?.error || 'Inspect project workspace status and retry.'); }, sourceEdit?.verified !== true));
-            holder.append(sourceFeedback);
+            let sourceEdit = null, launching = false;
+            const sourceFeedback = note(''), sourceStatus = p('');
+            const edit = b('Edit source', async () => {
+                if (launching || !sourceEdit?.verified) return;
+                const expected = { ...sourceEdit }, t = epoch;
+                launching = true; edit.disabled = true;
+                try {
+                    const fresh = await request(api(n) + '/chunks/' + encodeURIComponent(selected));
+                    if (!alive(t) || view?.key !== key) return;
+                    const association = fresh.source_edit;
+                    refreshSource(association);
+                    if (fresh.id !== selected || fresh.idx !== n || !association?.verified ||
+                        association.owner !== expected.owner || association.project !== expected.project || association.path !== expected.path) {
+                        refreshSource(null);
+                        sourceFeedback.textContent = 'Source association changed or is unavailable. Refresh the record before trying again.';
+                        return;
+                    }
+                    const result = await S.openIDE(association.project, { path: association.path });
+                    if (!alive(t) || view?.key !== key) return;
+                    sourceFeedback.textContent = result?.launch_url ? 'Opening the current workspace file.' : 'Source moved or missing, or the workspace could not open. ' + (result?.error || 'Inspect project workspace status and retry.');
+                } catch (e) {
+                    if (alive(t) && view?.key === key) {
+                        refreshSource(null);
+                        sourceFeedback.textContent = 'Source association is unavailable. Refresh the record before trying again. ' + err(e);
+                    }
+                } finally {
+                    launching = false;
+                    if (alive(t) && view?.key === key) edit.disabled = !sourceEdit?.verified;
+                }
+            }, true);
+            function refreshSource(association) {
+                sourceEdit = association?.verified === true ? association : null;
+                edit.disabled = launching || !sourceEdit;
+                sourceStatus.textContent = sourceEdit ? 'Indexed accepted commit: ' + sourceEdit.indexed_commit + '. Current accepted commit: ' + sourceEdit.current_accepted_commit + '. The current workspace file is checked when opening; missing or moved files are reported.' : 'Current checkout: not observed. Project association is not verified; source editing needs project enrollment.';
+            }
+            refreshSource(data.source_edit);
+            holder.append(sourceStatus, edit, sourceFeedback);
             curationControls(data.target, data.curation, holder, data.id);
             detail.replaceChildren(back, holder);
-            view = { key, sha: data.sha, text: data.text };
+            view = { key, sha: data.sha, text: data.text, refreshSource };
             focusPanel();
         }
         async function loadDetail(t) {
@@ -503,6 +538,7 @@ window.SigilMemory = (() => {
             catch (e) {
                 if (!alive(t))
                     return;
+                view?.refreshSource?.(null);
                 status.textContent = (detailData ? 'Showing stale record. ' : '') + err(e);
                 if (!view)
                     detail.append(note(err(e)));

@@ -533,3 +533,110 @@ fn enrollment_aggregate_snapshot_capacity_is_enforced_by_the_real_store() {
     assert!(store.try_save(&snapshot).is_err());
     assert!(!dir.join("state.json").exists());
 }
+
+#[tokio::test]
+async fn enrollment_fix1_handoff_capacity_retains_close_evidence_and_recovers() {
+    let (repo, _dir, state, project, _token) = fixture();
+    sh(&repo, &["checkout", "-qb", "session/research"]);
+    let files = json!([{"path":"docs/design/idea/dossier.md","content":"# Reviewed dossier\n"},{"path":"docs/design/idea/cover.md","content":"# Reviewed cover\n"}]);
+    for f in files.as_array().unwrap() {
+        write(
+            &repo,
+            f["path"].as_str().unwrap(),
+            f["content"].as_str().unwrap(),
+        );
+    }
+    sh(&repo, &["add", "-A"]);
+    sh(&repo, &["commit", "-qm", "reviewed research"]);
+    let commit = sh(&repo, &["rev-parse", "HEAD"]);
+    let actor = crate::auth::Actor {
+        driver: "human:fixture".into(),
+        role: crate::auth::Role::Admin,
+        approval: None,
+    };
+    let record = crate::sessions::SessionRecord {
+        session_id: "research".into(),
+        project: project.clone(),
+        branch: "session/research".into(),
+        head: commit.clone(),
+        stale: false,
+        actor: actor.clone(),
+        token: None,
+        binding: None,
+        lifecycle: crate::sessions::Lifecycle::Active,
+        generation: 0,
+        error: None,
+        image: None,
+        runtime_owned: false,
+        handoff: Some(
+            json!({"phase":"complete","run_id":"run-one","receipt":{"commit":commit,"pushed":true},"request":{"files":files}}),
+        ),
+    };
+    state.sessions.put(record.clone());
+    state.try_persist().unwrap();
+    accept_handoff(&state, &record, &repo, &sh(&repo, &["rev-parse", "master"])).unwrap();
+    assert!(
+        research_receipt(&state, &project, "run-one", &actor.driver).is_none(),
+        "session-only commit is not accepted"
+    );
+    let receipts: Vec<_> = (0..256)
+        .map(|n| json!({"operation_id":format!("seeded-{n}"),"accepted_commit":commit}))
+        .collect();
+    update(&state, &project, |e| e.handoffs = receipts.clone()).unwrap();
+    let blocked =
+        crate::sessions::close_expected(actor.clone(), state.clone(), "research".into(), Some(0))
+            .await;
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    assert!(state.sessions.record("research").is_some());
+    assert_eq!(
+        sh(&repo, &["rev-parse", "master"]),
+        commit,
+        "master acceptance fact survives receipt-capacity failure"
+    );
+    assert_eq!(
+        state
+            .registry
+            .descriptor(&project)
+            .memory_enrollment
+            .unwrap()
+            .handoffs,
+        receipts,
+        "no silent receipt eviction"
+    );
+    // Seed a repaired capacity state; no production eviction policy is introduced.
+    update(&state, &project, |e| {
+        e.handoffs.pop();
+    })
+    .unwrap();
+    let recovered =
+        crate::sessions::close_expected(actor.clone(), state.clone(), "research".into(), Some(0))
+            .await;
+    assert_eq!(recovered.status(), StatusCode::OK);
+    assert!(state.sessions.record("research").is_none());
+    assert_eq!(
+        state
+            .registry
+            .descriptor(&project)
+            .memory_enrollment
+            .unwrap()
+            .handoffs
+            .len(),
+        256
+    );
+    assert_eq!(
+        research_receipt(&state, &project, "run-one", &actor.driver).unwrap()["master_accepted"],
+        true
+    );
+    accept_handoff(&state, &record, &repo, &commit).unwrap();
+    assert_eq!(
+        state
+            .registry
+            .descriptor(&project)
+            .memory_enrollment
+            .unwrap()
+            .handoffs
+            .len(),
+        256,
+        "same accepted receipt replays even at capacity"
+    );
+}

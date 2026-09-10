@@ -64,11 +64,7 @@ pub(super) async fn ingests(
 ) -> Result<Json<Value>, Error> {
     index(&n)?;
     let v = recorded(&service(&s)?, &n, &c.access_token).await?;
-    let enrollment = s
-        .registry
-        .descriptor(&n)
-        .memory_enrollment
-        .map(|e| e.public());
+    let enrollment = enrollment_for_index(&s, &n).map(|e| e.public());
     let sources:Vec<_>=v.sources.iter().map(|source|json!({"source_id":source.id(&n),"source":source.source,"ref":source.refid,"path":source.path,"last_run":source.last_run,"chunks":source.chunks,"head":source.head})).collect();
     public(
         json!({"accepted_enrollment":enrollment,"accepted_retry":"Use project Retry Memory setup; accepted documents are not legacy reindex sources.","idx":n,"running":v.running,"runs":v.runs,"sources":sources,"last_ingest":v.last_ingest,"history_limitation":"Recent process history; recorded completed sources survive restart."}),
@@ -99,15 +95,7 @@ pub(super) async fn reindex(
             StatusCode::CONFLICT,
             "memory_recorded_source_changed",
         ))?;
-    if source.source == "git"
-        && s.registry
-            .descriptors()
-            .values()
-            .filter_map(|d| d.memory_enrollment.as_ref()?.snapshot.as_ref())
-            .any(|snapshot| {
-                snapshot.repository == source.refid && (snapshot.project == n || snapshot.shared)
-            })
-    {
+    if source.source == "git" && accepted_repository(&s, &n, &source.refid) {
         return Err(Error(
             StatusCode::CONFLICT,
             "accepted_repository_requires_memory_setup_retry",
@@ -130,4 +118,63 @@ pub(super) async fn reindex(
         .await?;
     let v: Run = decode(v)?;
     Ok((status, public(v, &c.access_token)?).into_response())
+}
+
+fn enrollment_for_index(s: &AppState, n: &str) -> Option<crate::enrollment::Enrollment> {
+    s.registry
+        .descriptors()
+        .into_iter()
+        .find_map(|(project, d)| {
+            let e = d.memory_enrollment?;
+            (e.namespace.as_deref().unwrap_or(&project) == n).then_some(e)
+        })
+}
+fn accepted_repository(s: &AppState, n: &str, repository: &str) -> bool {
+    s.registry.descriptors().iter().any(|(project, d)| {
+        d.memory_enrollment.as_ref().is_some_and(|e| {
+            e.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.repository == repository
+                    && (e.namespace.as_deref().unwrap_or(project) == n
+                        || (n == "mem0" && snapshot.shared))
+            })
+        })
+    })
+}
+#[cfg(test)]
+mod enrollment_index_tests {
+    use super::*;
+    #[test]
+    fn enrollment_corrected_namespace_and_shared_guard_do_not_claim_unrelated_indexes() {
+        let state = AppState::test_without_runtime();
+        state.registry.insert(crate::project::ProjectRecord::new(
+            "atlas",
+            &crate::manifest::Manifest::parse("").unwrap(),
+            None,
+        ));
+        let mut d = state.registry.descriptor("atlas");
+        let e = d.memory_enrollment.as_mut().unwrap();
+        e.namespace = Some("atlas-separate".into());
+        e.snapshot = Some(crate::enrollment_contract::Snapshot {
+            project: "atlas".into(),
+            repository: "tests/atlas".into(),
+            owner: e.owner.clone(),
+            revision: "1".into(),
+            commit: "a".repeat(40),
+            documents: vec![],
+            shared: true,
+        });
+        state
+            .registry
+            .descriptors
+            .write()
+            .unwrap()
+            .insert("atlas".into(), d);
+        assert!(enrollment_for_index(&state, "atlas-separate").is_some());
+        assert!(enrollment_for_index(&state, "atlas").is_none());
+        assert!(enrollment_for_index(&state, "unrelated").is_none());
+        assert!(accepted_repository(&state, "atlas-separate", "tests/atlas"));
+        assert!(accepted_repository(&state, "mem0", "tests/atlas"));
+        assert!(!accepted_repository(&state, "atlas", "tests/atlas"));
+        assert!(!accepted_repository(&state, "unrelated", "tests/atlas"));
+    }
 }

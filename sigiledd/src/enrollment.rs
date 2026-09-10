@@ -696,7 +696,7 @@ pub async fn source_edit(
     let Ok(Ok(current)) = actual else {
         return unavailable();
     };
-    json!({"verified":true,"project":project,"path":doc.path,"indexed_commit":snapshot.commit,"current_accepted_commit":current,"current_checkout":"checked_on_launch"})
+    json!({"verified":true,"owner":snapshot.owner,"project":project,"path":doc.path,"indexed_commit":snapshot.commit,"current_accepted_commit":current,"current_checkout":"checked_on_launch"})
 }
 
 /// Called only after normal close has successfully published master, under its mirror lock.

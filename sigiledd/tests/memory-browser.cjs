@@ -26,7 +26,7 @@ const legacy = chunk('legacy1', 'Legacy manual provenance');
 legacy.source = 'manual';
 legacy.ref = 'memory:' + id;
 legacy.target = { kind: 'document', source: 'manual', ref: legacy.ref, path: '' };
-let searchCalls = [];
+let searchCalls = [], sourceDetailFailure = 0;
 let auth = true, who = 'human:fixture', ready = true, writes = [], created = new Map(), delay = null, definite = false, uncertain = false, detailDelay = 0, previewStale = false, forgetUnknown = false, echo = false;
 const session = () => ({ identity: { display_name: 'Controlled Memory fixture' }, actor: { driver: who }, csrf_token: 'csrf', features: { memory_adapter: true } });
 const server = http.createServer(async (req, res) => {
@@ -65,6 +65,7 @@ const server = http.createServer(async (req, res) => {
             if (u.pathname.includes('/chunks/')) {
                 if (detailDelay)
                     await new Promise(r => setTimeout(r, detailDelay));
+                if (sourceDetailFailure && u.pathname.endsWith('source1')) return reply({error:'memory_record_unavailable'},sourceDetailFailure);
                 const fixture = unsafeSourceLinks.get(u.pathname.split('/').pop());
                 return reply(fixture || (u.pathname.endsWith('legacy1') ? legacy : imported));
             }
@@ -186,6 +187,45 @@ const server = http.createServer(async (req, res) => {
         assert.deepEqual(sourceLaunch.body.target, { path: 'docs/decision.md' });
         assert.match(sourceLaunch.body.idempotency_key, /^[0-9a-f-]{36}$/);
         assert.match(await page.locator('.memory-detail').innerText(), /accepted-old.*accepted-current/);
+        const launches = () => writes.filter(w => w.path === '/browser/api/projects/atlas/ide').length;
+        const priorLaunches = launches();
+        await page.getByLabel('Annotation', { exact: true }).fill('Retained draft while authority changes');
+        imported.source_edit = { verified: false };
+        await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+        await page.waitForTimeout(150);
+        assert.equal(await page.getByRole('button', { name: 'Edit source', exact: true }).isDisabled(), true, 'same-selection refresh must revoke old association');
+        assert.equal(await page.getByLabel('Annotation', { exact: true }).inputValue(), 'Retained draft while authority changes');
+        imported.source_edit = { verified: true, project: 'atlas', path: 'docs/decision.md', indexed_commit:'old', current_accepted_commit:'current' };
+        await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+        await page.waitForTimeout(150);
+        const beforeOwnerChange=launches();
+        imported.source_edit = { ...imported.source_edit, owner:'another-owner' };
+        await page.getByRole('button', { name:'Edit source',exact:true }).click();
+        await page.waitForTimeout(150);
+        assert.equal(launches(),beforeOwnerChange,'a fresh verified response with changed owner still cannot use old click authority');
+        imported.source_edit={...imported.source_edit,owner:undefined};
+        await page.getByRole('button', { name:'Refresh',exact:true }).click();
+        await page.waitForTimeout(150);
+        // No refresh between server-side authority loss and deliberate click.
+        imported.source_edit = { verified: false };
+        await page.getByRole('button', { name: 'Edit source', exact: true }).click();
+        await page.waitForTimeout(150);
+        assert.equal(launches(), priorLaunches, 'click must freshly validate, never launch captured target');
+        for (const code of [404,503]) {
+            imported.source_edit = { verified:true, project:'atlas', path:'docs/decision.md', indexed_commit:'old',current_accepted_commit:'current' };
+            sourceDetailFailure=0;
+            await page.getByRole('button', { name:'Refresh',exact:true }).click();
+            await page.waitForTimeout(150);
+            sourceDetailFailure=code;
+            await page.getByRole('button', { name:'Edit source',exact:true }).click();
+            await page.waitForTimeout(150);
+            assert.equal(launches(),priorLaunches,'missing/unavailable detail cannot authorize launch');
+            await page.getByRole('button', { name:'Refresh',exact:true }).click();
+            await page.waitForTimeout(150);
+            assert.equal(await page.getByRole('button',{name:'Edit source',exact:true}).isDisabled(),true);
+        }
+        sourceDetailFailure=0;
+        console.log('PASS D3 I1: same selection revokes authority, preserves draft, and fresh click fails closed on missing/unavailable/changed association');
         delete imported.source_edit;
         await page.goto(base + '/ui/memory?index=atlas&memory=source1');
         await page.getByRole('heading', { name: 'Source document', exact: true }).waitFor();
