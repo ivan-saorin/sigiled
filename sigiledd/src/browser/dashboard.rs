@@ -232,7 +232,7 @@ pub(super) fn body_limit(method: &Method, path: &str) -> usize {
         && crate::project::valid_name(parts[4])
         && parts[5] == "research"
     {
-        return 70000;
+        return research::CREATE_BODY_LIMIT;
     }
     if method == Method::POST && parts.len() == 5 && parts[1..4] == ["browser", "api", "research"] {
         return 262144;

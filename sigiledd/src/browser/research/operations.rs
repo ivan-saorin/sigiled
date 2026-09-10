@@ -206,6 +206,14 @@ impl Default for Options {
         }
     }
 }
+// Complete compact accepted shape: two UTF-8 fields (32,768 bytes each),
+// the 128-byte identifier, all ten field names, scalar maxima and punctuation.
+// JSON can encode each decoded byte as six ASCII bytes (\u00XX), including keys.
+// Whitespace and alternate numeric encodings must also fit this finite wire cap.
+pub(in crate::browser) const CREATE_BODY_LIMIT: usize =
+    r#"{"operation_id":"","problem":"","context":"","options":{"papers_per_category":10,"since_years":50,"breadth":false,"breadth_results":20,"adhd":false,"aperture":3}}"#.len()
+    + 6 * (2 * 32768 + 128)
+    + 5 * ("operation_idproblemcontextoptionspapers_per_categorysince_yearsbreadthbreadth_resultsadhdaperture".len());
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::browser) struct Create {

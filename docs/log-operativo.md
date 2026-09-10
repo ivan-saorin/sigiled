@@ -1,3 +1,11 @@
+## 2026-09-10 - Final whole-branch correction: request budgets and repeated research
+
+I1 removes the redundant 16 KiB JSON-extractor limit behind the exact browser boundary. Research creation derives its 394,631-byte encoded ceiling from both accepted text fields, bounded identity/options, JSON escaping and field names. I2 renders accepted feedback and New research from retained operation state in the current form, including acceptance while detached and a return before the original request completes. Explicit New research preserves later drafts and renews the identity; uncertain Retry keeps its frozen request and key. Existing authentication, caller JWT forwarding, bodyless route denial and unrelated limits remain intact.
+
+Validation of amended source: actual combined-router budget/auth test and actual research browser assets passed both navigation timings and retry/recovery cases. The one settled full workspace run at two test threads exited 0: companion library 33, companion main 10 and control plane 264 passed, no failures; seven defaults remain ignored. Format exited 0. Clippy exited 0 with the established too_many_arguments allowance; initial strict runtime warnings are preserved. Test-harness compile/capability/status-expectation iterations and an initial missing Node path failure remain recorded as failures. Full logs, numeric exits, commands and hashed reads are in the orchestrator's work/final-review-fix-evidence and work/final-review-fix-report.md.
+
+The earlier unchanged-source router diagnostic remained paused. This is controlled amended-source validation, with no paid engines, live personal data, deployment or session lifecycle action. Parent owns the scoped re-review, source close and deployment; the session remains open. SDE, ADHD and Genie source is unchanged.
+
 ## 2026-09-10 — D3 review fix 2: reconcile same-view edit busy state
 
 N1: an obsolete click validation now clears/reconciles its busy flag for the same still-live view even if a newer Refresh changed the request epoch. Epoch checks still discard stale authority and prevent stale C2 launches. The deferred actual-assets regression lets Refresh finish first, then releases the old response; it verifies no stale C2 call, preserved annotation draft, usable control and the next click's new verified file target.

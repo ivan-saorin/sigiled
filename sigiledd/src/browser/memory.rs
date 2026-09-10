@@ -10,6 +10,15 @@ pub(crate) struct Service {
     client: reqwest::Client,
     base: String,
 }
+#[cfg(test)]
+impl Service {
+    pub(super) fn fixture(base: &str) -> Self {
+        Self {
+            base: base.into(),
+            ..Self::default()
+        }
+    }
+}
 impl Default for Service {
     fn default() -> Self {
         let catalog: Value = serde_json::from_str(crate::catalog::TEXT).expect("catalog");

@@ -1,7 +1,7 @@
 // Actual shared browser assets against bounded fake exact-contract services only.
 const http=require('node:http'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const {createRequire}=require('node:module');const {chromium}=createRequire(process.env.SIGIL_PLAYWRIGHT_PACKAGE)('playwright');
-const root=path.resolve(__dirname,'../src/browser/assets'),out=path.resolve('target/b3b-screenshots');fs.mkdirSync(out,{recursive:true});
+const root=path.resolve(__dirname,'../src/browser/assets'),out=path.resolve(process.env.SIGIL_RESEARCH_SCREENSHOTS || 'target/b3b-screenshots');fs.mkdirSync(out,{recursive:true});
 let definiteReject=false,showProjection=false;const summaryProjection=JSON.parse(fs.readFileSync('sigiledd/target/b3b-fix1-summary-projection.json','utf8'));
 let stagePosts=0,handoffPosts=0;let auth=true,ready=true,createCount=0,keys=[],lastBody=null,researchDelay=null,sessionDelay=null;
 const project={name:'atlas',display_name:'Atlas',description:'Research project',session_count:0,setup:{state:'ready'},capabilities:{},app:{state:'not_deployed'},jobs:{items:[],total:0},sessions:{items:[],total:0},attention:{items:[],total:0},activity:{items:[],total:0},observed_at:1789012800};
@@ -41,12 +41,49 @@ try{
  let release,releaseAuth;sessionDelay=new Promise(r=>releaseAuth=r);researchDelay=new Promise(r=>release=r);await page.getByRole('button',{name:'Start research',exact:true}).click();await page.waitForTimeout(100);
  await page.getByLabel('Context',{exact:true}).fill('Newer context');releaseAuth();sessionDelay=null;await page.waitForTimeout(100);assert.equal(await page.getByRole('button',{name:'Start research',exact:true}).isDisabled(),true);release();researchDelay=null;await page.getByRole('button',{name:'Retry start',exact:true}).waitFor();assert.equal(createCount,1);assert.equal(await page.getByLabel('Context',{exact:true}).inputValue(),'Newer context');assert.equal(lastBody.context,'Keep this context');
  auth=false;await page.getByRole('button',{name:'Retry start',exact:true}).click();await page.getByRole('link',{name:'Sign in in another tab'}).waitFor();auth=true;const before=createCount;await page.getByRole('button',{name:'Check sign-in',exact:true}).click();await page.getByRole('button',{name:'Retry start',exact:true}).waitFor();assert.equal(createCount,before);await page.getByRole('button',{name:'Retry start',exact:true}).click();await page.waitForTimeout(100);assert.equal(createCount,2);assert.equal(keys[0],keys[1]);assert.equal(lastBody.context,'Keep this context');
+
+ // Accepted form reconstructed after internal navigation must offer a fresh operation.
+ await page.evaluate(()=>window.Sigil.navigate('/ui/models'));
+ await page.getByText('Recent observation window.',{exact:false}).waitFor();
+ await page.evaluate(()=>window.Sigil.navigate('/ui/projects/atlas/research'));
+ await page.getByRole('button',{name:'New research',exact:true}).click();
+ assert.equal(await page.getByLabel('Context',{exact:true}).inputValue(),'Newer context');
+ const acceptedKey=keys.at(-1);
+ await page.getByRole('button',{name:'Start research',exact:true}).click();
+ await page.getByRole('button',{name:'View run',exact:true}).waitFor();
+ assert.notEqual(keys.at(-1),acceptedKey);assert.equal(lastBody.context,'Newer context');
+ // Acceptance while detached, returning either before or after the result arrives.
+ for(const returnBeforeAcceptance of [false,true]){
+  await page.getByRole('button',{name:'New research',exact:true}).click();
+  const previousKey=keys.at(-1);let accept;researchDelay=new Promise(r=>accept=r);
+  await page.getByRole('button',{name:'Start research',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('.research-form button[type=submit]').disabled);
+  await page.waitForTimeout(100);
+  await page.getByLabel('Context',{exact:true}).fill('Detached newer '+returnBeforeAcceptance);
+  await page.evaluate(()=>window.Sigil.navigate('/ui/models'));
+  await page.getByText('Recent observation window.',{exact:false}).waitFor();
+  if(returnBeforeAcceptance){
+   await page.evaluate(()=>window.Sigil.navigate('/ui/projects/atlas/research'));
+   await page.getByRole('button',{name:'Retry start',exact:true}).waitFor();
+   assert.equal(await page.getByRole('button',{name:'Retry start',exact:true}).isDisabled(),true);
+  }
+  accept();researchDelay=null;
+  if(!returnBeforeAcceptance){await page.waitForTimeout(100);await page.evaluate(()=>window.Sigil.navigate('/ui/projects/atlas/research'));}
+  await page.getByRole('button',{name:'View run',exact:true}).waitFor();
+  await page.getByRole('button',{name:'New research',exact:true}).click();
+  assert.equal(await page.getByLabel('Context',{exact:true}).inputValue(),'Detached newer '+returnBeforeAcceptance);
+  assert.notEqual(keys.at(-1),previousKey);
+  const justAccepted=keys.at(-1);
+  await page.getByRole('button',{name:'Start research',exact:true}).click();
+  await page.getByRole('button',{name:'View run',exact:true}).waitFor();
+  assert.notEqual(keys.at(-1),justAccepted);assert.equal(lastBody.context,'Detached newer '+returnBeforeAcceptance);
+ }
  await page.getByRole('button',{name:'View run',exact:true}).click();await page.getByRole('heading',{name:'Design a calmer workbench',exact:true}).waitFor();await page.getByText('Stages finished without a decision.',{exact:false}).waitFor();assert.equal(await page.locator('img').count(),0);await page.getByText('Dossier',{exact:true}).click();assert.equal(await page.locator('a[href^="javascript:"]').count(),0);await page.getByRole('button',{name:'Inspect ADHD run adhd1',exact:true}).click();await page.getByText('Recorded ADHD detail',{exact:true}).waitFor();
  await page.screenshot({path:path.join(out,'research-desktop.png'),fullPage:true});await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(out,'research-mobile.png'),fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  await page.getByText('Submit an existing converge result',{exact:true}).click();await page.getByLabel('Stage result JSON').fill('{"fixture":true}');await page.getByRole('button',{name:'Submit stage result',exact:true}).click();await page.waitForTimeout(100);assert.equal(stagePosts,1);
  await page.goto(base+'/ui/research?run=run2');await page.getByRole('button',{name:'Preview project handoff',exact:true}).click();await page.getByRole('button',{name:'Pause editor and commit dossier',exact:true}).click();await page.getByText('Master acceptance and memory indexing are still pending.',{exact:false}).waitFor();assert.equal(handoffPosts,1);assert.equal(await page.getByRole("button",{name:"Dossier committed",exact:true}).isDisabled(),true);await page.screenshot({path:path.join(out,'handoff-mobile.png'),fullPage:true});
  await page.goto(base+'/ui/models');await page.getByText('Recent observation window.',{exact:false}).waitFor();await page.getByText('Unknown',{exact:true}).waitFor();assert.match(await page.locator("#connection").textContent(),/Observed .*unavailable/);await page.getByRole('cell',{name:'0',exact:true}).waitFor();await page.screenshot({path:path.join(out,'models-mobile.png'),fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  showProjection=true;await page.goto(base+'/ui/research');await page.getByRole('button',{name:'Echoed [redacted]',exact:true}).waitFor();assert.equal((await page.locator('body').textContent()).includes('fixture-summary-bearer'),false);showProjection=false;
- ready=false;await page.goto(base+'/ui/projects/atlas/research');await page.getByText('Research service update or storage repair required before starting or resuming.',{exact:false}).waitFor();assert.equal(await page.getByRole('button',{name:'Start research',exact:true}).isDisabled(),true);assert.equal(createCount,2);
- assert.deepEqual(errors,[]);console.log('PASS: real adapter summary projection contains no echoed bearer; whitespace/UTF-8 preflight and definite rejection corrected deliberately; ambiguous retry identity retained; real assets, research navigation, option form, double-click exclusion, submitted/newer draft retention, fresh login without replay, stable operation retry, exact revision surface, no-decision/degraded separation, ADHD linkage, safe text, unknown/zero usage, old-service gating, mobile/desktop screenshots');
+ ready=false;await page.goto(base+'/ui/projects/atlas/research');await page.getByText('Research service update or storage repair required before starting or resuming.',{exact:false}).waitFor();assert.equal(await page.getByRole('button',{name:'Start research',exact:true}).isDisabled(),true);assert.equal(createCount,7);
+ assert.deepEqual(errors,[]);console.log('PASS: accepted navigation reconstruction and detached acceptance before/after return keep newer drafts and deliberately renew identity; real adapter summary projection contains no echoed bearer; whitespace/UTF-8 preflight and definite rejection corrected deliberately; ambiguous retry identity retained; real assets, research navigation, option form, double-click exclusion, submitted/newer draft retention, fresh login without replay, stable operation retry, exact revision surface, no-decision/degraded separation, ADHD linkage, safe text, unknown/zero usage, old-service gating, mobile/desktop screenshots');
 }finally{await browser.close();server.close();}})().catch(e=>{console.error(e);process.exitCode=1;server.close();});

@@ -1088,7 +1088,20 @@ function researchForm(root,project) {
  let d=researchDrafts.get(project);if(!d){d={id:crypto.randomUUID(),problem:'',context:'',pending:false,sent:null,accepted:null,papers:4,aperture:1};researchDrafts.set(project,d);}
  const form=el('form',{class:'research-form'}),problem=el('textarea',{id:'research-problem',required:true,maxlength:32768,rows:3}),context=el('textarea',{id:'research-context',maxlength:32768,rows:3}),count=el('input',{type:'number',id:'research-papers',min:1,max:10,value:4}),aperture=el('input',{type:'number',id:'research-aperture',min:1,max:3,value:1});
  problem.value=d.problem;context.value=d.context;count.value=d.papers||4;aperture.value=d.aperture||1;count.oninput=()=>{d.papers=Number(count.value);};aperture.oninput=()=>{d.aperture=Number(aperture.value);};problem.oninput=()=>{d.problem=problem.value;};context.oninput=()=>{d.context=context.value;};
- const feedback=el('p',{role:'status'}),start=el('button',{type:'submit',class:'primary'},d.accepted?'View run':d.sent?'Retry start':'Start research');root.startButton=start;root.accepted=!!d.accepted;start.disabled=!d.accepted;
+ const feedback=el('p',{role:'status'}),start=el('button',{type:'submit',class:'primary'});root.startButton=start;
+ // Bind retained operation state to the newest form, including a return while
+ // the original request is still pending in a detached form.
+ const renderDraft=()=>{
+  root.accepted=!!d.accepted;root.pending=d.pending;
+  start.textContent=d.accepted?'View run':d.sent?'Retry start':'Start research';
+  start.disabled=!d.accepted && (d.pending || !root.ready);
+  if(d.accepted)feedback.replaceChildren('Research accepted. '+(d.context!==d.sent.context||d.problem!==d.sent.problem?'Newer edits remain unsent. Choose New research to use them. ':''),button('New research',()=>{
+   researchDrafts.set(project,{...d,id:crypto.randomUUID(),sent:null,accepted:null,pending:false,error:null,render:null});
+   root.replaceWith(researchShell(project));
+  }));
+  else if(d.error)feedback.textContent=d.error;
+ };
+ d.render=renderDraft;renderDraft();
  form.append(el('h2',{},'New research'),el('label',{for:'research-problem'},'Problem'),problem,el('label',{for:'research-context'},'Context'),context,el('div',{class:'research-options'},el('label',{for:'research-papers'},'Papers per category',count),el('label',{for:'research-aperture'},'Search plan variations',aperture)),el('p',{},'Starting research can use paid model providers. The service completes all research stages automatically.'),start,feedback);
  form.onsubmit=async(e)=>{
   e.preventDefault();if(d.accepted){researchDetail(root,root.querySelector(".research-detail"),d.accepted);return;}if(d.pending)return;d.pending=true;root.pending=true;start.disabled=true;
@@ -1101,18 +1114,17 @@ function researchForm(root,project) {
    }
    await checkSession();
    const result=await request(`/browser/api/projects/${encodeURIComponent(project)}/research`,{method:"POST",body:JSON.stringify(d.sent)});
-   d.accepted=result.run_id;root.accepted=true;feedback.replaceChildren("Research accepted. "+(d.context!==d.sent.context||d.problem!==d.sent.problem?"Newer edits remain unsent. Choose New research to use them. ":""),button("New research",()=>{researchDrafts.set(project,{...d,id:crypto.randomUUID(),sent:null,accepted:null,pending:false});const next=researchShell(project);root.replaceWith(next);}));
-   start.textContent='View run';root.load();
+   d.accepted=result.run_id;d.error=null;d.render();if(root.isConnected)root.load();
   }catch(e){
    if(e.message==='invalid_research_options'){
     // This code is emitted only before the server reserves an operation. A
     // deliberate corrected submission receives a new identity; ambiguous
     // service/auth failures retain the original frozen key and payload.
     d.sent=null;d.id=crypto.randomUUID();
-    feedback.textContent='Research was not started. Enter a nonblank problem, keep each text field within 32,768 UTF-8 bytes, and check the options. Edit the draft, then choose Start research.';start.textContent='Start research';
-   }else{feedback.textContent=researchFailure(e)+' The start result may be unknown. Retry start reuses the original submitted problem and options; newer edits stay unsent.';start.textContent='Retry start';}
+    d.error='Research was not started. Enter a nonblank problem, keep each text field within 32,768 UTF-8 bytes, and check the options. Edit the draft, then choose Start research.';start.textContent='Start research';
+   }else{d.error=researchFailure(e)+' The start result may be unknown. Retry start reuses the original submitted problem and options; newer edits stay unsent.';start.textContent='Retry start';}
   }
-  finally{d.pending=false;root.pending=false;start.disabled=!d.accepted && !root.ready;}
+  finally{d.pending=false;d.render();}
  };
  root.append(form);
  const recoveryList=el('div',{});root.append(recoveryList);

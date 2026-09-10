@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 mod handoff;
 mod operations;
 pub(super) use handoff::apply as apply_handoff;
+pub(super) use operations::CREATE_BODY_LIMIT;
 pub(super) use operations::{create, mutate, operations, recover};
 #[derive(Clone, Copy)]
 enum Engine {
@@ -63,6 +64,15 @@ impl Default for Services {
 }
 fn unavailable() -> Error {
     Error(StatusCode::BAD_GATEWAY, "service_unavailable")
+}
+#[cfg(test)]
+impl Services {
+    pub(super) fn fixture(base: &str, dir: std::path::PathBuf) -> Self {
+        let mut s = Self::default();
+        s.bases.insert("sde".into(), base.into());
+        s.store = operations::Store::new(Some(dir));
+        s
+    }
 }
 fn identifier(s: &str) -> bool {
     !s.is_empty()

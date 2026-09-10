@@ -149,6 +149,14 @@ impl Fixture {
         gateway: bool,
         durable: bool,
     ) -> Self {
+        Self::with_services(github, gateway, durable, None).await
+    }
+    async fn with_services(
+        github: Option<crate::github::GitHub>,
+        gateway: bool,
+        durable: bool,
+        services: Option<(&str, std::path::PathBuf)>,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let fake = Fake {
@@ -216,6 +224,11 @@ impl Fixture {
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        if let Some((base, dir)) = services {
+            let b = Arc::get_mut(state.browser.0.as_mut().unwrap()).unwrap();
+            b.memory = memory::Service::fixture(base);
+            b.research = research::Services::fixture(base, dir);
+        }
         let router = crate::app(state.clone());
         let app = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         Self {
@@ -1974,4 +1987,219 @@ async fn memory_browser_routes_require_host_session_and_csrf() {
             .status(),
         StatusCode::FORBIDDEN
     );
+}
+
+#[tokio::test]
+async fn final_review_actual_router_honors_complete_encoded_request_budgets() {
+    use axum::body::{to_bytes, Body};
+    use std::future::IntoFuture;
+    let calls = Arc::new(Mutex::new(Vec::<(String, Value, String)>::new()));
+    let captured = calls.clone();
+    let fake = Router::new().fallback(move |request: axum::extract::Request| {
+        let captured = captured.clone();
+        async move {
+            let path = request.uri().path().to_owned();
+            assert!(!request.headers().contains_key("cookie"));
+            let bearer = request.headers()["authorization"].to_str().unwrap().to_owned();
+            let bytes = to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            captured.lock().unwrap().push((path.clone(), body.clone(), bearer));
+            match path.as_str() {
+                "/healthz" => Json(json!({"api":{"run_contract":"sde-runs-v1","pagination":true,"operation_key":"uuid_v4","durable_transitions":true,"expected_revision":true,"catalog_attempt_snapshot":true,"association":"unverified"},"persistence":{"mode":"durable","degraded":false,"recovery":"none"}})).into_response(),
+                "/capabilities" => Json(json!({"max_page":100,"max_scan":1000,"auth":{"oidc_verifier_configured":true},"curation_contract":"1","response_budget":"encoded-pages-v1","browse":"live_keyset_v1","manual":"revisioned_uuid_v1","forget":"preview_suppression_v1","projection":"durable_outbox_v1","revision_encoding":"decimal_string"})).into_response(),
+                "/idx/demo/manual" => {
+                    let actor = json!({"key":"fixture","principal_kind":"oidc"});
+                    (StatusCode::CREATED, Json(json!({"id":format!("m_{}",body["create_id"].as_str().unwrap()),"revision":"1","text":body["text"],"tags":[],"actor":actor,"created_by":actor,"updated_at":1,"deleted":false,"projection":"indexed"}))).into_response()
+                }
+                "/runs" => Json(json!({"run_id":"run1"})).into_response(),
+                "/runs/run1" => Json(json!({"revision":1,"status":"done","artifacts":{"outcome":null}})).into_response(),
+                "/runs/run1/stages/converge" => Json(json!({"revision":2})).into_response(),
+                _ => StatusCode::NOT_FOUND.into_response(),
+            }
+        }
+    }).layer(axum::extract::DefaultBodyLimit::disable());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(axum::serve(listener, fake).into_future());
+    let dir = std::path::PathBuf::from("target")
+        .join(format!("final-router-{}", crate::sessions::mint_token()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = Fixture::with_services(None, true, true, Some((&base, dir.clone()))).await;
+    let (cookie, session) = f.signed_in().await;
+    let csrf = session["csrf_token"].as_str().unwrap();
+    let expected_bearer = {
+        let browser = f.state.browser.inner().unwrap();
+        let store = browser.store.lock().unwrap();
+        let s = store
+            .sessions
+            .get(cookie.split_once('=').unwrap().1)
+            .unwrap();
+        format!("Bearer {}", s.credentials.try_lock().unwrap().access)
+    };
+    let post = |path: &str, body: String| {
+        f.request(reqwest::Method::POST, path)
+            .header("cookie", &cookie)
+            .header("origin", "https://sigil.test")
+            .header("x-sigil-csrf", csrf)
+            .header("content-type", "application/json")
+            .body(body)
+    };
+    let manual =
+        json!({"create_id":"123e4567-e89b-42d3-a456-426614174000","text":"m".repeat(20000)});
+    let response = post(
+        "/browser/api/memory/indexes/demo/manual",
+        manual.to_string(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["text"],
+        manual["text"]
+    );
+    let route = "/browser/api/projects/demo/research";
+    for (n, text) in ["r".repeat(20000), "\"".repeat(32768), "\u{1}".repeat(32768)]
+        .into_iter()
+        .enumerate()
+    {
+        let body = json!({"operation_id":format!("operation-{n}"),"problem":text,"context":text,"options":{"papers_per_category":10,"since_years":50,"breadth":false,"breadth_results":20,"adhd":false,"aperture":3}});
+        assert!(body.to_string().len() > 16384);
+        let r = post(route, body.to_string()).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|c| c.0 == "/runs")
+                .unwrap()
+                .1["problem"],
+            body["problem"]
+        );
+    }
+    // Exercise escaped field names/identifier and worst-case text through the same router.
+    let body = json!({"operation_id":"a".repeat(128),"problem":"\u{1}".repeat(32768),"context":"\u{1}".repeat(32768),"options":{"papers_per_category":10,"since_years":50,"breadth":false,"breadth_results":20,"adhd":false,"aperture":3}});
+    let mut encoded = body.to_string();
+    for key in [
+        "operation_id",
+        "problem",
+        "context",
+        "options",
+        "papers_per_category",
+        "since_years",
+        "breadth",
+        "breadth_results",
+        "adhd",
+        "aperture",
+    ] {
+        let escaped: String = key.bytes().map(|b| format!("\\u{b:04x}")).collect();
+        encoded = encoded.replace(&format!("\"{key}\":"), &format!("\"{escaped}\":"));
+    }
+    encoded = encoded.replace(&"a".repeat(128), &"\\u0061".repeat(128));
+    assert_eq!(encoded.len(), research::CREATE_BODY_LIMIT);
+    assert_eq!(
+        post(route, encoded.clone()).send().await.unwrap().status(),
+        StatusCode::OK
+    );
+    let before = calls.lock().unwrap().len();
+    assert_eq!(
+        post(route, encoded + " ").send().await.unwrap().status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    for (path, limit) in [
+        ("/browser/api/memory/indexes/demo/manual", 450000),
+        ("/browser/api/research/run1", 262144),
+        ("/browser/api/unknown", 0),
+        ("/browser/logout", 0),
+    ] {
+        assert_eq!(
+            post(path, " ".repeat(limit + 1))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            if path == "/browser/api/unknown" {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::PAYLOAD_TOO_LARGE
+            }
+        );
+    }
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        before,
+        "rejected bodies must never reach a service"
+    );
+    let stage =
+        json!({"action":"converge","expected_revision":"1","output":{"answer":"s".repeat(20000)}});
+    let r = post("/browser/api/research/run1", stage.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "{}", r.text().await.unwrap());
+    assert_eq!(
+        calls.lock().unwrap().last().unwrap().1["output"],
+        stage["output"]
+    );
+    let before = calls.lock().unwrap().len();
+    for (cookie_header, origin, token, expected) in [
+        (
+            &cookie[..],
+            "https://evil.test",
+            csrf,
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            &cookie[..],
+            "https://sigil.test",
+            "wrong",
+            StatusCode::FORBIDDEN,
+        ),
+        ("", "https://sigil.test", csrf, StatusCode::UNAUTHORIZED),
+    ] {
+        let r = f
+            .request(reqwest::Method::POST, route)
+            .header("cookie", cookie_header)
+            .header("origin", origin)
+            .header("x-sigil-csrf", token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), expected);
+    }
+    assert_eq!(calls.lock().unwrap().len(), before);
+    assert!(calls.lock().unwrap().iter().all(|c| c.2 == expected_bearer));
+    // A declared length is not required for enforcement: stream a body beyond the cap.
+    let socket = tokio::net::TcpStream::connect(f.base.strip_prefix("http://").unwrap())
+        .await
+        .unwrap();
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(socket))
+            .await
+            .unwrap();
+    let connection_task = tokio::spawn(connection);
+    let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(vec![
+        b' ';
+        research::CREATE_BODY_LIMIT
+            + 1
+    ])]);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(route)
+        .header("host", "sigil.test")
+        .body(Body::from_stream(stream))
+        .unwrap();
+    assert_eq!(
+        sender.send_request(req).await.unwrap().status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    connection_task.abort();
+    let _ = connection_task.await;
+    server.abort();
+    let _ = server.await;
+    drop(f);
+    std::fs::remove_dir_all(dir).unwrap();
 }

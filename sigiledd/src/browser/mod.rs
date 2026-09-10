@@ -696,7 +696,9 @@ pub fn router(state: AppState) -> Router {
         .route("/browser/logout", post(logout))
         .route("/browser/api/overview", get(overview))
         .route("/browser/api/projects/{project}", get(detail))
-        .layer(axum::extract::DefaultBodyLimit::max(16384))
+        // The outer boundary already buffers under the exact method/path budget.
+        // A second extractor cap would reject valid Memory/research bodies.
+        .layer(axum::extract::DefaultBodyLimit::disable())
         .layer(middleware::from_fn(boundary))
         .with_state(state)
 }
