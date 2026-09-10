@@ -275,10 +275,14 @@ pub async fn root(
     State(state): State<AppState>,
     Query(query): Query<Page>,
 ) -> Response {
-    let (offset, limit) = match query.bounds() {
-        Ok(v) => v,
-        Err(e) => return *e,
-    };
+    match root_projection(state, query) {
+        Ok(value) => Json(value).into_response(),
+        Err(response) => *response,
+    }
+}
+/// Build the existing safe projection before choosing browser versus machine serialization.
+pub(crate) fn root_projection(state: AppState, query: Page) -> Result<Value, Box<Response>> {
+    let (offset, limit) = query.bounds()?;
     let mut projects = state.registry.snapshot();
     projects.sort_by(|a, b| a.name.cmp(&b.name));
     let inventory_revision = format!(
@@ -317,11 +321,10 @@ pub async fn root(
     let projects = project_page(&projects, offset, limit, |p| {
         summary(&state, p, errors.get(&p.name), &sessions)
     });
-    Json(
+    Ok(
         json!({"observed_at":crate::auth::now_epoch(),"inventory_revision":inventory_revision,"counts":counts,"projects":projects,
         "attention":{"items":items,"total":attention_count,"truncated":attention_count>100}}),
     )
-    .into_response()
 }
 pub async fn detail(
     _actor: Actor,
@@ -329,21 +332,30 @@ pub async fn detail(
     Path(project): Path<String>,
     Query(query): Query<Page>,
 ) -> Response {
-    let (offset, limit) = match query.bounds() {
-        Ok(v) => v,
-        Err(e) => return *e,
-    };
+    match detail_projection(state, project, query) {
+        Ok(value) => Json(value).into_response(),
+        Err(response) => *response,
+    }
+}
+pub(crate) fn detail_projection(
+    state: AppState,
+    project: String,
+    query: Page,
+) -> Result<Value, Box<Response>> {
+    let (offset, limit) = query.bounds()?;
     let Some(p) = state
         .registry
         .snapshot()
         .into_iter()
         .find(|p| p.name == project)
     else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error":"unknown_project"})),
-        )
-            .into_response();
+        return Err(Box::new(
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"unknown_project"})),
+            )
+                .into_response(),
+        ));
     };
     let (_, errors) = crate::catalog::dynamic(&state.registry);
     let sessions = SessionIndex::capture(&state);
@@ -382,7 +394,7 @@ pub async fn detail(
         0,
         100,
     );
-    Json(v).into_response()
+    Ok(v)
 }
 #[cfg(test)]
 mod tests {

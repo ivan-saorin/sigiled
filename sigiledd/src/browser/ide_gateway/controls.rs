@@ -47,6 +47,11 @@ pub(crate) async fn operation(
         return Err(Error(StatusCode::BAD_REQUEST, "unsupported_ide_action"));
     }
     let generation = targets::generation(&op.generation)?;
+    if op.action == "start" {
+        readiness(&state)?;
+    }
+    // Checkpoint and finish intentionally remain available for recovery after
+    // browser activation is disabled; existing C1/A1 authority still applies.
     if op.action == "finish" && record.lifecycle == Lifecycle::Failed {
         // A deliberate retry uses A1's normal close, which rechecks ownership,
         // generation and the strict C1 finish receipt before any destruction.
@@ -76,23 +81,24 @@ pub(crate) async fn safe_response(response: Response) -> Result<Response, Error>
         .map_err(|_| Error(StatusCode::BAD_GATEWAY, "invalid_workspace_response"))?;
     let mut v: Value = serde_json::from_slice(&bytes)
         .map_err(|_| Error(StatusCode::BAD_GATEWAY, "invalid_workspace_response"))?;
-    fn convert(v: &mut Value) {
-        match v {
-            Value::Object(m) => {
-                for (k, v) in m {
-                    if k == "generation" {
-                        if let Some(n) = v.as_u64() {
-                            *v = json!(n.to_string());
-                        }
-                    } else {
-                        convert(v);
+    convert_generations(&mut v);
+    Ok((status, Json(v)).into_response())
+}
+
+pub(super) fn convert_generations(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            for (k, v) in m {
+                if k == "generation" {
+                    if let Some(n) = v.as_u64() {
+                        *v = json!(n.to_string());
                     }
+                } else {
+                    convert_generations(v);
                 }
             }
-            Value::Array(a) => a.iter_mut().for_each(convert),
-            _ => {}
         }
+        Value::Array(a) => a.iter_mut().for_each(convert_generations),
+        _ => {}
     }
-    convert(&mut v);
-    Ok((status, Json(v)).into_response())
 }

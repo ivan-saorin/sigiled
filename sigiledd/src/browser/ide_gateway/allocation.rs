@@ -20,13 +20,7 @@ pub(crate) async fn launch(
     Path(project): Path<String>,
     Json(body): Json<Launch>,
 ) -> Result<Response, Error> {
-    let b = state.browser.inner()?;
-    if b.config.ide_domain.is_none() {
-        return Err(Error(StatusCode::CONFLICT, "ide_gateway_not_configured"));
-    }
-    if !state.store.durable() {
-        return Err(Error(StatusCode::CONFLICT, "durable_state_required"));
-    }
+    readiness(&state)?;
     if !crate::project::valid_name(&project) || !state.registry.contains(&project) {
         return Err(Error(StatusCode::NOT_FOUND, "unknown_project"));
     }

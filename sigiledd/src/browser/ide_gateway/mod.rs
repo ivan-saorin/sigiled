@@ -119,9 +119,23 @@ async fn handle(state: &AppState, request: axum::extract::Request) -> Result<Res
     proxy::forward(state, &grant, request).await
 }
 
-pub(super) async fn browser_response(response: Response) -> Response {
-    match controls::safe_response(response).await {
-        Ok(r) => r,
-        Err(e) => e.into_response(),
+/// Only platform-built, safe dashboard values reach this path. Preserve their
+/// existing pagination/content contract instead of applying helper body bounds.
+pub(super) fn browser_projection(projection: Result<serde_json::Value, Box<Response>>) -> Response {
+    match projection {
+        Ok(mut value) => {
+            controls::convert_generations(&mut value);
+            Json(value).into_response()
+        }
+        Err(response) => *response,
     }
+}
+pub(super) fn readiness(state: &AppState) -> Result<(), Error> {
+    if state.browser.inner()?.config.ide_domain.is_none() {
+        return Err(Error(StatusCode::CONFLICT, "ide_gateway_not_configured"));
+    }
+    if !state.store.durable() {
+        return Err(Error(StatusCode::CONFLICT, "durable_state_required"));
+    }
+    Ok(())
 }

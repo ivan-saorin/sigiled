@@ -529,7 +529,7 @@ async fn inspect(c: BrowserContext, State(state): State<AppState>) -> Json<serde
     // A deliberate use of credential only as internal state: no serialized token or generic proxy.
     debug_assert!(!c.access_token.is_empty());
     Json(
-        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"project_creation":true,"work_items":state.work_items.available(),"workspace_actions":state.browser.inner().is_ok_and(|b|b.config.ide_domain.is_some()) && state.store.durable(),"memory_adapter":false},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
+        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"project_creation":true,"work_items":state.work_items.available(),"workspace_actions":ide_gateway::readiness(&state).is_ok(),"memory_adapter":false},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
     )
 }
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Error> {
@@ -552,19 +552,19 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
     Ok(r)
 }
 async fn overview(
-    c: BrowserContext,
+    _c: BrowserContext,
     state: State<AppState>,
     q: axum::extract::Query<crate::overview::Page>,
 ) -> Response {
-    ide_gateway::browser_response(crate::overview::root(c.actor, state, q).await).await
+    ide_gateway::browser_projection(crate::overview::root_projection(state.0, q.0))
 }
 async fn detail(
-    c: BrowserContext,
+    _c: BrowserContext,
     state: State<AppState>,
     p: axum::extract::Path<String>,
     q: axum::extract::Query<crate::overview::Page>,
 ) -> Response {
-    ide_gateway::browser_response(crate::overview::detail(c.actor, state, p, q).await).await
+    ide_gateway::browser_projection(crate::overview::detail_projection(state.0, p.0, q.0))
 }
 async fn boundary(request: axum::extract::Request, next: Next) -> Response {
     let limit = dashboard::body_limit(request.method(), request.uri().path());

@@ -1,5 +1,6 @@
 const fs=require('node:fs'),https=require('node:https'),http=require('node:http'),net=require('node:net'),cp=require('node:child_process'),path=require('node:path'),assert=require('node:assert/strict');
 const root=process.env.GATEWAY_SMOKE_ROOT,upstream=new URL(process.env.GATEWAY_SMOKE_UPSTREAM),url=new URL(process.env.GATEWAY_SMOKE_URL);
+const {trustedActivity,Diagnostics}=require('./ide-provider-checks.cjs');
 const {chromium}=require('/workspace/target/gateway-browser/node_modules/playwright');
 (async()=>{
  cp.execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',root+'/edge.key','-out',root+'/edge.crt','-days','1','-subj','/CN=*.ide.example.test'],{stdio:'ignore'});
@@ -7,15 +8,20 @@ const {chromium}=require('/workspace/target/gateway-browser/node_modules/playwri
  const tunnels=new Set();
  const edge=https.createServer({key:fs.readFileSync(root+'/edge.key'),cert:fs.readFileSync(root+'/edge.crt')},(req,res)=>{const p=http.request({host:'127.0.0.1',port:upstream.port,path:req.url,method:req.method,headers:req.headers},r=>{res.writeHead(r.statusCode,r.headers);r.pipe(res)});p.on('error',()=>{res.writeHead(502);res.end()});req.pipe(p);});
  edge.on('upgrade',(req,socket,head)=>{tunnels.add(socket);socket.on('close',()=>tunnels.delete(socket));const p=net.connect(Number(upstream.port),'127.0.0.1',()=>{p.write(`${req.method} ${req.url} HTTP/1.1\r\n`+Object.entries(req.headers).map(([k,v])=>`${k}: ${v}\r\n`).join('')+'\r\n');if(head.length)p.write(head);p.pipe(socket);socket.pipe(p)});p.on('error',()=>socket.destroy());socket.on('error',()=>p.destroy());socket.on('close',()=>p.destroy());});
- await new Promise(r=>edge.listen(0,'127.0.0.1',r));let browser;
+ await new Promise(r=>edge.listen(0,'127.0.0.1',r));let browser,diagnostics,closing=false;
  try {
   browser=await chromium.launch({headless:true,args:[`--host-resolver-rules=MAP *.example.test 127.0.0.1:${edge.address().port}`,'--no-proxy-server',`--ignore-certificate-errors-spki-list=${spki}`],env:{...process.env,XDG_CONFIG_HOME:root+'/browser-config',XDG_CACHE_HOME:root+'/browser-cache'}});
   const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:1440,height:1000}});
-  const page=await context.newPage();global.smokePage=page;let workers=0,resources=0,wsFrames=0,activities=0;const failures=[],sockets=[];
+  diagnostics=new Diagnostics();
+  context.on('page',p=>{p.on('console',m=>{if(m.type()==='error'){const row={text:m.text(),url:m.location().url};diagnostics.console.push(row);fs.appendFileSync(root+'/browser-console.log',JSON.stringify(row)+'\n');}});p.on('pageerror',e=>diagnostics.console.push({text:e.message,url:p.url().split('#')[0]}));});
+  context.on('response',r=>{if(r.status()>=400){const row={url:r.url(),method:r.request().method(),status:r.status()};diagnostics.http.push(row);fs.appendFileSync(root+'/network.log',JSON.stringify(row)+'\n');}});
+  context.on('response',r=>{if(r.url().endsWith('/_sigil/activity'))fs.appendFileSync(root+'/activity-network.log',JSON.stringify({event:'response',url:r.url(),status:r.status(),method:r.request().method(),type:r.request().resourceType()})+'\n');});
+  context.on('requestfinished',r=>{if(r.url().endsWith('/_sigil/activity'))fs.appendFileSync(root+'/activity-network.log',JSON.stringify({event:'finished',url:r.url(),method:r.method(),type:r.resourceType()})+'\n');});
+  context.on('requestfailed' ,r=>{const row={url:r.url(),error:r.failure()?.errorText||'unknown',method:r.method(),resourceType:r.resourceType(),navigation:r.isNavigationRequest(),phase:closing?'shutdown':'active'};diagnostics.network.push(row);});
+  const page=await context.newPage();global.smokePage=page;let workers=0,resources=0,wsFrames=0,activities=0;const sockets=[];
   page.on('request',r=>{if(r.url().endsWith('/_sigil/activity'))activities++;});
   page.on('worker',()=>workers++);page.on('websocket',ws=>{sockets.push(ws.url());ws.on('framereceived',()=>wsFrames++);});
-  page.on('response',r=>{if(r.url().includes('/static/')&&r.ok())resources++;if(r.status()>=400){failures.push({url:r.url().split('?')[0],status:r.status()});fs.appendFileSync(root+'/network.log',JSON.stringify({url:r.url().split('?')[0],status:r.status()})+'\n');}});
-  page.on('console',m=>{if(m.type()==='error')fs.appendFileSync(root+'/browser-console.log',m.text().slice(0,1000)+'\n');});
+  page.on('response',r=>{if(r.url().includes('/static/')&&r.ok())resources++;});
   await page.goto(url.toString());await page.waitForURL('**/_sigil/workbench',{timeout:15000});
   const frame=page.frameLocator('#editor');await frame.locator('.monaco-workbench').waitFor({timeout:45000});
   await frame.getByRole('tab',{name:/navigation.txt/}).first().waitFor({timeout:30000});
@@ -25,27 +31,40 @@ const {chromium}=require('/workspace/target/gateway-browser/node_modules/playwri
   assert(workers>0,'actual provider workers must start');assert(resources>3,'actual provider static resources must load');assert(wsFrames>0,'actual provider WebSocket messages must arrive');
   assert(sockets.every(s=>s.startsWith('wss://'+url.host+'/')),'no loopback or insecure WebSocket authority');
   assert.equal(activities,0,'background provider traffic cannot claim human login activity');
-  await frame.locator('.monaco-editor textarea').first().focus();await page.keyboard.press('ArrowRight');
-  await page.waitForResponse(r=>r.url().endsWith('/_sigil/activity')&&r.status()===204,{timeout:3000}).catch(()=>{assert(activities>0,'trusted editor event must renew login idle');});
+  await frame.locator('.monaco-editor textarea').first().focus();
+  const activityStatus=await trustedActivity(page,()=>page.keyboard.press('ArrowRight'));
   await page.screenshot({path:root+'/provider-workbench.png'});
   const resource='/vscode-remote-resource?path='+encodeURIComponent(root+'/project.html');
-  const result=await page.evaluate(async resource=>{const r=await fetch(resource);return {status:r.status,disposition:r.headers.get('content-disposition'),csp:r.headers.get('content-security-policy')};},resource);
+  diagnostics.expectHttp(url.origin+resource.replace('remote','%72emote'),404);
+  const result=await page.evaluate(async resource=>{const r=await fetch(resource);await r.text();return {status:r.status,disposition:r.headers.get('content-disposition'),csp:r.headers.get('content-security-policy')};},resource);
   fs.writeFileSync(root+'/resource-probe.json',JSON.stringify(result));assert.equal(result.status,200);assert.equal(result.disposition,'attachment');assert(result.csp.includes('sandbox'));
   const prefix=new URL(sockets[0]).pathname;
-  const variants=await page.evaluate(async({prefix,resource})=>{const results=[];for(const path of [prefix+resource,resource.replace('remote','%72emote')]){const r=await fetch(path);results.push({status:r.status,disposition:r.headers.get('content-disposition'),csp:r.headers.get('content-security-policy')});}return results;},{prefix,resource});assert.equal(variants[0].status,200);assert.equal(variants[0].disposition,'attachment');assert(variants[0].csp.includes('sandbox'));assert.equal(variants[1].status,404);
+  for(const file of ['vsda.js','vsda_bg.wasm'])diagnostics.expectHttp(url.origin+prefix+'/static/node_modules/vsda/rust/web/'+file,404);
+  diagnostics.expectNetwork(url.origin+prefix+'/static/node_modules/vsda/rust/web/vsda.js','net::ERR_ABORTED',{status:404,resourceType:'script'});
+  diagnostics.expectConsole(`Refused to execute script from '${url.origin+prefix}/static/node_modules/vsda/rust/web/vsda.js' because its MIME type ('application/json') is not executable, and strict MIME type checking is enabled.`);
+
+  const variants=await page.evaluate(async({prefix,resource})=>{const results=[];for(const path of [prefix+resource,resource.replace('remote','%72emote')]){const r=await fetch(path);await r.text();results.push({status:r.status,disposition:r.headers.get('content-disposition'),csp:r.headers.get('content-security-policy')});}return results;},{prefix,resource});assert.equal(variants[0].status,200);assert.equal(variants[0].disposition,'attachment');assert(variants[0].csp.includes('sandbox'));assert.equal(variants[1].status,404);
+  diagnostics.expectHttp(url.origin+resource,403);
   const attack=await context.newPage();await attack.goto(url.origin+resource);assert.equal(await attack.evaluate(()=>window.compromised),undefined);assert.match(await attack.locator('body').innerText(),/project_resource_navigation_denied/);
-  const proxy=await page.evaluate(async()=>{const r=await fetch('/proxy/3000/');return r.status;});assert.equal(proxy,409);
+  diagnostics.expectHttp(url.origin+'/proxy/3000/',409);
+  const proxy=await page.evaluate(async()=>{const r=await fetch('/proxy/3000/');await r.text();return r.status;});assert.equal(proxy,409);
   await page.evaluate(()=>{window.open=()=>null;});await page.getByRole('button',{name:'Open preview',exact:true}).click();
   const link=page.getByRole('link',{name:'Continue to preview'});await link.waitFor();const previewUrl=await link.getAttribute('href');assert(new URL(previewUrl).host.endsWith('.preview.example.test'));
   const previewPage=await context.newPage();await previewPage.goto(previewUrl);await previewPage.getByRole('heading',{name:'Isolated project preview'}).waitFor();
+  const previewOrigin=new URL(previewUrl).origin,controlUrl=url.origin+'/_sigil/session';
+  diagnostics.expectHttp(previewOrigin+'/_sigil/session',403);diagnostics.expectHttp(previewOrigin+'/_sigil/activity',403,'POST');diagnostics.expectHttp(controlUrl,403);diagnostics.expectNetwork(controlUrl,'net::ERR_FAILED',{resourceType:'fetch'});
+  diagnostics.expectConsole(`Access to fetch at '${controlUrl}' from origin '${previewOrigin}' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.`);
+  diagnostics.expectConsole('Failed to load resource: net::ERR_FAILED',controlUrl);
+  diagnostics.expectConsole(`WebSocket connection to '${url.origin.replace('https:','wss:')}/' failed: Error during WebSocket handshake: Unexpected response code: 403`);
   const boundary=await previewPage.evaluate(async ide=>{
-    const own=await fetch('/_sigil/session');const activity=await fetch('/_sigil/activity',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const own=await fetch('/_sigil/session');await own.text();const activity=await fetch('/_sigil/activity',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await activity.text();
     let cross;try{await fetch(ide+'/_sigil/session',{credentials:'include'});cross='allowed';}catch{cross='blocked';}
     const ideWs=await new Promise(resolve=>{const socket=new WebSocket(ide.replace('https:','wss:')+'/');socket.onopen=()=>{resolve('allowed');socket.close();};socket.onerror=()=>resolve('blocked');});
     return {own:own.status,activity:activity.status,cross,ideWs,cookie:document.cookie};
   },url.origin);assert.deepEqual(boundary,{own:403,activity:403,cross:'blocked',ideWs:'blocked',cookie:''});
   await previewPage.screenshot({path:root+'/isolated-preview.png'});
-  fs.writeFileSync(root+'/browser-evidence.json' ,JSON.stringify({browser:browser.version(),serviceWorker:true,variants,boundary,activities,workers,resources,wsFrames,sockets:sockets.map(u=>u.split('?')[0]),failures,resource:result,secureContext:true,file:'navigation.txt',line:2,column:3},null,2));
+  diagnostics.check();
+  fs.writeFileSync(root+'/browser-evidence.json' ,JSON.stringify({browser:browser.version(),serviceWorker:true,variants,boundary,activityStatus,activities,workers,resources,wsFrames,sockets:sockets.map(u=>u.split('?')[0]),failures:diagnostics.http,consoleExceptions:diagnostics.console,resource:result,secureContext:true,file:'navigation.txt',line:2,column:3},null,2));
   console.log('PASS pinned provider frame, resources, secure WSS messages, file line/column, resource sandbox and proxy denial');
- }catch(e){if(global.smokePage){await global.smokePage.screenshot({path:root+'/provider-failure.png'}).catch(()=>{});fs.writeFileSync(root+'/frames.json',JSON.stringify(await Promise.all(global.smokePage.frames().map(async f=>({url:f.url().split('?')[0],body:(await f.locator('body').innerText().catch(()=>'' )).slice(0,4000)}))),null,2));}throw e;}finally{if(browser)await browser.close();for(const s of tunnels)s.destroy();edge.closeAllConnections();await new Promise(r=>edge.close(r));const cleanup={browserClosed:!browser||!browser.isConnected(),edgeClosed:!edge.listening,ownedTunnelsDestroyed:[...tunnels].every(s=>s.destroyed)};fs.writeFileSync(root+'/browser-cleanup.json',JSON.stringify(cleanup));assert(Object.values(cleanup).every(Boolean),'owned browser/edge cleanup');}
+ }catch(e){if(global.smokePage){await global.smokePage.screenshot({path:root+'/provider-failure.png'}).catch(()=>{});fs.writeFileSync(root+'/frames.json',JSON.stringify(await Promise.all(global.smokePage.frames().map(async f=>({url:f.url().split('?')[0],body:(await f.locator('body').innerText().catch(()=>'' )).slice(0,4000)}))),null,2));}throw e;}finally{closing=true;if(browser)await browser.close();for(const s of tunnels)s.destroy();edge.closeAllConnections();await new Promise(r=>edge.close(r));const cleanup={browserClosed:!browser||!browser.isConnected(),edgeClosed:!edge.listening,ownedTunnelsDestroyed:[...tunnels].every(s=>s.destroyed)};fs.writeFileSync(root+'/browser-cleanup.json',JSON.stringify(cleanup));assert(Object.values(cleanup).every(Boolean),'owned browser/edge cleanup');if(diagnostics){fs.writeFileSync(root+'/diagnostics.json',JSON.stringify({http:diagnostics.http,console:diagnostics.console,network:diagnostics.network},null,2));diagnostics.check();}}
 })().catch(e=>{console.error(e.stack);process.exitCode=1});

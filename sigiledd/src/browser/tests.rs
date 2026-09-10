@@ -142,6 +142,13 @@ impl Fixture {
         Self::with_options(None, true).await
     }
     async fn with_options(github: Option<crate::github::GitHub>, gateway: bool) -> Self {
+        Self::with_readiness(github, gateway, gateway).await
+    }
+    async fn with_readiness(
+        github: Option<crate::github::GitHub>,
+        gateway: bool,
+        durable: bool,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let fake = Fake {
@@ -183,9 +190,11 @@ impl Fixture {
                 "SIGILED_BROWSER_PREVIEW_DNS_TLS_READY".into(),
                 "true".into(),
             );
-            state.store = crate::store::Store::at_dir(
-                &state.sessions.repos_dir.as_ref().unwrap().join("state"),
-            );
+            if durable {
+                state.store = crate::store::Store::at_dir(
+                    &state.sessions.repos_dir.as_ref().unwrap().join("state"),
+                );
+            }
             state.registry.insert(crate::project::ProjectRecord::new(
                 "demo",
                 &crate::manifest::Manifest::parse("").unwrap(),
@@ -1642,4 +1651,159 @@ fn gateway_readiness_and_origin_configuration_fail_closed() {
         );
         assert!(Config::from_map(&map).is_err(), "{domain}");
     }
+}
+
+async fn large_review_projection(detail: bool) {
+    let f = Fixture::new().await;
+    let (cookie, session) = f.signed_in().await;
+    let actor: Actor = serde_json::from_value(session["actor"].clone()).unwrap();
+    let mut descriptors = std::collections::BTreeMap::new();
+    for i in 0..100 {
+        let name = format!("project-{i:03}");
+        let mut manifest = crate::manifest::Manifest::parse("").unwrap();
+        manifest.declaration.project.description = Some("d".repeat(1000));
+        manifest.declaration.project.display_name = Some(format!("Project {i:03}"));
+        manifest.declaration.validate(None).unwrap();
+        f.state
+            .registry
+            .insert(crate::project::ProjectRecord::new(&name, &manifest, None));
+        let mut d = crate::ecosystem::Descriptor {
+            declaration: manifest.declaration,
+            ..Default::default()
+        };
+        if i == 0 {
+            d.jobs = (0..100)
+                .map(|n| crate::ecosystem::JobDefinition {
+                    name: format!("nightly-{n:03}"),
+                    cron: "0 1 * * *".into(),
+                    timeout_minutes: 30,
+                })
+                .collect();
+        }
+        descriptors.insert(name, d);
+    }
+    f.state.registry.hydrate_descriptors(descriptors);
+    let mut records = HashMap::new();
+    for i in 0..100 {
+        let id = format!("{i:032x}");
+        let record:crate::sessions::SessionRecord=serde_json::from_value(json!({"session_id":id,"project":"project-000","branch":format!("session/{id}"),"head":"a".repeat(40),"stale":false,"actor":actor,"generation":9007199254740993u64,"lifecycle":"active","token":"private-review-token"})).unwrap();
+        records.insert(id, record);
+    }
+    let debts=(0..20).map(|i|serde_json::from_value(json!({"branch":format!("session/debt-{i}"),"conflicted_files":(0..30).map(|j|format!("docs/{}/file-{j}.md","path".repeat(20))).collect::<Vec<_>>(),"ours":{"sha":"a".repeat(40),"commit_messages":[]},"theirs":{"sha":"b".repeat(40),"commit_messages":[]},"since":"2026-09-10"})).unwrap()).collect();
+    f.state
+        .sessions
+        .hydrate(HashMap::from([("project-000".into(), debts)]), records);
+    for (path, machine) in [
+        (
+            "/browser/api/overview?limit=100",
+            crate::overview::root(
+                actor.clone(),
+                State(f.state.clone()),
+                axum::extract::Query(crate::overview::Page {
+                    offset: None,
+                    limit: Some(100),
+                }),
+            )
+            .await,
+        ),
+        (
+            "/browser/api/projects/project-000?limit=100",
+            crate::overview::detail(
+                actor.clone(),
+                State(f.state.clone()),
+                axum::extract::Path("project-000".into()),
+                axum::extract::Query(crate::overview::Page {
+                    offset: None,
+                    limit: Some(100),
+                }),
+            )
+            .await,
+        ),
+    ]
+    .into_iter()
+    .filter(|(path, _)| path.contains("overview") != detail)
+    {
+        assert_eq!(machine.status(), StatusCode::OK);
+        let baseline = axum::body::to_bytes(machine.into_body(), 4 << 20)
+            .await
+            .unwrap();
+        assert!(
+            baseline.len() > 65536,
+            "fixture must exceed accidental helper cap: {}",
+            baseline.len()
+        );
+        let expected: Value = serde_json::from_slice(&baseline).unwrap();
+        let r = f
+            .request(reqwest::Method::GET, path)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            StatusCode::OK,
+            "valid supported dashboard projection: {path}"
+        );
+        let v: Value = r.json().await.unwrap();
+        if path.contains("overview") {
+            assert_eq!(v["projects"]["items"].as_array().unwrap().len(), 100);
+            assert_eq!(v["projects"], expected["projects"]);
+        } else {
+            assert_eq!(v["sessions"]["items"].as_array().unwrap().len(), 100);
+            assert_eq!(v["jobs"]["items"].as_array().unwrap().len(), 100);
+            assert_eq!(v["merge_debt"], expected["merge_debt"]);
+            assert_eq!(v["description"], "d".repeat(1000));
+            for row in v["sessions"]["items"].as_array().unwrap() {
+                assert_eq!(row["generation"], "9007199254740993");
+            }
+            assert_eq!(
+                expected["sessions"]["items"][0]["generation"],
+                9007199254740993u64
+            );
+        }
+        assert!(!v.to_string().contains("private-review-token"));
+    }
+}
+#[tokio::test]
+async fn review_c2_i2_start_requires_browser_readiness_before_provider_lock() {
+    for (enabled, durable, error) in [
+        (false, false, "ide_gateway_not_configured"),
+        (true, false, "durable_state_required"),
+    ] {
+        let f = Fixture::with_readiness(None, enabled, durable).await;
+        let (cookie, session) = f.signed_in().await;
+        assert_eq!(session["features"]["workspace_actions"], false);
+        let id = "f".repeat(32);
+        let record:crate::sessions::SessionRecord=serde_json::from_value(json!({"session_id":id,"project":"demo","branch":format!("session/{id}"),"head":"a".repeat(40),"stale":false,"actor":session["actor"],"generation":1,"lifecycle":"active","runtime_owned":true,"token":"private-review-token"})).unwrap();
+        f.state.sessions.put(record);
+        let lock = f.state.sessions.session_lock(&id).lock_owned().await;
+        let response = f
+            .request(
+                reqwest::Method::POST,
+                &format!("/browser/api/sessions/{id}/ide"),
+            )
+            .header("cookie", &cookie)
+            .header("origin", "https://sigil.test")
+            .header("x-sigil-csrf", session["csrf_token"].as_str().unwrap())
+            .timeout(Duration::from_millis(500))
+            .json(&json!({"action":"start","generation":"1"}))
+            .send()
+            .await
+            .expect(
+                "disabled browser start must return before entering C1 provider lifecycle lock",
+            );
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.json::<Value>().await.unwrap()["error"], error);
+        assert!(f.state.sessions.record(&id).unwrap().binding.is_none());
+        drop(lock);
+    }
+}
+
+#[tokio::test]
+async fn review_c2_i1_large_valid_inventory() {
+    large_review_projection(false).await;
+}
+#[tokio::test]
+async fn review_c2_i1_populated_detail() {
+    large_review_projection(true).await;
 }
