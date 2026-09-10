@@ -269,7 +269,7 @@ mod tests {
         declare(&r, "alpha", "novel");
         let state = crate::AppState {
             registry: r,
-            ..Default::default()
+            ..crate::AppState::test_without_runtime()
         };
         let response = serve(
             State(state.clone()),

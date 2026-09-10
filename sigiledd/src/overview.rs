@@ -36,10 +36,63 @@ fn page(items: Vec<Value>, offset: usize, limit: usize) -> Value {
     json!({"items":items.into_iter().skip(offset).take(limit).collect::<Vec<_>>(),"total":total,
         "offset":offset,"limit":limit,"next_offset":if next < total {Some(next)} else {None}})
 }
-fn recorded_sessions(state: &AppState) -> Vec<crate::sessions::SessionRecord> {
-    let mut records: Vec<_> = state.sessions.dump_records().into_values().collect();
-    records.sort_by(|a, b| a.session_id.cmp(&b.session_id));
-    records
+/// Capture/index the complete session store once per request. The same snapshot
+/// supplies counts, attention and safe views for every selected project row.
+struct SessionIndex {
+    projects: std::collections::BTreeMap<String, Vec<crate::sessions::SessionRecord>>,
+    attention: std::collections::BTreeMap<String, Vec<String>>,
+    total: usize,
+}
+impl SessionIndex {
+    fn capture(state: &AppState) -> Self {
+        let mut records: Vec<_> = state.sessions.dump_records().into_values().collect();
+        records.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        let mut owners = std::collections::BTreeMap::<String, usize>::new();
+        for s in &records {
+            if s.token.is_some() {
+                *owners.entry(s.container()).or_default() += 1;
+            }
+        }
+        let mut index = Self {
+            total: records.len(),
+            projects: Default::default(),
+            attention: Default::default(),
+        };
+        for s in records {
+            let claims = owners.get(&s.container()).copied().unwrap_or(0);
+            let other_owner = claims > usize::from(s.token.is_some());
+            if s.lifecycle == crate::sessions::Lifecycle::Failed
+                || s.error.is_some()
+                || !s.runtime_owned
+                || other_owner
+            {
+                index
+                    .attention
+                    .entry(s.project.clone())
+                    .or_default()
+                    .push(s.session_id.clone());
+            }
+            index.projects.entry(s.project.clone()).or_default().push(s);
+        }
+        index
+    }
+    fn for_project(&self, project: &str) -> &[crate::sessions::SessionRecord] {
+        self.projects.get(project).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+fn project_page<F>(projects: &[ProjectRecord], offset: usize, limit: usize, project: F) -> Value
+where
+    F: FnMut(&ProjectRecord) -> Value,
+{
+    let total = projects.len();
+    let next = offset.saturating_add(limit);
+    let items: Vec<_> = projects
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .map(project)
+        .collect();
+    json!({"items":items,"total":total,"offset":offset,"limit":limit,"next_offset":if next<total {Some(next)}else{None}})
 }
 fn capability(desired: bool, status: &str, reason: &str, d: &Descriptor) -> Value {
     json!({"desired":desired,"state":if desired {status} else {"disabled"},"reason":reason,
@@ -112,6 +165,7 @@ fn attention(
     p: &ProjectRecord,
     d: &Descriptor,
     service_error: Option<&&str>,
+    sessions: &SessionIndex,
 ) -> Vec<Value> {
     let mut items = vec![];
     let mut add = |source: String, severity: &str, code: &str| {
@@ -123,7 +177,11 @@ fn attention(
     if let Some(e) = d.error {
         add(
             format!("project:{}/repository", p.name),
-            "failure",
+            if e == crate::ecosystem::RefreshError::RefreshBusy {
+                "warning"
+            } else {
+                "failure"
+            },
             serde_json::to_value(e).unwrap().as_str().unwrap(),
         );
     } else if d
@@ -155,17 +213,10 @@ fn attention(
     if let Some(code) = service_error {
         add(format!("project:{}/service", p.name), "failure", code);
     }
-    for s in recorded_sessions(state)
-        .into_iter()
-        .filter(|s| s.project == p.name)
-    {
-        if s.lifecycle == crate::sessions::Lifecycle::Failed
-            || s.error.is_some()
-            || !s.runtime_owned
-            || !state.sessions.binding_safe(&s)
-        {
+    if let Some(ids) = sessions.attention.get(&p.name) {
+        for id in ids {
             add(
-                format!("session:{}", s.session_id),
+                format!("session:{id}"),
                 "failure",
                 "session_unprotected_or_failed",
             );
@@ -197,19 +248,24 @@ fn attention(
     }
     items
 }
-fn summary(state: &AppState, p: &ProjectRecord, service_error: Option<&&str>) -> Value {
+fn summary(
+    state: &AppState,
+    p: &ProjectRecord,
+    service_error: Option<&&str>,
+    sessions: &SessionIndex,
+) -> Value {
     let d = state.registry.descriptor(&p.name);
     json!({"name":p.name,"display_name":d.declaration.project.display_name.as_deref().unwrap_or(&p.name),
         "description":d.declaration.project.description,"template_version":p.template_version,"template_behind":p.template_behind,
         "repository_revision":d.desired_revision,"observed_revision":d.observed_revision,"needs_merge":p.needs_merge,
         "capabilities":capabilities(state,&d),
-        "setup":{"state":if d.error.is_some(){"failed"}else if d.observed_revision.is_some(){"ready"}else{"pending"},
+        "setup":{"state":if d.error==Some(crate::ecosystem::RefreshError::RefreshBusy){"pending"}else if d.error.is_some(){"failed"}else if d.observed_revision.is_some(){"ready"}else{"pending"},
             "scope":"registry_manifest","desired_revision":d.desired_revision,"observed_revision":d.observed_revision,
             "observed_at":d.observed_at,"attempted_at":d.attempted_at,"retry_at":d.retry_at,"failures":d.failures,
             "stale":d.error.is_some() || d.observed_at.is_none_or(|t|crate::auth::now_epoch().saturating_sub(t)>600),
             "error":d.error.map(|e|json!({"code":e,"message":e.message()})),"service_error":service_error},
         "app":app_summary(state,p,&d),
-        "session_count":recorded_sessions(state).iter().filter(|s|s.project==p.name).count(),
+        "session_count":sessions.for_project(&p.name).len(),
         "jobs":page(jobs(state,&d,&p.name),0,100),
         "latest_activity_at":state.events.for_project(&p.name).iter().map(|e|e.at_epoch).max()})
 }
@@ -225,6 +281,7 @@ pub async fn root(
     let mut projects = state.registry.snapshot();
     projects.sort_by(|a, b| a.name.cmp(&b.name));
     let (_, errors) = crate::catalog::dynamic(&state.registry);
+    let sessions = SessionIndex::capture(&state);
     let mut items = vec![];
     for p in &projects {
         items.extend(attention(
@@ -232,6 +289,7 @@ pub async fn root(
             p,
             &state.registry.descriptor(&p.name),
             errors.get(&p.name),
+            &sessions,
         ));
     }
     items.sort_by_key(|v| {
@@ -246,13 +304,16 @@ pub async fn root(
     });
     let attention_count = items.len();
     items.truncate(100);
-    let counts = json!({"projects":projects.len(),"sessions":recorded_sessions(&state).len(),"attention":attention_count});
-    let projects = projects
-        .iter()
-        .map(|p| summary(&state, p, errors.get(&p.name)))
-        .collect();
-    Json(json!({"observed_at":crate::auth::now_epoch(),"counts":counts,"projects":page(projects,offset,limit),
-        "attention":{"items":items,"total":attention_count,"truncated":attention_count>100}})).into_response()
+    let counts =
+        json!({"projects":projects.len(),"sessions":sessions.total,"attention":attention_count});
+    let projects = project_page(&projects, offset, limit, |p| {
+        summary(&state, p, errors.get(&p.name), &sessions)
+    });
+    Json(
+        json!({"observed_at":crate::auth::now_epoch(),"counts":counts,"projects":projects,
+        "attention":{"items":items,"total":attention_count,"truncated":attention_count>100}}),
+    )
+    .into_response()
 }
 pub async fn detail(
     _actor: Actor,
@@ -277,20 +338,17 @@ pub async fn detail(
             .into_response();
     };
     let (_, errors) = crate::catalog::dynamic(&state.registry);
+    let sessions = SessionIndex::capture(&state);
     let d = state.registry.descriptor(&project);
-    let mut v = summary(&state, &p, errors.get(&project));
+    let mut v = summary(&state, &p, errors.get(&project), &sessions);
     v["observed_at"] = json!(crate::auth::now_epoch());
     v["memory"] = json!(d.declaration.memory);
     v["memory"]["sharing"] = json!(d.declaration.memory.sharing.as_deref().unwrap_or("private"));
     v["ide"] = json!(d.declaration.ide);
     v["merge_debt"]=page(state.sessions.debts_for(&project).iter().map(|d|json!({"branch":d.branch,"conflicted_files":d.conflicted_files,"ours_revision":d.ours.sha,"theirs_revision":d.theirs.sha,"since":d.since})).collect(),0,100);
-    let mut sessions: Vec<_> = recorded_sessions(&state)
-        .into_iter()
-        .filter(|s| s.project == project)
-        .collect();
-    sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
     v["sessions"] = page(
         sessions
+            .for_project(&project)
             .iter()
             .map(|s| s.view(state.sessions.runtime.as_ref()))
             .collect(),
@@ -311,7 +369,11 @@ pub async fn detail(
         crate::events::Event::ProjectCreated{adopted,..}=>json!({"kind":"project_created","adopted":adopted}),
     }})).collect();
     v["activity"] = page(activity, offset, limit);
-    v["attention"] = page(attention(&state, &p, &d, errors.get(&project)), 0, 100);
+    v["attention"] = page(
+        attention(&state, &p, &d, errors.get(&project), &sessions),
+        0,
+        100,
+    );
     Json(v).into_response()
 }
 #[cfg(test)]
@@ -325,7 +387,7 @@ mod tests {
         }
     }
     fn registered() -> AppState {
-        let s = AppState::default();
+        let s = AppState::test_without_runtime();
         for name in ["bravo", "alpha"] {
             s.registry.insert(ProjectRecord::new(
                 name,
@@ -560,7 +622,7 @@ mod http_tests {
     use super::*;
     #[tokio::test]
     async fn actual_routes_enforce_auth_validate_query_and_preserve_legacy_shape() {
-        let mut state = AppState::default();
+        let mut state = AppState::test_without_runtime();
         state.auth.config = std::sync::Arc::new(crate::auth::AuthConfig {
             bootstrap_bearer: Some("overview-test".into()),
             ..Default::default()
@@ -627,5 +689,25 @@ mod http_tests {
         assert!(state.sessions.live_records().is_empty());
         assert!(state.events.dump().is_empty());
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod pagination_cost_tests {
+    use super::*;
+    #[test]
+    fn project_page_only_projects_rows_inside_the_selected_page() {
+        let manifest = crate::manifest::Manifest::parse("").unwrap();
+        let projects: Vec<_> = (0..100)
+            .map(|n| ProjectRecord::new(&format!("project-{n:03}"), &manifest, None))
+            .collect();
+        let mut projected = vec![];
+        let page = project_page(&projects, 50, 3, |p| {
+            projected.push(p.name.clone());
+            json!({"name":p.name})
+        });
+        assert_eq!(projected, ["project-050", "project-051", "project-052"]);
+        assert_eq!(page["total"], 100);
+        assert_eq!(page["next_offset"], 53);
     }
 }

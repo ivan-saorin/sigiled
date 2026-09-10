@@ -7,6 +7,7 @@
 // Session 5 adds POST /projects (github.rs): create-from-template or adopt.
 mod apps;
 mod auth;
+mod bounded_process;
 mod catalog;
 mod contract;
 mod declaration;
@@ -198,3 +199,36 @@ async fn main() {
 
 #[cfg(test)]
 mod session_tests;
+
+/// Hermetic registry/overview fixture: never consult runtime/auth/store environment.
+#[cfg(test)]
+impl AppState {
+    pub(crate) fn test_without_runtime() -> Self {
+        use std::sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        };
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let repos = std::env::temp_dir().join(format!(
+            "sigil-registry-fixture-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&repos).unwrap();
+        Self {
+            registry: project::Registry::default(),
+            sessions: sessions::SessionState::with_repos_dir(repos),
+            auth: auth::AuthState {
+                config: Arc::new(auth::AuthConfig::default()),
+                keys: auth::KeyStore::default(),
+                approvals: auth::ApprovalStore::default(),
+                http: reqwest::Client::new(),
+            },
+            events: events::EventLog::default(),
+            apps: apps::AppsState::default(),
+            jobs: jobs::JobsState::default(),
+            store: store::Store::default(),
+            github: None,
+        }
+    }
+}

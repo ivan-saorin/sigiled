@@ -153,6 +153,104 @@ impl Runtime {
         Ok(path)
     }
 
+    /// Refresh-only boundary. Session lifecycle callers continue using
+    /// ensure_mirror; the reconciler owns the lock and one absolute deadline.
+    pub(crate) fn ensure_mirror_until(
+        &self,
+        project: &str,
+        deadline: std::time::Instant,
+    ) -> Result<PathBuf, crate::bounded_process::Error> {
+        use crate::bounded_process::{git, output_until, Error};
+        if !crate::project::valid_name(project) {
+            return Err(Error::Io);
+        }
+        let path = self.repo_path(project);
+        let key = self.key_path(project);
+        if path.join(".git").exists() {
+            with_refresh_lock_recovery(&path, || {
+                git(
+                    &path,
+                    &["config", "core.sshCommand", &ssh_command(&key)],
+                    deadline,
+                )?;
+                git(&path, &["fetch", "--prune", "origin"], deadline)?;
+                git(&path, &["checkout", "-f", "master"], deadline)?;
+                git(&path, &["reset", "--hard", "origin/master"], deadline)?;
+                Ok(())
+            })?;
+            Ok(path)
+        } else {
+            self.clone_mirror_using(project, deadline, |target, deadline| {
+                let output = output_until(
+                    crate::bounded_process::git_command()
+                        .args(["clone", &self.repo_url(project)])
+                        .arg(target)
+                        .env("GIT_SSH_COMMAND", ssh_command(&key)),
+                    deadline,
+                )?;
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(Error::Exit)
+                }
+            })
+        }
+    }
+    /// Only a freshly created, operation-owned temporary directory is removed
+    /// on failure. A partial clone never occupies the published mirror path.
+    fn clone_mirror_using<F>(
+        &self,
+        project: &str,
+        deadline: std::time::Instant,
+        clone: F,
+    ) -> Result<PathBuf, crate::bounded_process::Error>
+    where
+        F: FnOnce(&Path, std::time::Instant) -> Result<(), crate::bounded_process::Error>,
+    {
+        use crate::bounded_process::{git, Error};
+        if !crate::project::valid_name(project) {
+            return Err(Error::Io);
+        }
+        let destination = self.repo_path(project);
+        if destination.symlink_metadata().is_ok() {
+            return Err(Error::Exit);
+        }
+        std::fs::create_dir_all(&self.repos_dir).map_err(|_| Error::Io)?;
+        let mut nonce = [0u8; 16];
+        getrandom::getrandom(&mut nonce).map_err(|_| Error::Io)?;
+        let nonce: String = nonce.iter().map(|v| format!("{v:02x}")).collect();
+        let path = self.repos_dir.join(format!(".sigiled-clone-{nonce}"));
+        std::fs::create_dir(&path).map_err(|_| Error::Io)?;
+        struct OwnedClone(PathBuf);
+        impl Drop for OwnedClone {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let owned = OwnedClone(path);
+        clone(&owned.0, deadline)?;
+        git(
+            &owned.0,
+            &[
+                "config",
+                "core.sshCommand",
+                &ssh_command(&self.key_path(project)),
+            ],
+            deadline,
+        )?;
+        git(
+            &owned.0,
+            &["rev-parse", "--verify", "master^{commit}"],
+            deadline,
+        )?;
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::Deadline);
+        }
+        publish_clone(&owned.0, &destination)?;
+        // Rename removed the temporary path. Drop never touches destination.
+        Ok(destination)
+    }
+
     /// Push a ref with the project's deploy key (close, after the merge).
     pub fn push(&self, project: &str, refspec: &str) -> Result<String, String> {
         let path = self.repo_path(project);
@@ -572,6 +670,126 @@ pub fn autosave_cmd(label: &str) -> String {
     )
 }
 
+/// Caller must own the A1 mirror guard throughout this function. The managed
+/// mirror has no concurrent Git writer: pre-existing locks are refused, never
+/// removed. New known lock files can therefore only belong to this refresh.
+fn with_refresh_lock_recovery<F, T>(
+    repo: &Path,
+    operation: F,
+) -> Result<T, crate::bounded_process::Error>
+where
+    F: FnOnce() -> Result<T, crate::bounded_process::Error>,
+{
+    use crate::bounded_process::Error;
+    fn locks(repo: &Path) -> Result<Vec<PathBuf>, Error> {
+        let git = repo.join(".git");
+        if !git
+            .symlink_metadata()
+            .map_err(|_| Error::Io)?
+            .file_type()
+            .is_dir()
+        {
+            return Err(Error::Io);
+        }
+        let mut out = vec![];
+        for name in [
+            "index.lock",
+            "config.lock",
+            "config.worktree.lock",
+            "packed-refs.lock",
+            "shallow.lock",
+            "HEAD.lock",
+            "FETCH_HEAD.lock",
+            "ORIG_HEAD.lock",
+        ] {
+            let path = git.join(name);
+            match path.symlink_metadata() {
+                Ok(metadata) => {
+                    if !metadata.is_file() {
+                        return Err(Error::LockBusy);
+                    }
+                    out.push(path);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(Error::LockBusy),
+            }
+        }
+        let mut pending = vec![git.join("refs")];
+        let mut visited = 0;
+        while let Some(dir) = pending.pop() {
+            let metadata = match dir.symlink_metadata() {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(Error::LockBusy),
+            };
+            if !metadata.file_type().is_dir() {
+                return Err(Error::LockBusy);
+            }
+            for item in std::fs::read_dir(dir).map_err(|_| Error::LockBusy)? {
+                visited += 1;
+                if visited > 8192 {
+                    return Err(Error::LockBusy);
+                }
+                let item = item.map_err(|_| Error::LockBusy)?;
+                let kind = item.file_type().map_err(|_| Error::LockBusy)?;
+                if kind.is_symlink() {
+                    return Err(Error::LockBusy);
+                }
+                if kind.is_dir() {
+                    pending.push(item.path());
+                } else if item.file_name().to_string_lossy().ends_with(".lock") {
+                    if !kind.is_file() {
+                        return Err(Error::LockBusy);
+                    }
+                    out.push(item.path());
+                }
+            }
+        }
+        Ok(out)
+    }
+    if !locks(repo)?.is_empty() {
+        return Err(Error::LockBusy);
+    }
+    let result = operation(); // bounded_process has already stopped/reaped children on return.
+    let created = locks(repo)?;
+    for path in &created {
+        std::fs::remove_file(path).map_err(|_| Error::LockBusy)?;
+    }
+    if result.is_ok() && !created.is_empty() {
+        return Err(Error::LockBusy);
+    }
+    result
+}
+
+/// Linux atomic no-replace publish: even an incumbent created after our
+/// initial check cannot be replaced (including an empty directory or symlink).
+#[cfg(target_os = "linux")]
+fn publish_clone(source: &Path, destination: &Path) -> Result<(), crate::bounded_process::Error> {
+    use std::os::unix::ffi::OsStrExt;
+    let source = std::ffi::CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| crate::bounded_process::Error::Io)?;
+    let destination = std::ffi::CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| crate::bounded_process::Error::Io)?;
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(crate::bounded_process::Error::Io)
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn publish_clone(_source: &Path, _destination: &Path) -> Result<(), crate::bounded_process::Error> {
+    Err(crate::bounded_process::Error::UnsupportedPlatform)
+}
+
 fn ssh_command(key: &Path) -> String {
     format!(
         "ssh -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
@@ -778,5 +996,143 @@ mod bounded_session_names {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod registry_clone_tests {
+    use super::*;
+    use crate::bounded_process::{output_until, Error};
+    use std::time::{Duration, Instant};
+    fn runtime() -> Runtime {
+        let root = crate::AppState::test_without_runtime()
+            .sessions
+            .repos_dir
+            .unwrap();
+        Runtime {
+            fake: None,
+            network: "fixture".into(),
+            image: "fixture".into(),
+            owner: "fixture".into(),
+            domain: "fixture.invalid".into(),
+            repos_dir: root.join("repos"),
+            keys_dir: root.join("keys"),
+        }
+    }
+    fn local_clone(source: &Path, target: &Path, deadline: Instant) -> Result<(), Error> {
+        let output = output_until(
+            crate::bounded_process::git_command()
+                .arg("clone")
+                .arg(source)
+                .arg(target),
+            deadline,
+        )?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(Error::Exit)
+        }
+    }
+    #[test]
+    fn timed_out_initial_clone_cleans_owned_partial_and_retry_publishes_valid_mirror() {
+        let rt = runtime();
+        let failed = rt.clone_mirror_using(
+            "sample",
+            Instant::now() + Duration::from_millis(100),
+            |target, deadline| {
+                std::fs::create_dir(target.join(".git")).unwrap();
+                std::fs::write(target.join("partial"), "partial clone").unwrap();
+                output_until(Command::new("sh").args(["-c", "sleep 5 & wait"]), deadline)?;
+                Ok(())
+            },
+        );
+        assert_eq!(failed.unwrap_err(), Error::Deadline);
+        assert!(!rt.repo_path("sample").exists());
+        assert_eq!(
+            std::fs::read_dir(&rt.repos_dir).unwrap().count(),
+            0,
+            "partial temporary clone leaked"
+        );
+        let source = crate::merge::tests::mk_repo("registry-clone-retry");
+        let published = rt
+            .clone_mirror_using(
+                "sample",
+                Instant::now() + Duration::from_secs(2),
+                |target, deadline| local_clone(&source, target, deadline),
+            )
+            .unwrap();
+        assert_eq!(published, rt.repo_path("sample"));
+        assert!(published.join(".git").exists());
+        assert!(!published.join("partial").exists());
+        assert_eq!(std::fs::read_dir(&rt.repos_dir).unwrap().count(), 1);
+        crate::merge::tests::commit_on(&source, "master", "new.txt", "after clone", "new revision");
+        rt.ensure_mirror_until("sample", Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(published.join("new.txt")).unwrap(),
+            "after clone"
+        );
+    }
+    #[test]
+    fn atomic_clone_publish_never_replaces_an_incumbent_created_during_clone() {
+        let rt = runtime();
+        let source = crate::merge::tests::mk_repo("registry-clone-incumbent");
+        let destination = rt.repo_path("sample");
+        let result = rt.clone_mirror_using(
+            "sample",
+            Instant::now() + Duration::from_secs(2),
+            |target, deadline| {
+                local_clone(&source, target, deadline)?;
+                std::fs::create_dir(&destination).unwrap();
+                std::fs::write(destination.join("incumbent"), "keep me").unwrap();
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("incumbent")).unwrap(),
+            "keep me"
+        );
+        assert!(!destination.join(".git").exists());
+        assert_eq!(std::fs::read_dir(&rt.repos_dir).unwrap().count(), 1);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod registry_lock_recovery_tests {
+    use super::*;
+    use crate::bounded_process::{git, output_until, Error};
+    use std::time::{Duration, Instant};
+    #[test]
+    fn timed_out_refresh_reclaims_only_its_new_git_locks_and_retry_succeeds() {
+        let repo = crate::merge::tests::mk_repo("registry-owned-git-lock");
+        let result = with_refresh_lock_recovery(&repo, || {
+            std::fs::write(repo.join(".git/index.lock"), "operation-owned lock").unwrap();
+            output_until(
+                Command::new("sh").args(["-c", "sleep 5 & wait"]),
+                Instant::now() + Duration::from_millis(80),
+            )?;
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err(), Error::Deadline);
+        assert!(!repo.join(".git/index.lock").exists());
+        with_refresh_lock_recovery(&repo, || {
+            git(
+                &repo,
+                &["reset", "--hard", "master"],
+                Instant::now() + Duration::from_secs(1),
+            )
+        })
+        .unwrap();
+    }
+    #[test]
+    fn preexisting_git_lock_is_preserved_and_no_operation_runs() {
+        let repo = crate::merge::tests::mk_repo("registry-incumbent-git-lock");
+        let lock = repo.join(".git/index.lock");
+        std::fs::write(&lock, "incumbent").unwrap();
+        let result: Result<(), Error> =
+            with_refresh_lock_recovery(&repo, || panic!("ran across incumbent lock"));
+        assert_eq!(result.unwrap_err(), Error::LockBusy);
+        assert_eq!(std::fs::read_to_string(lock).unwrap(), "incumbent");
     }
 }

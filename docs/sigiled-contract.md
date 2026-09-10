@@ -455,13 +455,28 @@ and `stale`. No secret/env/command/private-project data is projected.
 
 Registration and hydration wake the repair loop. Each sorted round-robin batch
 considers at most 16 projects; two global blocking-worker permits limit active
-mirror operations, with a 30-second caller timeout and an owned project lock
-held until any surviving worker finishes. Busy mirrors are skipped. Successful
-observations refresh after 300 seconds; failed attempts retry with bounded
-backoff (60–960 seconds). Timed-out native Git work cannot currently be killed;
-it retains its lock and permit, so it cannot race another mirror operation.
-A permanently hung Git process can exhaust the two permits and requires
-operator recovery; cached API reads remain available.
+mirror operations. Busy mirrors are skipped by repair. Shared refresh used by
+the serial job scheduler bounds mirror plus worker-capacity waiting to 2 seconds,
+so an unavailable project cannot indefinitely stop later projects. Native work
+has a single 30-second absolute deadline spanning clone/fetch/reset/manifest
+reads. Linux commands run in private process groups with nonblocking pipes;
+deadline/error/4-MiB-per-stream output overflow kills descendants and reaps the
+leader before owned mirror guards and permits are released. Caller cancellation
+retains ownership until that same bounded cleanup completes. Automatic Git
+maintenance/gc/detach and hooks are disabled for supervised refresh commands.
+`refresh_busy` is warning/pending; `deadline_exceeded` is failed/stale.
+
+A new clone occupies only an operation-owned temporary directory until valid,
+then publishes atomically without replacing any incumbent path. Failed/timed-out
+partial clones are cleaned up and can be retried. Existing mirrors reject
+pre-existing Git locks unchanged; locks created by a supervised refresh under
+the exclusive project guard are cleaned only after its processes stop. An
+incumbent lock or cleanup failure becomes visible `repository_locked`, retaining
+last-valid metadata. Managed mirror writers must obey the project guard.
+These guarantees are scoped to `Runtime::ensure_mirror_until`; the established
+session lifecycle `ensure_mirror` path is unchanged. The helper fails closed on
+non-Linux platforms. Successful observations refresh after 300 seconds; failed
+attempts retry with bounded backoff (60–960 seconds).
 
 The job scheduler and manual job manifest reads use the same refresh path.
 Snapshots add a defaultable `ecosystem` map keyed by registered project name;
@@ -491,7 +506,8 @@ The example elides item contents. Project rows contain name/display name,
 private description, template flags, desired repository revision, observed
 revision, merge flag, per-capability readiness, registry setup observation,
 app summary, bounded job summaries, session count and latest activity time.
-Projects sort by name. Root attention is capped at 100, ordered failures,
+Projects sort by name; only the requested project page is projected. Sessions
+are snapshotted/indexed once per request for counts, attention and safe views. Root attention is capped at 100, ordered failures,
 warnings, pending, then stable source reference. Counts cover all records,
 not just the page. The envelope observation time is response construction
 time; each cached subsystem exposes its own observation time separately.

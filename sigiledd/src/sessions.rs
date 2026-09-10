@@ -134,7 +134,11 @@ impl SessionState {
         Self {
             repos_dir: Some(dir),
             runtime: None,
-            ..Self::default()
+            http: reqwest::Client::new(),
+            records: Arc::default(),
+            debts: Arc::default(),
+            merge_locks: Arc::default(),
+            session_locks: Arc::default(),
         }
     }
     pub fn debts_for(&self, project: &str) -> Vec<MergeDebt> {

@@ -1,5 +1,29 @@
 # SIGILED â€” Log operativo
 
+## 2026-09-10 — A2/A3 review fixes: bounded refresh and hermetic fixtures
+
+Closed review I1/I2 and the small overview scaling issue. Shared refresh now
+bounds combined mirror/capacity waits and terminates/reaps Linux process groups
+at a common native-work deadline, including inherited pipes and bounded output.
+Owned guards/permits survive cancellation until cleanup finishes. Automatic
+Git maintenance/gc/detach and hooks are disabled only in this refresh boundary;
+A1 session lifecycle ensure_mirror behavior is unchanged.
+
+Initial clones publish from owned temporary directories with atomic no-replace
+semantics. Timeout leaves no published partial clone. Existing mirror recovery
+preserves all incumbent Git locks, cleaning only new known operation lock files
+after supervised work stops; repository_locked remains explicit on failure.
+Registry/overview fixtures now bypass environment-loaded runtime/auth/store
+configuration, including the SessionState local-repository constructor. Overview
+indexes one session snapshot and avoids projecting discarded project rows.
+
+Regressions reproduce stalled scheduler waiting, inherited runtime configuration
+and unbounded native output/pipe lifetime before fixes. Controlled local Git and
+subprocess tests cover termination, reaping, capacity reclamation, cancellation,
+healthy later-project progress, partial-clone retry, incumbent preservation and
+Git-lock cleanup. Source implementation only; no deployment/lifecycle work.
+
+
 ## 2026-09-10 — A2/A3 live registry and read-only overview (source only)
 
 Added optional project/IDE/memory/service declarations and a persisted descriptor

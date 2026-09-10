@@ -10,6 +10,9 @@ pub enum RefreshError {
     ManifestInvalid,
     PersistFailed,
     Interrupted,
+    DeadlineExceeded,
+    RefreshBusy,
+    RepositoryLocked,
 }
 impl RefreshError {
     pub fn message(self) -> &'static str {
@@ -20,6 +23,9 @@ impl RefreshError {
             }
             Self::PersistFailed => "Descriptor persistence failed; retry scheduled",
             Self::Interrupted => "Reconciliation interrupted; retry scheduled",
+            Self::DeadlineExceeded => "Repository refresh deadline exceeded; subprocesses stopped and retry scheduled",
+            Self::RefreshBusy => "Repository refresh capacity or mirror is busy; retry scheduled",
+            Self::RepositoryLocked => "Repository has an incumbent Git lock or lock cleanup failed; last valid descriptor retained",
         }
     }
 }
@@ -123,10 +129,13 @@ impl Registry {
 fn read_manifest(
     state: &crate::AppState,
     project: &str,
+    deadline: std::time::Instant,
 ) -> Result<(Manifest, String), (RefreshError, Option<String>)> {
     let bad_repo = || (RefreshError::RepositoryUnavailable, None);
     let repo = match &state.sessions.runtime {
-        Some(rt) => rt.ensure_mirror(project).map_err(|_| bad_repo())?,
+        Some(rt) => rt
+            .ensure_mirror_until(project, deadline)
+            .map_err(|e| (process_error(e), None))?,
         None => state
             .sessions
             .repos_dir
@@ -134,17 +143,18 @@ fn read_manifest(
             .map(|p| p.join(project))
             .ok_or_else(bad_repo)?,
     };
-    let revision = crate::merge::git(&repo, &["rev-parse", "master^{commit}"])
-        .map_err(|_| bad_repo())?
+    let revision = crate::bounded_process::git(&repo, &["rev-parse", "master^{commit}"], deadline)
+        .map_err(|e| (process_error(e), None))?
         .trim()
         .to_string();
     // List the tree first: a failed read is never mistaken for deliberate removal.
-    let files =
-        crate::merge::git(&repo, &["ls-tree", "--name-only", "master"]).map_err(|_| bad_repo())?;
+    let files = crate::bounded_process::git(&repo, &["ls-tree", "--name-only", "master"], deadline)
+        .map_err(|e| (process_error(e), Some(revision.clone())))?;
     for f in ["sigiled.toml", "mgr.toml"] {
         if files.lines().any(|p| p == f) {
-            let text = crate::merge::git(&repo, &["show", &format!("master:{f}")])
-                .map_err(|_| (RefreshError::RepositoryUnavailable, Some(revision.clone())))?;
+            let text =
+                crate::bounded_process::git(&repo, &["show", &format!("master:{f}")], deadline)
+                    .map_err(|e| (process_error(e), Some(revision.clone())))?;
             return Manifest::parse(&text)
                 .map(|m| (m, revision.clone()))
                 .map_err(|_| (RefreshError::ManifestInvalid, Some(revision)));
@@ -152,14 +162,61 @@ fn read_manifest(
     }
     Ok((Manifest::parse("").expect("empty manifest"), revision))
 }
-/// The blocking task OWNS the guard, including publication and persistence.
-/// Cancellation of a caller cannot release the mirror while Git still runs.
+
+fn process_error(error: crate::bounded_process::Error) -> RefreshError {
+    match error {
+        crate::bounded_process::Error::Deadline => RefreshError::DeadlineExceeded,
+        crate::bounded_process::Error::LockBusy => RefreshError::RepositoryLocked,
+        _ => RefreshError::RepositoryUnavailable,
+    }
+}
+#[derive(Clone, Copy)]
+struct Limits {
+    wait: std::time::Duration,
+    work: std::time::Duration,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            wait: std::time::Duration::from_secs(2),
+            work: std::time::Duration::from_secs(30),
+        }
+    }
+}
+static WORKERS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
+fn failed_attempt(state: &crate::AppState, project: &str, error: RefreshError) -> RefreshError {
+    state
+        .registry
+        .failed(project, None, error, crate::auth::now_epoch());
+    if state.try_persist().is_err() {
+        state.registry.failed(
+            project,
+            None,
+            RefreshError::PersistFailed,
+            crate::auth::now_epoch(),
+        );
+        RefreshError::PersistFailed
+    } else {
+        error
+    }
+}
+/// The blocking task OWNS the guard and permit. Its reader uses one absolute
+/// native-process deadline; cancellation cannot release either while Git runs.
 async fn refresh_locked(
     state: crate::AppState,
     project: String,
     guard: tokio::sync::OwnedMutexGuard<()>,
 ) -> Result<Manifest, RefreshError> {
-    refresh_using(state, project, guard, read_manifest).await
+    refresh_using(
+        state,
+        project,
+        guard,
+        read_manifest,
+        Limits::default(),
+        WORKERS.clone(),
+    )
+    .await
 }
 type Observation = Result<(Manifest, String), (RefreshError, Option<String>)>;
 async fn refresh_using<F>(
@@ -167,22 +224,25 @@ async fn refresh_using<F>(
     project: String,
     guard: tokio::sync::OwnedMutexGuard<()>,
     reader: F,
+    limits: Limits,
+    workers: std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<Manifest, RefreshError>
 where
-    F: FnOnce(&crate::AppState, &str) -> Observation + Send + 'static,
+    F: FnOnce(&crate::AppState, &str, std::time::Instant) -> Observation + Send + 'static,
 {
-    static WORKERS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-        std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
-    let permit = WORKERS
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| RefreshError::Interrupted)?;
+    let permit = match tokio::time::timeout(limits.wait, workers.acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        _ => return Err(failed_attempt(&state, &project, RefreshError::RefreshBusy)),
+    };
+    let deadline = std::time::Instant::now() + limits.work;
     tokio::task::spawn_blocking(move || {
         let _worker = permit;
         let _mirror = guard;
         let now = crate::auth::now_epoch();
-        let result = reader(&state, &project);
+        let mut result = reader(&state, &project, deadline);
+        if result.is_ok() && std::time::Instant::now() >= deadline {
+            result = Err((RefreshError::DeadlineExceeded, None));
+        }
         let changed = match &result {
             Ok((manifest, revision)) => {
                 state
@@ -209,11 +269,29 @@ where
     .map_err(|_| RefreshError::Interrupted)?
 }
 pub async fn refresh(state: &crate::AppState, project: &str) -> Result<Manifest, RefreshError> {
-    let guard = state.sessions.merge_lock(project).lock_owned().await;
-    refresh_locked(state.clone(), project.into(), guard).await
+    let mut limits = Limits::default();
+    let started = std::time::Instant::now();
+    let guard =
+        match tokio::time::timeout(limits.wait, state.sessions.merge_lock(project).lock_owned())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(_) => return Err(failed_attempt(state, project, RefreshError::RefreshBusy)),
+        };
+    // Mirror + worker-capacity waits share one budget; the scheduler can move on.
+    limits.wait = limits.wait.saturating_sub(started.elapsed());
+    refresh_using(
+        state.clone(),
+        project.into(),
+        guard,
+        read_manifest,
+        limits,
+        WORKERS.clone(),
+    )
+    .await
 }
-/// One bounded batch, sorted with round-robin continuation. Busy mirrors are skipped.
-/// Only one blocking refresh per project can survive a timeout.
+/// One bounded round-robin batch. Busy mirrors are skipped; acquired work is
+/// bounded by capacity wait plus the native deadline and mandatory child cleanup.
 pub async fn repair_batch(state: &crate::AppState, after: &mut String) {
     let mut projects = state.registry.snapshot();
     projects.sort_by(|a, b| a.name.cmp(&b.name));
@@ -222,27 +300,18 @@ pub async fn repair_batch(state: &crate::AppState, after: &mut String) {
     for i in 0..len.min(16) {
         let name = &projects[(start + i) % len].name;
         *after = name.clone();
-        let d = state.registry.descriptor(name);
-        if d.retry_at.is_some_and(|t| t > crate::auth::now_epoch()) {
+        if state
+            .registry
+            .descriptor(name)
+            .retry_at
+            .is_some_and(|t| t > crate::auth::now_epoch())
+        {
             continue;
         }
         if let Ok(guard) = state.sessions.merge_lock(name).try_lock_owned() {
-            let operation = refresh_locked(state.clone(), name.clone(), guard);
-            if tokio::time::timeout(std::time::Duration::from_secs(30), operation)
-                .await
-                .is_err()
-            {
-                // The worker still owns the lock. Its eventual result supersedes this attempt.
-                state.registry.failed(
-                    name,
-                    None,
-                    RefreshError::RepositoryUnavailable,
-                    crate::auth::now_epoch(),
-                );
-                if state.try_persist().is_err() {
-                    tracing::error!("registry retry persistence failed");
-                }
-            }
+            // No abandoned waiter: all native processes are stopped/reaped before
+            // this returns, including timeout results. Cancellation is still safe.
+            let _ = refresh_locked(state.clone(), name.clone(), guard).await;
         }
     }
 }
@@ -270,7 +339,7 @@ mod tests {
     fn old_snapshot_has_safe_defaults_and_sharing_survives_omission() {
         let snap:crate::store::StateSnapshot=serde_json::from_str(r#"{"projects":[{"name":"legacy","template_version":null,"template_behind":false,"needs_merge":true}]}"#).unwrap();
         assert!(snap.ecosystem.is_empty());
-        let state = crate::AppState::default();
+        let state = crate::AppState::test_without_runtime();
         state.registry.replace_all(snap.projects);
         let d = state.registry.descriptor("legacy");
         assert!(d.observed_at.is_none());
@@ -298,7 +367,7 @@ mod tests {
         let name = repo.file_name().unwrap().to_str().unwrap().to_string();
         let state = crate::AppState {
             sessions: crate::sessions::SessionState::with_repos_dir(repo.parent().unwrap().into()),
-            ..Default::default()
+            ..crate::AppState::test_without_runtime()
         };
         register(&state, &name);
         let manifest="[project]\ndisplay_name='Latest'\n[app]\nname='sample'\n[service]\nname='sample'\npurpose='Published'\norigin='https://sample.stack.test'\ngate='edge-open'\nstatus='planned'\n";
@@ -344,7 +413,7 @@ mod tests {
     }
     #[tokio::test]
     async fn repair_does_not_wait_on_busy_mirror_or_create_workspaces() {
-        let state = crate::AppState::default();
+        let state = crate::AppState::test_without_runtime();
         register(&state, "sample");
         let guard = state.sessions.merge_lock("sample").lock_owned().await;
         repair_batch(&state, &mut String::new()).await;
@@ -365,7 +434,7 @@ mod cancellation_tests {
     use super::*;
     #[tokio::test]
     async fn cancelled_refresh_retains_mirror_and_worker_permit_until_reader_finishes() {
-        let state = crate::AppState::default();
+        let state = crate::AppState::test_without_runtime();
         state.registry.insert(crate::project::ProjectRecord::new(
             "sample",
             &Manifest::parse("").unwrap(),
@@ -377,14 +446,21 @@ mod cancellation_tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let worker_state = state.clone();
         let task = tokio::spawn(async move {
-            refresh_using(worker_state, "sample".into(), guard, move |_, _| {
-                started_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-                Ok((
-                    Manifest::parse("").unwrap(),
-                    "abcdef0123456789abcdef0123456789abcdef0123".into(),
-                ))
-            })
+            refresh_using(
+                worker_state,
+                "sample".into(),
+                guard,
+                move |_, _, _| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok((
+                        Manifest::parse("").unwrap(),
+                        "abcdef0123456789abcdef0123456789abcdef0123".into(),
+                    ))
+                },
+                Limits::default(),
+                std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+            )
             .await
         });
         started_rx.await.unwrap();
@@ -403,5 +479,149 @@ mod cancellation_tests {
             .descriptor("sample")
             .observed_revision
             .is_some());
+    }
+}
+#[cfg(all(test, target_os = "linux"))]
+mod deadline_tests {
+    use super::*;
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+    #[tokio::test]
+    async fn stalled_reader_deadline_reclaims_resources_even_after_caller_cancellation() {
+        for cancelled in [false, true] {
+            let repo = crate::merge::tests::mk_repo(if cancelled {
+                "bounded-cancelled"
+            } else {
+                "bounded-completed"
+            });
+            let healthy = repo.file_name().unwrap().to_str().unwrap().to_string();
+            let state = crate::AppState {
+                sessions: crate::sessions::SessionState::with_repos_dir(
+                    repo.parent().unwrap().into(),
+                ),
+                ..crate::AppState::test_without_runtime()
+            };
+            for name in ["stalled", healthy.as_str()] {
+                state.registry.insert(crate::project::ProjectRecord::new(
+                    name,
+                    &Manifest::parse("").unwrap(),
+                    None,
+                ));
+            }
+            let workers = Arc::new(tokio::sync::Semaphore::new(1));
+            let mirror = state.sessions.merge_lock("stalled");
+            let guard = mirror.clone().lock_owned().await;
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let work_state = state.clone();
+            let permits = workers.clone();
+            let started = Instant::now();
+            let task = tokio::spawn(async move {
+                refresh_using(
+                    work_state,
+                    "stalled".into(),
+                    guard,
+                    move |_, _, deadline| {
+                        started_tx.send(()).unwrap();
+                        crate::bounded_process::output_until(
+                            std::process::Command::new("sh").args(["-c", "sleep 5 & wait"]),
+                            deadline,
+                        )
+                        .map_err(|e| (process_error(e), None))?;
+                        Ok((Manifest::parse("").unwrap(), "should-never-publish".into()))
+                    },
+                    Limits {
+                        wait: Duration::from_millis(100),
+                        work: Duration::from_millis(100),
+                    },
+                    permits,
+                )
+                .await
+            });
+            started_rx.await.unwrap();
+            if cancelled {
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+                assert!(
+                    mirror.try_lock().is_err(),
+                    "cancellation released running reader's lock"
+                );
+            } else {
+                assert_eq!(
+                    task.await.unwrap().unwrap_err(),
+                    RefreshError::DeadlineExceeded
+                );
+            }
+            let reclaimed = tokio::time::timeout(Duration::from_secs(1), mirror.lock_owned())
+                .await
+                .unwrap();
+            drop(reclaimed);
+            let capacity =
+                tokio::time::timeout(Duration::from_secs(1), workers.clone().acquire_owned())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            drop(capacity);
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert_eq!(
+                state.registry.descriptor("stalled").error,
+                Some(RefreshError::DeadlineExceeded)
+            );
+            let healthy_guard = state.sessions.merge_lock(&healthy).lock_owned().await;
+            refresh_using(
+                state.clone(),
+                healthy.clone(),
+                healthy_guard,
+                read_manifest,
+                Limits {
+                    wait: Duration::from_millis(100),
+                    work: Duration::from_secs(1),
+                },
+                workers,
+            )
+            .await
+            .unwrap();
+            assert!(state
+                .registry
+                .descriptor(&healthy)
+                .observed_revision
+                .is_some());
+        }
+    }
+    #[tokio::test]
+    async fn capacity_wait_is_bounded_and_does_not_start_reader_or_keep_mirror() {
+        let state = crate::AppState::test_without_runtime();
+        state.registry.insert(crate::project::ProjectRecord::new(
+            "sample",
+            &Manifest::parse("").unwrap(),
+            None,
+        ));
+        let workers = Arc::new(tokio::sync::Semaphore::new(1));
+        let occupied = workers.clone().acquire_owned().await.unwrap();
+        let mirror = state.sessions.merge_lock("sample");
+        let guard = mirror.clone().lock_owned().await;
+        let started = Instant::now();
+        let result = refresh_using(
+            state.clone(),
+            "sample".into(),
+            guard,
+            |_, _, _| panic!("reader started without capacity"),
+            Limits {
+                wait: Duration::from_millis(40),
+                work: Duration::from_secs(1),
+            },
+            workers.clone(),
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), RefreshError::RefreshBusy);
+        assert!(started.elapsed() < Duration::from_millis(300));
+        assert!(mirror.try_lock().is_ok());
+        drop(occupied);
+        assert_eq!(workers.available_permits(), 1);
+        assert_eq!(
+            state.registry.descriptor("sample").error,
+            Some(RefreshError::RefreshBusy)
+        );
     }
 }

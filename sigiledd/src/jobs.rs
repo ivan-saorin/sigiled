@@ -617,7 +617,7 @@ mod tests {
         }
         let state = crate::AppState {
             sessions: crate::sessions::SessionState::with_repos_dir(repos_dir),
-            ..crate::AppState::default()
+            ..crate::AppState::test_without_runtime()
         };
         state.registry.insert(crate::project::ProjectRecord {
             name: project.into(),
@@ -741,5 +741,41 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body[0]["branch"], "job-x-1");
+    }
+}
+#[cfg(test)]
+mod registry_deadline_regressions {
+    #[tokio::test]
+    async fn scheduler_considers_healthy_project_after_busy_project_deadline() {
+        let repo = crate::merge::tests::mk_repo("scheduler-bounded");
+        let healthy = repo.file_name().unwrap().to_str().unwrap().to_string();
+        let state = crate::AppState {
+            sessions: crate::sessions::SessionState::with_repos_dir(repo.parent().unwrap().into()),
+            ..crate::AppState::test_without_runtime()
+        };
+        let manifest = crate::manifest::Manifest::parse("").unwrap();
+        for name in ["busy", healthy.as_str()] {
+            state
+                .registry
+                .insert(crate::project::ProjectRecord::new(name, &manifest, None));
+        }
+        let _blocked = state.sessions.merge_lock("busy").lock_owned().await;
+        let now = chrono::Local::now();
+        let completed = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            super::scheduler_tick(&state, &now, &now),
+        )
+        .await;
+        assert!(
+            completed.is_ok(),
+            "one busy project blocked all later scheduling"
+        );
+        assert!(state
+            .registry
+            .descriptor(&healthy)
+            .observed_revision
+            .is_some());
+        assert!(state.jobs.dump().is_empty());
+        assert!(state.sessions.dump_records().is_empty());
     }
 }
