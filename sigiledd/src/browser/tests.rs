@@ -928,8 +928,9 @@ async fn browser_session_fixation_login_rotation_and_bounded_pruning() {
         StatusCode::SEE_OTHER
     );
 }
-#[test]
-fn browser_access_token_expiry_is_exclusive_at_current_second() {
+#[tokio::test]
+async fn browser_access_and_id_token_expiry_are_exclusive_at_current_second() {
+    let mut captured = false;
     for _ in 0..3 {
         let now = auth::now_epoch();
         let jwt = sign(&json!({"iss":"https://idp.test/issuer/","sub":"human","exp":now}));
@@ -937,8 +938,36 @@ fn browser_access_token_expiry_is_exclusive_at_current_second() {
         let result = auth::validate_exact_jwt(&jwt, "https://idp.test/issuer/", &key);
         if auth::now_epoch() == now {
             assert!(result.is_err());
-            return;
+            captured = true;
+            break;
         }
     }
-    panic!("could not capture stable one-second fixture interval");
+    assert!(
+        captured,
+        "could not capture stable one-second fixture interval"
+    );
+    // ID-token verification has the same exclusive boundary during code and refresh flows.
+    // The signed access token remains valid so rejection must come from the expired ID token.
+    let f = Fixture::new().await;
+    *f.fake.options.lock().unwrap() = json!({"id":{"exp":auth::now_epoch()}});
+    let (state, binding) = f.start().await;
+    assert_safe_error(f.callback(&state, &binding).await, StatusCode::UNAUTHORIZED).await;
+    *f.fake.options.lock().unwrap() = json!({});
+    let (cookie, _) = f.signed_in().await;
+    f.expire_access(&cookie);
+    *f.fake.options.lock().unwrap() = json!({"id":{"exp":auth::now_epoch()}});
+    let mut parts = f.parts(&cookie);
+    assert!(BrowserContext::from_request_parts(&mut parts, &f.state)
+        .await
+        .is_err());
+    assert!(f
+        .state
+        .browser
+        .inner()
+        .unwrap()
+        .store
+        .lock()
+        .unwrap()
+        .sessions
+        .is_empty());
 }
