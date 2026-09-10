@@ -717,3 +717,5 @@ Lifecycle now consumes a generation-bound clean finish receipt after owned edito
 ## 2026-09-10 — C2 browser IDE gateway source
 
 Implemented B1 human launch/access, durable actor/project allocation, generation-scoped HTTP/WS gateway and revocation, declared isolated preview ports, shared controls and file navigation. Added focused local transport/browser evidence with code-server 4.136.2 and Chromium 151.0.7922.34. No live deployment/lifecycle or policy changes. See [ide-gateway.md](ide-gateway.md); known supervisor timing/termination qualifications remain Stage E work.
+
+C2 evidence follow-up: certificate-SPKI trust verifies the exact provider service worker, product-prefixed resource sandbox, and explicit browser/edge/listener cleanup. Prior timed-out API completion and immediate-listener cleanup RED remain retained; fixture-only finite owned-child supervision replaces the shared scanner in this smoke. Production process/lifecycle budgets are unchanged.

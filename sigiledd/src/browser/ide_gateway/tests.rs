@@ -551,18 +551,41 @@ async fn encoded_file_resource_has_download_sandbox_without_fetch_metadata() {
 #[tokio::test]
 #[ignore = "requires verified pinned provider, target-only Playwright and native libraries"]
 async fn pinned_provider_gateway_browser_smoke() {
-    struct Owned(sigil_ide_agent::process::Process);
+    // This fixture owns its exact child/group and output files. Avoid routing
+    // browser verification through the independently qualified repository scanner.
+    struct Owned(Option<std::process::Child>);
     impl Owned {
         fn start(c: &mut std::process::Command) -> Self {
-            Self(sigil_ide_agent::process::Process::start(c).unwrap())
+            use std::os::unix::process::CommandExt;
+            Self(Some(
+                c.process_group(0)
+                    .stdin(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            ))
         }
         fn stop(&mut self) {
-            self.0.stop().unwrap();
+            if let Some(mut child) = self.0.take() {
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    if child.try_wait().unwrap().is_some() {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "owned child termination not confirmed"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
         }
     }
     impl Drop for Owned {
         fn drop(&mut self) {
-            let _ = self.0.stop();
+            self.stop();
         }
     }
     use std::process::{Command, Stdio};
@@ -784,33 +807,64 @@ async fn pinned_provider_gateway_browser_smoke() {
             "/workspace/target/gateway-browser/cache",
         )
         .env("TMPDIR", "/workspace/target/gateway-tmp");
-    let result = tokio::task::spawn_blocking(move || {
-        crate::bounded_process::output_until(
-            &mut command,
-            std::time::Instant::now() + Duration::from_secs(100),
-        )
-    })
-    .await
-    .unwrap();
+    command
+        .stdout(Stdio::from(
+            std::fs::File::create(root.join("browser-stdout.log")).unwrap(),
+        ))
+        .stderr(Stdio::from(
+            std::fs::File::create(root.join("browser-stderr.log")).unwrap(),
+        ));
+    let mut node = Owned::start(&mut command);
+    let deadline = std::time::Instant::now() + Duration::from_secs(100);
+    // WNOWAIT keeps ownership of the child PID/group until final cleanup.
+    let result = loop {
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                node.0.as_ref().unwrap().id(),
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(rc, 0, "fixture child ownership");
+        if unsafe { info.si_pid() } != 0 {
+            break Some(unsafe { info.si_status() });
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    node.stop();
     drop(preview_server);
     tokio::task::yield_now().await;
     assert!(tokio::net::TcpStream::connect(preview_addr).await.is_err());
     helper.stop();
     provider.stop();
     for port in [8090, 8091] {
-        assert!(
-            tokio::net::TcpStream::connect(("127.0.0.1", port))
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
                 .await
-                .is_err(),
-            "owned listener cleanup"
-        );
+                .is_err()
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owned listener cleanup: {port}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
-    let output = result.unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    std::fs::write(root.join("fixture-cleanup.json"),serde_json::to_vec_pretty(&json!({"node_exit":result,"helper_provider_ports_closed":true,"preview_port_closed":true,"browser_cleanup":serde_json::from_str::<Value>(&std::fs::read_to_string(root.join("browser-cleanup.json")).unwrap()).unwrap()})).unwrap()).unwrap();
+    assert_eq!(
+        result,
+        Some(0),
+        "bounded browser fixture failed; stdout={} stderr={}",
+        std::fs::read_to_string(root.join("browser-stdout.log")).unwrap(),
+        std::fs::read_to_string(root.join("browser-stderr.log")).unwrap()
     );
 }
 
