@@ -36,6 +36,11 @@ fn page(items: Vec<Value>, offset: usize, limit: usize) -> Value {
     json!({"items":items.into_iter().skip(offset).take(limit).collect::<Vec<_>>(),"total":total,
         "offset":offset,"limit":limit,"next_offset":if next < total {Some(next)} else {None}})
 }
+fn recorded_sessions(state: &AppState) -> Vec<crate::sessions::SessionRecord> {
+    let mut records: Vec<_> = state.sessions.dump_records().into_values().collect();
+    records.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    records
+}
 fn capability(desired: bool, status: &str, reason: &str, d: &Descriptor) -> Value {
     json!({"desired":desired,"state":if desired {status} else {"disabled"},"reason":reason,
         "desired_revision":d.desired_revision,"observed_revision":if desired && status=="ready" {d.observed_revision.as_ref()} else {None},
@@ -150,14 +155,13 @@ fn attention(
     if let Some(code) = service_error {
         add(format!("project:{}/service", p.name), "failure", code);
     }
-    for s in state
-        .sessions
-        .live_records()
+    for s in recorded_sessions(state)
         .into_iter()
         .filter(|s| s.project == p.name)
     {
         if s.lifecycle == crate::sessions::Lifecycle::Failed
             || s.error.is_some()
+            || !s.runtime_owned
             || !state.sessions.binding_safe(&s)
         {
             add(
@@ -205,7 +209,7 @@ fn summary(state: &AppState, p: &ProjectRecord, service_error: Option<&&str>) ->
             "stale":d.error.is_some() || d.observed_at.is_none_or(|t|crate::auth::now_epoch().saturating_sub(t)>600),
             "error":d.error.map(|e|json!({"code":e,"message":e.message()})),"service_error":service_error},
         "app":app_summary(state,p,&d),
-        "session_count":state.sessions.live_records().iter().filter(|s|s.project==p.name).count(),
+        "session_count":recorded_sessions(state).iter().filter(|s|s.project==p.name).count(),
         "jobs":page(jobs(state,&d,&p.name),0,100),
         "latest_activity_at":state.events.for_project(&p.name).iter().map(|e|e.at_epoch).max()})
 }
@@ -242,7 +246,7 @@ pub async fn root(
     });
     let attention_count = items.len();
     items.truncate(100);
-    let counts = json!({"projects":projects.len(),"sessions":state.sessions.live_records().len(),"attention":attention_count});
+    let counts = json!({"projects":projects.len(),"sessions":recorded_sessions(&state).len(),"attention":attention_count});
     let projects = projects
         .iter()
         .map(|p| summary(&state, p, errors.get(&p.name)))
@@ -280,9 +284,7 @@ pub async fn detail(
     v["memory"]["sharing"] = json!(d.declaration.memory.sharing.as_deref().unwrap_or("private"));
     v["ide"] = json!(d.declaration.ide);
     v["merge_debt"]=page(state.sessions.debts_for(&project).iter().map(|d|json!({"branch":d.branch,"conflicted_files":d.conflicted_files,"ours_revision":d.ours.sha,"theirs_revision":d.theirs.sha,"since":d.since})).collect(),0,100);
-    let mut sessions: Vec<_> = state
-        .sessions
-        .live_records()
+    let mut sessions: Vec<_> = recorded_sessions(&state)
         .into_iter()
         .filter(|s| s.project == project)
         .collect();
@@ -447,7 +449,7 @@ mod tests {
         .await;
         assert_eq!(unrun["app"]["state"], "not_deployed");
         assert_eq!(unrun["jobs"]["items"][0]["state"], "not_run");
-        let rec:crate::sessions::SessionRecord=serde_json::from_value(json!({"session_id":"testing","project":"alpha","branch":"session/testing","head":"abc","stale":false,"actor":actor(),"token":"TOKEN-SENTINEL"})).unwrap();
+        let rec:crate::sessions::SessionRecord=serde_json::from_value(json!({"session_id":"testing","project":"alpha","branch":"session/testing","head":"abc","stale":false,"actor":actor(),"lifecycle":"failed","error":"flush_failed","token":"TOKEN-SENTINEL"})).unwrap();
         s.sessions.hydrate(
             Default::default(),
             [("testing".into(), rec)].into_iter().collect(),
@@ -508,6 +510,9 @@ mod tests {
         assert!(v["app"]["runtime"].get("observed_at").is_some());
         assert!(text.contains("latest_job_failed"));
         assert!(text.contains("latest_build_failed"));
+        assert_eq!(v["sessions"]["total"], 1);
+        assert_eq!(v["sessions"]["items"][0]["state"], "failed");
+        assert!(text.contains("session_unprotected_or_failed"));
         s.jobs.push_run(crate::jobs::JobRunRecord {
             state: "succeeded".into(),
             started_epoch: 10,
