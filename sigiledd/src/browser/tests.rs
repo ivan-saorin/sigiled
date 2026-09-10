@@ -1874,3 +1874,86 @@ async fn research_routes_require_exact_origin_csrf_and_live_browser_login() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+#[test]
+fn memory_origin_requires_explicit_distinct_enrollment() {
+    let mut env = config_map("https://idp.test");
+    env.insert(
+        "SIGILED_BROWSER_ORIGINS".into(),
+        "https://sigil.test,https://memory.test".into(),
+    );
+    env.insert(
+        "SIGILED_BROWSER_MEMORY_ORIGIN".into(),
+        "https://memory.test".into(),
+    );
+    assert!(
+        Config::from_map(&env).is_ok(),
+        "explicit Memory site must be accepted"
+    );
+    env.insert(
+        "SIGILED_BROWSER_MEMORY_ORIGIN".into(),
+        "https://attacker.test".into(),
+    );
+    assert!(Config::from_map(&env).is_err());
+    env.insert(
+        "SIGILED_BROWSER_MEMORY_ORIGIN".into(),
+        "https://sigil.test".into(),
+    );
+    assert!(Config::from_map(&env).is_err());
+}
+
+#[tokio::test]
+async fn memory_browser_routes_require_host_session_and_csrf() {
+    let f = Fixture::new().await;
+    for (method, path, body) in [
+        (
+            Method::POST,
+            "/browser/api/memory/indexes/demo/manual",
+            json!({"create_id":"00000000-0000-4000-8000-000000000001","text":"fixture"}),
+        ),
+        (
+            Method::POST,
+            "/browser/api/memory/indexes/demo/curation",
+            json!({"target":{"kind":"manual","id":"m_00000000-0000-4000-8000-000000000001"},"expected_revision":"0","pinned":true}),
+        ),
+        (
+            Method::POST,
+            "/browser/api/memory/indexes/demo/forget/preview",
+            json!({"selector":{"kind":"document","source":"git","ref":"repo","path":""}}),
+        ),
+        (
+            Method::POST,
+            "/browser/api/memory/indexes/demo/forget",
+            json!({"selector":{"kind":"document","source":"git","ref":"repo","path":""},"confirmation":"fixture"}),
+        ),
+        (
+            Method::POST,
+            "/browser/api/memory/indexes/demo/reindex",
+            json!({"source_id":"fixture"}),
+        ),
+    ] {
+        assert_eq!(
+            f.request(method, path)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let (state, cookie) = f.start().await;
+    let response = f.callback(&state, &cookie).await;
+    let session = response_cookie(&response, SESSION);
+    assert_eq!(
+        f.request(Method::POST, "/browser/api/memory/indexes/demo/manual")
+            .header("cookie", &session)
+            .header("origin", "https://sigil.test")
+            .json(&json!({"create_id":"00000000-0000-4000-8000-000000000001","text":"fixture"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+}

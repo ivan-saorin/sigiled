@@ -9,11 +9,17 @@ pub(super) async fn shell(
     headers: HeaderMap,
 ) -> Result<Response, Error> {
     site(&state, &headers)?;
-    Ok((
-        [("content-type", "text/html; charset=utf-8")],
-        include_str!("assets/index.html"),
-    )
-        .into_response())
+    let b = state.browser.inner()?;
+    let memory = b.config.memory_origin.as_deref() == Some(b.origin(&headers)?.as_str());
+    let html = include_str!("assets/index.html").replace(
+        "<body>",
+        if memory {
+            "<body data-entry=\"memory\">"
+        } else {
+            "<body>"
+        },
+    );
+    Ok(([("content-type", "text/html; charset=utf-8")], html).into_response())
 }
 pub(super) async fn asset(
     State(state): State<AppState>,
@@ -27,6 +33,16 @@ pub(super) async fn asset(
             include_str!("assets/dashboard.js"),
         )
             .into_response()),
+        "memory.js" => Ok((
+            [("content-type", "text/javascript; charset=utf-8")],
+            include_str!("assets/memory.js"),
+        )
+            .into_response()),
+        "memory.css" => Ok((
+            [("content-type", "text/css; charset=utf-8")],
+            include_str!("assets/memory.css"),
+        )
+            .into_response()),
         "dashboard.css" => Ok((
             [("content-type", "text/css; charset=utf-8")],
             include_str!("assets/dashboard.css"),
@@ -37,7 +53,8 @@ pub(super) async fn asset(
 }
 fn site(state: &AppState, headers: &HeaderMap) -> Result<(), Error> {
     let b = state.browser.inner()?;
-    if b.origin(headers)? != b.config.dashboard_origin {
+    let origin = b.origin(headers)?;
+    if origin != b.config.dashboard_origin && b.config.memory_origin.as_deref() != Some(&origin) {
         return Err(Error::forbidden("dashboard_origin_required"));
     }
     Ok(())
@@ -161,6 +178,9 @@ pub(super) async fn job_runs(
 }
 // Exact method/path allowlist. Other routes retain B1's bodyless contract.
 pub(super) fn body_limit(method: &Method, path: &str) -> usize {
+    if let Some(limit) = super::memory::body_limit(method, path) {
+        return limit;
+    }
     let parts: Vec<_> = path.split('/').collect();
     if method == Method::POST && path == "/browser/api/projects" {
         return 1024;

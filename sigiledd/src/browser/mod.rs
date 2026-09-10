@@ -2,6 +2,7 @@
 mod config;
 mod dashboard;
 pub(crate) mod ide_gateway;
+mod memory;
 mod provider;
 mod research;
 use crate::{
@@ -39,6 +40,7 @@ struct Inner {
     store: Mutex<Store>,
     gateway: ide_gateway::Gateway,
     research: research::Services,
+    memory: memory::Service,
 }
 #[derive(Default)]
 struct Store {
@@ -94,6 +96,7 @@ impl BrowserState {
             store: Mutex::new(Store::default()),
             gateway: ide_gateway::Gateway::default(),
             research: research::Services::default(),
+            memory: memory::Service::default(),
         }))))
     }
     fn inner(&self) -> Result<Arc<Inner>, Error> {
@@ -532,7 +535,7 @@ async fn inspect(c: BrowserContext, State(state): State<AppState>) -> Json<serde
     // A deliberate use of credential only as internal state: no serialized token or generic proxy.
     debug_assert!(!c.access_token.is_empty());
     Json(
-        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"project_creation":true,"work_items":state.work_items.available(),"workspace_actions":ide_gateway::readiness(&state).is_ok(),"memory_adapter":false},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
+        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"project_creation":true,"work_items":state.work_items.available(),"workspace_actions":ide_gateway::readiness(&state).is_ok(),"memory_adapter":true},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
     )
 }
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Error> {
@@ -572,7 +575,12 @@ async fn detail(
 async fn boundary(request: axum::extract::Request, next: Next) -> Response {
     let limit = dashboard::body_limit(request.method(), request.uri().path());
     let login_path = matches!(request.uri().path(), "/browser/login" | "/browser/callback");
-    let mut r = if request.uri().to_string().len() > 4096
+    let mut r = if request.uri().to_string().len()
+        > if request.uri().path().starts_with("/browser/api/memory/") {
+            65536
+        } else {
+            4096
+        }
         || request
             .headers()
             .iter()
@@ -633,6 +641,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ui", get(dashboard::shell))
         .route("/ui/{*path}", get(dashboard::shell))
         .route("/browser/assets/{name}", get(dashboard::asset))
+        .merge(memory::routes())
         .route("/browser/api/research", get(research::list))
         .route(
             "/browser/api/research/{id}",

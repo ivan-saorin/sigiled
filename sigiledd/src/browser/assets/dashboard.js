@@ -72,9 +72,9 @@ async function request(path,options = {
   ;
   if(options.body) {
     headers['Content-Type'] = 'application/json';
-    headers['X-Sigil-CSRF'] = session?.csrf_token || '';
+    headers['X-Sigil-CSRF'] = headers['X-Sigil-CSRF'] || session?.csrf_token || '';
   }
-  if(options.method === 'POST' && !options.body)headers['X-Sigil-CSRF'] = session?.csrf_token || '';
+  if(options.method === 'POST' && !options.body)headers['X-Sigil-CSRF'] = headers['X-Sigil-CSRF'] || session?.csrf_token || '';
   let r;
   try {
     r = await fetch(path, {
@@ -100,6 +100,7 @@ async function request(path,options = {
   return body;
 }
 function showAuth() {
+  window.SigilMemory?.authExpired();
   session = null;
   $('auth').hidden = false;
   $('auth').replaceChildren(el('strong', {
@@ -139,7 +140,7 @@ function notice(text,type = '') {
 function parseRoute() {
   const u = new URL(location.href),p = u.pathname.split('/').filter(Boolean);
   if(p.length === 0)return {
-    view:'overview',query:u.searchParams
+    view:document.body.dataset.entry==='memory'?'memory':'overview',query:u.searchParams
   }
   ;
   return {
@@ -226,6 +227,7 @@ function renderRoute() {
   else if(['overview','projects'].includes(route.view)) {
     renderOverviewShell();
   }
+  else if(route.view === "memory") { heading("Memory","Browse records, preserve provenance and curate corrections"); $("content").append(window.SigilMemory.shell()); return; }
   else if(route.view === "research") { heading("Research","Inspect runs and their actual stage outcomes"); $("content").append(researchShell(null)); return; }
   else if(route.view === "models") { heading("Models","Models and recent observed requests");const root=el("section",{id:"models-root"},el("p",{role:"status"}),el("div",{class:"models-data"}));root.intent=0;$("content").append(root);modelsView(root);return; }
   else {
@@ -643,7 +645,7 @@ function renderProject(p) {
     }
     ,'Memory'),capability('memory',p),el('p', {
     }
-    ,'Memory curation is pending its browser adapter.'),facts([['Sharing',label(p.memory?.sharing || 'private')]]));
+    ,'Project-to-memory association needs verified enrollment.'),link('Browse Memory','/ui/memory'),facts([['Sharing',p.memory?.sharing?label(p.memory.sharing):'Unknown']]));
     break;
     case'research':panel.append(target.querySelector("#research-root") || researchShell(route.project));
     break;
@@ -668,6 +670,7 @@ async function loadJob(name,offset = 0) {
   }
 }
 async function refresh() {
+  if(session && !document.hidden && route.view==="memory") {await $("memory-root")?.load();return;}
   if(session && !document.hidden && route.view==="research") {$("research-root")?.load();return;}
   if(session && !document.hidden && route.view==="models") {const root=$("models-root");if(root)modelsView(root);return;}
   if(!session || document.hidden || route.newProject || !['overview','projects'].includes(route.view))return;
@@ -1046,7 +1049,7 @@ document.addEventListener('visibilitychange',() => {
 setInterval(() => refresh(),30000);
 // Shared narrow helpers for later reviewed browser adapters. Credentials stay in the server.
 window.Sigil = {
-  el,request,navigate,showAuth,checkSession,openIDE
+  el,request,navigate,showAuth,checkSession,openIDE,session:()=>session,rerender:renderRoute
 }
 ;
 renderRoute();

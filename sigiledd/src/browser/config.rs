@@ -8,6 +8,7 @@ pub struct Config {
     pub ide_domain: Option<String>,
     pub preview_domain: Option<String>,
     pub dashboard_origin: String,
+    pub memory_origin: Option<String>,
     pub issuer: String,
     pub authorization: String,
     pub token: String,
@@ -43,6 +44,7 @@ impl Config {
             "ENABLED",
             "ORIGINS",
             "DASHBOARD_ORIGIN",
+            "MEMORY_ORIGIN",
             "ISSUER",
             "AUTHORIZATION_URL",
             "TOKEN_URL",
@@ -110,6 +112,13 @@ impl Config {
         let dashboard_origin = get("DASHBOARD_ORIGIN").unwrap_or(&origins[0]).to_owned();
         if !origins.contains(&dashboard_origin) {
             return Err("browser: dashboard origin must be an explicitly configured origin");
+        }
+        let memory_origin = get("MEMORY_ORIGIN").map(str::to_owned);
+        if memory_origin
+            .as_ref()
+            .is_some_and(|o| !origins.contains(o) || *o == dashboard_origin)
+        {
+            return Err("browser: memory origin must be an explicit distinct origin");
         }
         let scopes = required("SCOPES")?.to_owned();
         let scope_names: Vec<_> = scopes.split(' ').collect();
@@ -200,6 +209,7 @@ impl Config {
             ide_domain,
             origins,
             dashboard_origin,
+            memory_origin,
             issuer,
             authorization,
             token,

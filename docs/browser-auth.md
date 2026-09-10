@@ -105,3 +105,7 @@ Apply equivalent header scrubbing on every upstream hop, plus all other identity
 6. Confirm legacy bearer clients and existing driver approvals continue to work. No live project/session/workspace action or inference is required for the browser authentication rollout check.
 
 References: [Caddy log_skip](https://caddyserver.com/docs/caddyfile/directives/log_skip), [Authentik OAuth provider](https://docs.goauthentik.io/add-secure-apps/providers/oauth2/), [OIDC ID-token validation](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation), [OAuth security BCP](https://www.rfc-editor.org/rfc/rfc9700.html). Current live provider/client setup remains a release prerequisite.
+
+## Memory origin (D2)
+
+Optional `SIGILED_BROWSER_MEMORY_ORIGIN` selects a distinct exact member of `SIGILED_BROWSER_ORIGINS` for the Memory root/assets. It uses the same B1 login and CSRF boundary but separate host-only cookies and exact callback registration. No machine Memory paths switch to cookie authentication. See `browser-memory.md` for fixed adapter routes, limits and live release checks.
