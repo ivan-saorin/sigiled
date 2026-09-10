@@ -73,6 +73,10 @@ pub fn valid_name(name: &str) -> bool {
 #[derive(Default, Clone)]
 pub struct Registry {
     records: Arc<RwLock<Vec<ProjectRecord>>>,
+    pub(crate) descriptors:
+        Arc<RwLock<std::collections::BTreeMap<String, crate::ecosystem::Descriptor>>>,
+    pub(crate) reconcile: Arc<tokio::sync::Notify>,
+    pub domain: Option<String>,
     /// Latest published template version (e.g. "0.1.0"); None in a build
     /// that doesn't know it (records then never show behind).
     latest_template: Option<String>,
@@ -83,13 +87,18 @@ impl Registry {
         Registry {
             records: Arc::default(),
             latest_template: version,
+            ..Self::default()
         }
     }
     pub fn latest_template(&self) -> Option<&str> {
         self.latest_template.as_deref()
     }
     pub fn insert(&self, record: ProjectRecord) {
-        self.records.write().unwrap().push(record);
+        let mut records = self.records.write().unwrap();
+        if !records.iter().any(|r| r.name == record.name) {
+            records.push(record);
+            self.reconcile.notify_one();
+        }
     }
     pub fn contains(&self, name: &str) -> bool {
         self.records.read().unwrap().iter().any(|r| r.name == name)
@@ -98,7 +107,12 @@ impl Registry {
         self.records.read().unwrap().clone()
     }
     pub fn replace_all(&self, records: Vec<ProjectRecord>) {
-        *self.records.write().unwrap() = records;
+        let mut unique = std::collections::BTreeMap::new();
+        for record in records {
+            unique.entry(record.name.clone()).or_insert(record);
+        }
+        *self.records.write().unwrap() = unique.into_values().collect();
+        self.reconcile.notify_one();
     }
     /// Re-derive the manifest-owned fields (template_version,
     /// template_behind) of one record from a freshly read master manifest,
@@ -691,5 +705,24 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_GATEWAY, "body: {body}");
         assert!(!state.registry.contains("phantom-proj"));
+    }
+}
+
+#[cfg(test)]
+mod registry_regressions {
+    use super::*;
+    #[test]
+    fn registry_replay_does_not_duplicate_or_overwrite_merge_policy() {
+        let reg = Registry::default();
+        let mut p = ProjectRecord::new("example", &Manifest::parse("").unwrap(), None);
+        p.needs_merge = true;
+        reg.insert(p);
+        reg.insert(ProjectRecord::new(
+            "example",
+            &Manifest::parse("").unwrap(),
+            None,
+        ));
+        assert_eq!(reg.snapshot().len(), 1);
+        assert!(reg.snapshot()[0].needs_merge);
     }
 }

@@ -93,7 +93,7 @@ impl SessionRecord {
             .map(|b| b.container.clone())
             .unwrap_or_else(|| crate::runtime::Runtime::vm_name(&self.project))
     }
-    fn view(&self, rt: Option<&crate::runtime::Runtime>) -> serde_json::Value {
+    pub(crate) fn view(&self, rt: Option<&crate::runtime::Runtime>) -> serde_json::Value {
         json!({"session_id":self.session_id,"project":self.project,"branch":self.branch,
             "actor":self.actor,"state":self.lifecycle,"generation":self.generation,
             "endpoint":self.binding.as_ref().map(|b|b.endpoint.clone()).or_else(||rt.map(|r|r.endpoint(&self.project))),

@@ -170,25 +170,12 @@ async fn jobs_of(
 /// The whole manifest ON MASTER, same error mapping as jobs_of. A repo with
 /// no manifest file is a legal empty manifest, not an error.
 async fn manifest_of(state: &crate::AppState, project: &str) -> Result<Manifest, Option<String>> {
-    let lock = state.sessions.merge_lock(project);
-    let _mirror = lock.lock().await;
-    let repo = match &state.sessions.runtime {
-        Some(rt) => rt.ensure_mirror(project).map_err(|_| None)?,
-        None => {
-            let repos = state.sessions.repos_dir.clone().ok_or(None)?;
-            let path = repos.join(project);
-            if !path.join(".git").exists() {
-                return Err(None);
-            }
-            path
-        }
-    };
-    for f in ["sigiled.toml", "mgr.toml"] {
-        if let Ok(text) = crate::merge::git(&repo, &["show", &format!("master:{f}")]) {
-            return Manifest::parse(&text).map_err(|e| Some(format!("{project}/{f}: {e}")));
-        }
-    }
-    Ok(Manifest::parse("").expect("the empty manifest is legal"))
+    crate::ecosystem::refresh(state, project)
+        .await
+        .map_err(|e| match e {
+            crate::ecosystem::RefreshError::RepositoryUnavailable => None,
+            _ => Some(e.message().into()),
+        })
 }
 
 /// POST /sigiled/projects/{p}/jobs/{j}/run — manual trigger, same machinery
@@ -258,7 +245,6 @@ async fn scheduler_tick(
     last: &chrono::DateTime<chrono::Local>,
     now: &chrono::DateTime<chrono::Local>,
 ) {
-    let mut registry_changed = false;
     for p in state.registry.snapshot() {
         let manifest = match manifest_of(state, &p.name).await {
             Ok(m) => m,
@@ -268,10 +254,6 @@ async fn scheduler_tick(
             }
             Err(None) => continue,
         };
-        // The tick holds the freshly read master manifest anyway — this is
-        // where the template pin lands in the project record (DEC-05: same
-        // ~5 min refresh as the job definitions).
-        registry_changed |= state.registry.refresh(&p.name, &manifest);
         for jm in manifest.jobs {
             match fires_between(&jm.cron, last, now) {
                 Ok(true) => {
@@ -283,9 +265,6 @@ async fn scheduler_tick(
                 Err(e) => tracing::warn!(project = %p.name, job = %jm.name, %e, "bad cron"),
             }
         }
-    }
-    if registry_changed {
-        state.persist();
     }
 }
 

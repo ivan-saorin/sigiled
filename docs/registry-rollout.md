@@ -1,0 +1,111 @@
+# Registry/overview rollout — A2/A3
+
+Status: source implementation, not deployed. The existing machine auth and
+legacy `/projects` array remain unchanged. The new endpoints are authenticated
+`/sigiled/overview` and `/sigiled/projects/{project}`; bare aliases also exist.
+
+## Complete additive manifest example
+
+```toml
+# Existing workspace/app/jobs/compose tables remain independent.
+[project]
+display_name = "Research notes"
+description = "Private project context, never copied into /services"
+
+[workspace]
+dockerfile = "Dockerfile.session"
+
+[ide]
+enabled = true
+provider = "code-server"
+
+[memory]
+enabled = true
+sources = ["README.md", "docs"]
+sharing = "private"
+source_code = false
+
+[app]
+name = "research-notes"
+
+[jobs.digest]
+cron = "0 7 * * *"
+command = "./jobs/digest.sh"
+timeout_minutes = 10
+
+# Explicit PUBLIC discovery declaration; this does not configure the edge.
+[service]
+name = "research-notes"
+purpose = "Search published research notes"
+origin = "https://research-notes.example.com"
+gate = "stack-bearer"
+status = "planned"
+
+[service.capabilities]
+version = 1
+operations = "/openapi.json"
+health = "/healthz"
+ui = "/home"
+```
+
+For this example, the control plane must configure `DOMAIN=example.com` and
+an operator must separately configure the actual edge route/auth policy.
+No arbitrary gateways, alternate ports or credentials are accepted. No
+credentials are sent to declared origins. Gate/status are declarations,
+never proof of installed routing or runtime health. Name conflicts hide all
+conflicting dynamic entries; the seed catalog cannot be overridden.
+
+## Integration surfaces
+
+- `declaration::{Declaration,ProjectMetadata,Ide,Memory,Service,ServiceCapabilities}`
+  define validated desired intent. `Manifest.declaration` is additive.
+- `ecosystem::Descriptor` persists redacted manifest metadata, app name,
+  `JobDefinition { name, cron, timeout_minutes }`, desired/observed revisions,
+  observed/attempt/retry times, typed `RefreshError`, and consecutive failures.
+- `Registry::{descriptor,descriptors,hydrate_descriptors}` expose that map.
+  `insert` is replay-safe; `replace_all` deduplicates. These methods do not
+  override pre-existing records or default over an explicit sharing policy.
+- `ecosystem::refresh(&AppState, project)` is the shared async mirror/manifest
+  observation path. It acquires the A1 owned project mirror guard, limits
+  blocking workers to two, updates safe descriptors and fallibly persists.
+  `repair_loop`/`repair_batch` provide bounded background repair only.
+- `catalog::dynamic(&Registry)` returns `(public_entries, per_project_errors)`.
+  Errors are fixed safe codes. `Registry.domain` is configured once from
+  `DOMAIN` in main; tests inject it directly without environment mutation.
+- `SessionRecord::view` is now crate-visible; callers reuse the A1 projection,
+  never serialize the custodied record. No mutation authorization changed.
+- `overview::{root,detail}` are Actor-authenticated handlers, `Page` validates
+  limit/offset, and `revision_drift` handles deployed SHA prefixes.
+- `StateSnapshot.ecosystem` has a serde default. Existing project/snapshot
+  fixtures load as before. No enrollment token, service credential or secret
+  mapping enters descriptors. Later enrollment must obtain its initiating
+  authorization independently; startup has no credential to forward.
+
+## Rollout and rollback
+
+Before deploying, back up the current snapshot, inspect the diff and run the
+workspace tests/format checks. Deploy through the established operator flow.
+Verify machine auth, legacy `/projects`, public `/services`, the new read
+routes, and pending reasons for absent browser/IDE/memory adapters. Observe
+repair timestamps/errors; never infer resource readiness from enabled intent.
+The snapshot addition is ignored by older serde readers, but rolling back
+and subsequently persisting with an older binary drops the new descriptor
+cache. Reconciliation can rebuild it; explicit memory-sharing intent must
+remain in manifests or a backup when rolling between versions.
+
+## Known boundaries
+
+No browser identity/UI, IDE runtime, mem0 mutation, SDE scheduling, inferred
+TODOs or explicit work-item API. No live runtime health probes: responses use
+unknown/unavailable with null observation time. Existing session/job APIs
+serve complete inventories; detail caps those sections/debt/attention at 100,
+while detail limit/offset paginates activity and root limit/offset paginates
+projects. Aggregation is in-memory and recomputed from stores per request.
+
+Repair batches consider 16 projects; two blocking workers and owned guards
+survive caller cancellation/timeouts. Native Git has no kill deadline in the
+existing runtime. A permanently hung Git process holds a permit and mirror
+lock until operator recovery; cached overview remains readable. An invalid
+manifest retains last valid published metadata with stale state; valid removal
+withdraws it. Disk failures remain visible in memory but cannot be made durable
+until the store recovers.

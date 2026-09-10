@@ -4,8 +4,8 @@
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.4.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.4.0 adds independent session runtime bindings, recoverable lifecycle failures and redacted session inspection. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract. 2.3.0 adds the change-notification step to `open`: the `changed` service (catalog) leaves one memory chunk per detected change in the project's index — surface them before writing.
-**Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8); the established v2 verbs were live-verified; the 2.4.0 session foundation is implemented and hermetically tested on its isolated branch, not deployed. SIGILED is the only orchestrator of the stack.
+**Contract version:** 2.5.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.5.0 adds live project descriptors, declared service discovery and read-only overview projections (§12). 2.4.0 adds independent session runtime bindings, recoverable lifecycle failures and redacted session inspection. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract. 2.3.0 adds the change-notification step to `open`: the `changed` service (catalog) leaves one memory chunk per detected change in the project's index — surface them before writing.
+**Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8); the established v2 verbs were live-verified; the 2.4.0 session foundation and 2.5.0 registry/overview are implemented and hermetically tested on their isolated branch, not deployed. SIGILED is the only orchestrator of the stack.
 
 This is the complete operating contract for SIGILED (v2 of SIGILED). It is
 vendor-neutral: any LLM that can issue HTTPS requests can drive the system
@@ -21,11 +21,13 @@ and anything not in git (or a declared volume) does not exist. The repo is
 the only memory — yours across sessions, and the memory you share with any
 other model that drives the same project.
 
-New in v2: **many drivers, no waiting.** Sessions no longer lock the
-project — each workload gets its own branch and container; master is the
-arbiter at close. Coordination is paid only when conflicts actually exist
-(merge debt, §5). Authentication is per-driver (OAuth2 against the stack
-IdP), and human approval is a first-class, auditable object.
+New in v2: **independent workspaces.** Each session gets its own branch
+and container. Lifecycle transitions serialize per session; mirror reads,
+refreshes, branch allocation and merges serialize per project. Work inside
+separate workspaces proceeds independently. Master is the arbiter at close,
+with merge debt (§5) preserving conflicts. Authentication is per-driver
+(OAuth2 against the stack IdP), and human approval is a first-class,
+auditable object.
 
 Workload classes: **session** (interactive, yours), **job** (cron-run
 batch, append-only history), **app** (resident service). You mostly drive
@@ -400,3 +402,127 @@ branch, each with its own identity (`actor.driver`). The repo is the only
 shared memory — rules 1, 2 and 10 are the entire handoff protocol. To hand
 one *session* to another provider, `recycle`: new container, new token,
 the previous driver structurally cut off.
+
+
+## 12. Live registry, service declarations and overview (2.5.0)
+
+These APIs are implemented in source; deployment remains a separate operator action.
+Existing `GET /sigiled/projects` remains an authenticated array, and existing
+machine authorization and workload verbs retain their behavior. Reads never
+open a workspace, touch its activity, fetch Git, or start an app/job/inference.
+All authenticated actors currently share the same project-read access as `/projects`.
+Browser identity and per-human authorization are not configured by this change.
+
+### Manifest additions
+
+`[project]` accepts optional `display_name` (1–100 bytes) and `description`
+(1–1000 bytes), without control characters. `[ide]` has `enabled = true` and
+`provider = "code-server"` defaults. `[memory]` defaults enabled and private,
+accepts `sources` (up to 64 repository-relative documentation paths),
+`sharing = "private" | "project"`, and `source_code = false`. An omitted
+sharing field retains the last explicitly observed policy. These fields
+record desired intent only: no mem0 sharing/enrollment or source indexing is
+performed. IDE/memory remain pending with adapter-not-configured reasons.
+Unknown fields in these new tables, unsafe paths, remote sources and
+unsupported modes are rejected. Old manifests, `[workspace] dockerfile`,
+app/jobs/compose and the `mgr.toml` fallback remain supported; no manifest is
+valid and means empty declarations. A malformed preferred file does not
+fall through to the legacy file or remove the last valid declaration.
+
+`[service]` explicitly publishes service discovery metadata. Its `purpose`
+is public, separate from the private project description. Required fields
+are `name`, `purpose`, `origin`, `gate`, `status`. The name must equal the
+project's declared `[app] name`, be 2–39 lowercase alphanumeric/dash characters,
+and not conflict with the built-in seed, platform/auth/gateway names, or any
+other project's declaration. Conflicts exclude every involved dynamic
+entry and appear as per-project setup errors. The fixed route policy permits
+only `https://<service-name>.<DOMAIN>` (optional trailing slash), with no
+userinfo, explicit ports (including 443), query, fragment or path. `DOMAIN`
+is required to publish dynamic services. This is metadata publication, not
+route provisioning or permission to forward credentials.
+
+`gate` uses the existing machine gate values (`stack-bearer`, `service-token`,
+`sso-only`, `edge-open`); `status` uses `live`, `building`, `planned` and is
+always a declaration, never a health result. Optional `[service.capabilities]`
+has `version = 1` and optional `operations`, `health`, `ui` relative routes.
+Routes cannot contain traversal, query, fragment, escaping or absolute URLs.
+Public `/services` preserves `catalog_version`, existing fields and `?status=`
+filtering. Built-ins stay in seed order; dynamic entries follow sorted by name,
+with additive `capabilities`, `status_source = "declaration"`, `observed_at`
+and `stale`. No secret/env/command/private-project data is projected.
+
+### Reconciliation and observation
+
+Registration and hydration wake the repair loop. Each sorted round-robin batch
+considers at most 16 projects; two global blocking-worker permits limit active
+mirror operations, with a 30-second caller timeout and an owned project lock
+held until any surviving worker finishes. Busy mirrors are skipped. Successful
+observations refresh after 300 seconds; failed attempts retry with bounded
+backoff (60–960 seconds). Timed-out native Git work cannot currently be killed;
+it retains its lock and permit, so it cannot race another mirror operation.
+A permanently hung Git process can exhaust the two permits and requires
+operator recovery; cached API reads remain available.
+
+The job scheduler and manual job manifest reads use the same refresh path.
+Snapshots add a defaultable `ecosystem` map keyed by registered project name;
+legacy snapshots load without migration. Replaying registration preserves the
+existing record. Last valid metadata, app/job declarations and services survive
+repository/manifest failure and are marked stale. A valid newer manifest can
+remove declarations. An invalid newer manifest records desired revision while
+observed revision still identifies the last valid descriptor. Attempts include
+safe enum errors, timestamps and retry timing; no raw Git/TOML errors escape.
+A persistence failure remains visible in memory and is retried; a failed disk
+write cannot be claimed durable. The repair loop never creates workloads.
+
+### Read projections
+
+`GET /sigiled/overview?offset=0&limit=25` returns:
+
+```json
+{
+  "observed_at": 1788998400,
+  "counts": {"projects": 1, "sessions": 0, "attention": 3},
+  "projects": {"items": [], "total": 1, "offset": 0, "limit": 25, "next_offset": null},
+  "attention": {"items": [], "total": 3, "truncated": false}
+}
+```
+
+The example elides item contents. Project rows contain name/display name,
+private description, template flags, desired repository revision, observed
+revision, merge flag, per-capability readiness, registry setup observation,
+app summary, bounded job summaries, session count and latest activity time.
+Projects sort by name. Root attention is capped at 100, ordered failures,
+warnings, pending, then stable source reference. Counts cover all records,
+not just the page. The envelope observation time is response construction
+time; each cached subsystem exposes its own observation time separately.
+
+`GET /sigiled/projects/{project}?offset=0&limit=25` adds memory/IDE intent,
+redacted merge debt (no commit messages), safe A1 session views, job definitions
+and latest results, attention, and paginated activity. Session/job/debt/attention
+sections are bounded at 100 and report total/next offset; use existing session
+and job APIs for complete inventories. `offset`/`limit` on detail page activity
+only. Limits are 1–100, offset 0–1,000,000; malformed/unknown query fields return
+400 or 422. Missing project returns 404. No internal session record, token,
+job command, secret mapping, build log or arbitrary failure detail is included.
+
+Every project immediately has desired dashboard/activity/pending/workspace/
+IDE/memory capabilities. States are `ready`, `pending`, `disabled`; registry
+setup can also be `failed`. `ready` for workspace describes an observed mirror
+and configured runtime, not a live session. Registry readiness is scoped
+`registry_manifest`, not whole-project provisioning. Pending adapters have no
+observed revision/time. Browser readiness remains pending. Capability desired
+revision and registry desired/observed revision/time allow adapters to reconcile
+later without inferring success from enabled intent.
+
+App declared with no deployed record is `not_deployed`. Deployed revision,
+repository revision and image are separate; an abbreviated hexadecimal deployed
+SHA matching the repository SHA prefix is not drift. Runtime probe state is
+`unknown`/`unavailable`, `observed_at: null`, with `not_probed` or
+`runtime_not_configured`; the overview performs no live Docker/network probes.
+A job without runs is `not_run`. Latest successful run clears older failure
+attention. Stable attention sources cover merge debt, failed/unprotected
+sessions, pending adapters, repository stale/failure, service conflicts,
+latest failed build/job and revision drift. No inferred TODO/SDE/work-item
+records are synthesized. Revisioned explicit work items remain a separate API.
+
+See `docs/registry-rollout.md` for a complete example and deployment checks.

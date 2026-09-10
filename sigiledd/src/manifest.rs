@@ -17,6 +17,7 @@ pub enum ManifestError {
     BadJob(String),
     BadWorkspace(String),
     BadCompose(String),
+    BadDeclaration(String),
 }
 
 impl std::fmt::Display for ManifestError {
@@ -29,6 +30,7 @@ impl std::fmt::Display for ManifestError {
             ManifestError::BadApp(s) => write!(f, "bad [app]: {s}"),
             ManifestError::BadJob(s) => write!(f, "bad [jobs]: {s}"),
             ManifestError::BadWorkspace(s) => write!(f, "bad [workspace]: {s}"),
+            ManifestError::BadDeclaration(s) => write!(f, "bad capability declaration: {s}"),
             ManifestError::BadCompose(s) => write!(f, "bad [compose]: {s}"),
         }
     }
@@ -61,6 +63,10 @@ impl TemplateRef {
 
 #[derive(Debug, Deserialize)]
 struct RawManifest {
+    project: Option<crate::declaration::ProjectMetadata>,
+    ide: Option<crate::declaration::Ide>,
+    memory: Option<crate::declaration::Memory>,
+    service: Option<crate::declaration::Service>,
     template: Option<String>,
     workspace: Option<RawWorkspace>,
     app: Option<RawApp>,
@@ -273,6 +279,7 @@ impl AppManifest {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Manifest {
+    pub declaration: crate::declaration::Declaration,
     /// The vm-tmpl pin. None on pre-v2 repos that never adopted the pin —
     /// legal: template_version simply stays null in the project record.
     pub template: Option<TemplateRef>,
@@ -310,7 +317,17 @@ impl Manifest {
             .collect::<Result<Vec<_>, _>>()?;
         jobs.sort_by(|a, b| a.name.cmp(&b.name));
         let compose = raw.compose.map(ComposeManifest::validate).transpose()?;
+        let declaration = crate::declaration::Declaration {
+            project: raw.project.unwrap_or_default(),
+            ide: raw.ide.unwrap_or_default(),
+            memory: raw.memory.unwrap_or_default(),
+            service: raw.service,
+        };
+        declaration
+            .validate(app.as_ref())
+            .map_err(ManifestError::BadDeclaration)?;
         Ok(Manifest {
+            declaration,
             template,
             workspace_dockerfile,
             app,
@@ -604,5 +621,22 @@ mod tests {
             m.app.is_none(),
             "il template non deve dichiarare app di default"
         );
+    }
+}
+
+#[cfg(test)]
+mod registry_regressions {
+    use super::*;
+    #[test]
+    fn registry_rejects_unsafe_supported_fields() {
+        for text in [
+            "[memory]\nsources = [\"../secrets\"]",
+            "[memory]\nsources = [\"https://evil.test/data\"]",
+            "[memory]\nsharing = \"public\"",
+            "[ide]\nprovider = \"arbitrary-command\"",
+            "[project]\ndisplay_name = 12",
+        ] {
+            assert!(Manifest::parse(text).is_err(), "accepted: {text}");
+        }
     }
 }

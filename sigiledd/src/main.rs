@@ -9,12 +9,15 @@ mod apps;
 mod auth;
 mod catalog;
 mod contract;
+mod declaration;
+mod ecosystem;
 mod events;
 mod github;
 mod import;
 mod jobs;
 mod manifest;
 mod merge;
+mod overview;
 mod project;
 mod reaper;
 mod runtime;
@@ -57,6 +60,7 @@ impl AppState {
         let _save = SAVE.lock().unwrap();
         self.store.try_save(&store::StateSnapshot {
             projects: self.registry.snapshot(),
+            ecosystem: self.registry.descriptors(),
             events: self.events.dump(),
             debts: self.sessions.dump_debts(),
             approvals: self.auth.approvals.dump(),
@@ -70,6 +74,7 @@ impl AppState {
     pub fn hydrate_from_disk(&self) {
         if let Some(snap) = self.store.load() {
             self.registry.replace_all(snap.projects);
+            self.registry.hydrate_descriptors(snap.ecosystem);
             self.events.hydrate(snap.events);
             self.sessions.hydrate(snap.debts, snap.sessions);
             self.auth.approvals.hydrate(snap.approvals);
@@ -107,6 +112,8 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/contract", get(contract::serve))
         .route("/services", get(catalog::serve))
+        .route("/overview", get(overview::root))
+        .route("/projects/{project}", get(overview::detail))
         .route("/projects", get(project::list).post(project::create))
         .route("/projects/{project}/log", get(events::project_log))
         .route("/projects/{project}/branches", get(project::branches))
@@ -166,8 +173,9 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     // Latest published template version, when the deploy knows it (the image
     // build can bake it; a dev run can export it). Absent = never "behind".
-    let registry =
+    let mut registry =
         project::Registry::with_latest_template(std::env::var("SIGILED_TEMPLATE_LATEST").ok());
+    registry.domain = std::env::var("DOMAIN").ok();
     let state = AppState {
         registry,
         events: events::EventLog::default(),
@@ -179,6 +187,7 @@ async fn main() {
         github: github::GitHub::from_env(),
     };
     state.hydrate_from_disk();
+    tokio::spawn(ecosystem::repair_loop(state.clone()));
     // The reaper and the jobs scheduler patrol only where containers exist.
     if state.sessions.runtime.is_some() {
         tokio::spawn(reaper::run(state.clone()));

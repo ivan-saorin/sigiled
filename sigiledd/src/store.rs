@@ -15,6 +15,8 @@ use std::path::PathBuf;
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct StateSnapshot {
     #[serde(default)]
+    pub ecosystem: std::collections::BTreeMap<String, crate::ecosystem::Descriptor>,
+    #[serde(default)]
     pub projects: Vec<crate::project::ProjectRecord>,
     #[serde(default)]
     pub events: HashMap<String, Vec<crate::events::LogEntry>>,

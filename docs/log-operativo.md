@@ -1,5 +1,29 @@
 # SIGILED â€” Log operativo
 
+## 2026-09-10 — A2/A3 live registry and read-only overview (source only)
+
+Added optional project/IDE/memory/service declarations and a persisted descriptor
+projection without changing legacy project rows or machine authorization.
+Registration/startup wake bounded repair; jobs share the same owned-mirror-lock
+refresh. Repository/manifest failures retain the last valid descriptor with
+safe stale/error/retry metadata. Dynamic public service entries require explicit
+publication, declared app ownership, a configured stack-domain origin and unique
+non-reserved names. No endpoints receive credentials or probes.
+
+Authenticated `/overview` and `/projects/{project}` project redacted metadata,
+capability readiness, sessions, app/job state, activity and derived attention.
+Pending adapters remain unobserved; undeployed apps and jobs without runs never
+appear healthy. Old snapshots deserialize; duplicate replay is idempotent.
+Focused regressions reproduced unsafe manifest acceptance, duplicate insertion
+and false pending-adapter observations before fixes. Workspace tests, format,
+and Clippy verification are recorded in the implementation handoff. See
+`registry-rollout.md` and contract §12 for interfaces and known limits.
+
+Not deployed. No real session/workload/IDE/memory lifecycle operations were
+performed. Browser identity, IDE/memory adapters, explicit work items, mem0
+mutation and SDE remain separate stages.
+
+
 **Contratto.** Questo file Ã¨ la memoria operativa del progetto. Ogni sessione che chiude lavoro coerente **aggiunge una voce in cima** (la piÃ¹ recente prima) e **aggiorna lo Stato attuale**. Ogni voce risponde a tre domande: **dove eravamo**, **dove prevedevamo di andare**, **cosa Ã¨ stato fatto** â€” piÃ¹ gli **scarti** fra previsione e fatto, lo **stato a fine sessione** e il **prossimo passo previsto**. I commit message sono la memoria fine; questo log Ã¨ la memoria grossa. Le voci non si cancellano: si correggono con voci nuove.
 
 **Nota (SIGILED v2 DEC-04):** questo file Ã¨ project-owned â€” nasce dal template alla creazione e il template non lo tocca mai piÃ¹. Il layer macchina della storia (sessioni, merge, job) sarÃ  esposto da SIGILED via `GET /sigiled/projects/{p}/log`, senza scrivere nei repo.
