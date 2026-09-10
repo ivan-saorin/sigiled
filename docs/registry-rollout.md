@@ -68,7 +68,7 @@ conflicting dynamic entries; the seed catalog cannot be overridden.
 - `ecosystem::refresh(&AppState, project)` is the shared async mirror/manifest
   observation path. It acquires the A1 owned project mirror guard, limits
   blocking workers to two, shares a 2s mirror/capacity wait budget, bounds native
-  work at 30s with termination/reaping, updates safe descriptors and fallibly persists.
+  work at 30s plus a 2s exit-acknowledgement grace, updates safe descriptors and fallibly persists.
   `repair_loop`/`repair_batch` provide bounded background repair only.
 - `catalog::dynamic(&Registry)` returns `(public_entries, per_project_errors)`.
   Errors are fixed safe codes. `Registry.domain` is configured once from
@@ -91,7 +91,7 @@ routes, and pending reasons for absent browser/IDE/memory adapters. Observe
 repair timestamps/errors; never infer resource readiness from enabled intent.
 Pre-2.5 readers ignore the ecosystem map, but subsequently persisting with
 those binaries drops the descriptor cache. Earlier 2.5 binaries do not know the
-new deadline/busy/lock error enum values and may reject a newer snapshot; restore
+new deadline/busy/lock/termination error enum values and may reject a newer snapshot; restore
 the matching backup when rolling back to one of them. Reconciliation can rebuild it; explicit memory-sharing intent must
 remain in manifests or a backup when rolling between versions.
 
@@ -107,10 +107,14 @@ projects. Aggregation is in-memory and recomputed from stores per request.
 Repair batches consider 16 projects and skip busy mirrors. Shared refresh (also
 used by the job scheduler) has one 2-second combined mirror/capacity wait budget,
 then one 30-second absolute deadline across clone/fetch/reset/manifest Git reads.
-On deadline/error, Linux process-group cleanup kills descendants, closes pipes
-and reaps the leader before owned mirror guards/worker permits are released.
-The leader remains unreaped while polling (`waitid(WNOWAIT)`), reserving its
-process-group identity through cleanup. Each stdout/stderr stream is capped at
+On deadline/error, Linux process-group cleanup requests termination and keeps
+the leader unreaped (`waitid(WNOWAIT)`), reserving its process-group identity.
+Both leader exit and two complete `/proc` scans confirming all group members and
+their threads are dead must precede reaping and any repository cleanup/release.
+Inspection uses at most 65,536 directory entries, 4,096 bytes per stat and a 100ms
+scan budget. Malformed/inaccessible/missing task visibility, scan exhaustion or
+signal failure never counts as quiescence; errors retry after 250ms. No
+process-global subreaper is installed. Each stdout/stderr stream is capped at
 4 MiB; overflow fails safely with the same cleanup. Git automatic maintenance,
 auto-gc/detach and hooks are disabled only for these supervised commands.
 
@@ -127,7 +131,18 @@ Git writers against managed mirrors outside the project guard.
 
 Busy mirror/capacity waits return `refresh_busy` (warning/pending), allowing the
 serial scheduler to consider later projects; native deadline failures return
-`deadline_exceeded`. The refresh helper fails closed outside Linux, where these
+`deadline_exceeded` only after confirmed termination. If exit cannot be confirmed
+within a 2-second grace after the work budget, the caller returns
+`termination_unconfirmed` (failed/stale). The blocking owner remains quarantined,
+retaining its mirror guard, worker permit, leader identity, repository lock files
+and owned temporary clone until verification succeeds. Busy retries preserve that
+error. Safe eventual cleanup publishes the underlying result and releases capacity.
+Persistent kernel/inspection failure can retain one or both worker permits
+indefinitely: later scheduler projects still return from capacity waits within 2s,
+but no refresh can start without capacity. Restore process/proc visibility rather
+than deleting repository locks or bypassing ownership. Full relevant `/proc`
+visibility is required; these commands must not deliberately daemonize/escape their
+private process group. The refresh helper fails closed outside Linux, where these
 termination/publish guarantees have not been implemented. Invalid manifests
 retain last-valid published metadata with stale state; valid removal withdraws
 it. Disk failures remain visible in memory but cannot be made durable until the

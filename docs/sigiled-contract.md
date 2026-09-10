@@ -460,11 +460,23 @@ the serial job scheduler bounds mirror plus worker-capacity waiting to 2 seconds
 so an unavailable project cannot indefinitely stop later projects. Native work
 has a single 30-second absolute deadline spanning clone/fetch/reset/manifest
 reads. Linux commands run in private process groups with nonblocking pipes;
-deadline/error/4-MiB-per-stream output overflow kills descendants and reaps the
-leader before owned mirror guards and permits are released. Caller cancellation
-retains ownership until that same bounded cleanup completes. Automatic Git
-maintenance/gc/detach and hooks are disabled for supervised refresh commands.
-`refresh_busy` is warning/pending; `deadline_exceeded` is failed/stale.
+deadline/error/4-MiB-per-stream output overflow initiates group termination.
+The leader stays unreaped, reserving its PID/PGID, until `waitid(WNOWAIT)` confirms
+its exit and complete bounded `/proc` process/thread scans twice acknowledge that
+all group members are dead. Only then are the leader reaped, repository locks or
+owned clone directories cleaned, and mirror guards/worker permits released.
+Automatic Git maintenance/gc/detach and hooks remain disabled command-locally.
+
+The caller waits at most 2 more seconds after the 30-second work budget for exit
+acknowledgement. If it remains uncertain, `termination_unconfirmed` is failed/stale:
+the blocking supervisor retains the mirror, permit and leader identity, retries
+verification, and prevents repository cleanup. Busy retries cannot conceal this
+quarantine. Once exit is verified, cleanup completes and the descriptor records
+the underlying result (normally `deadline_exceeded`), permitting later retry.
+Cancellation also leaves ownership with the blocking supervisor. Persistent kernel
+or `/proc` verification failures quarantine capacity indefinitely; later projects
+still have the shared 2-second mirror/capacity wait limit. `refresh_busy` is
+warning/pending; `deadline_exceeded` means termination was confirmed.
 
 A new clone occupies only an operation-owned temporary directory until valid,
 then publishes atomically without replacing any incumbent path. Failed/timed-out

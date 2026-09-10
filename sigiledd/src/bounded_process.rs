@@ -1,6 +1,8 @@
 //! Deadline-controlled subprocesses for repository observation.
 //! Each command gets a private Unix process group. Deadline/error cleanup kills
-//! that group and reaps its leader before the caller can release its mirror lock.
+//! that group, confirms every process/thread has exited, then reaps the leader.
+//! Uncertain termination quarantines the owning blocking worker and its resources;
+//! the async refresh caller has a separate bounded acknowledgement grace period.
 use std::{
     process::{Command, Output},
     time::Instant,
@@ -17,26 +19,83 @@ pub enum Error {
 }
 #[cfg(target_os = "linux")]
 pub fn output_until(command: &mut Command, deadline: Instant) -> Result<Output, Error> {
+    output_until_observed(command, deadline, |_| Ok(true))
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn output_until_observed<F: FnMut(u32) -> Result<bool, Error>>(
+    command: &mut Command,
+    deadline: Instant,
+    observer: F,
+) -> Result<Output, Error> {
     use std::{
         io::{ErrorKind, Read},
         os::{fd::AsRawFd, unix::process::CommandExt},
         process::{Child, Stdio},
         time::Duration,
     };
-    struct Group {
+    struct Group<F: FnMut(u32) -> Result<bool, Error>> {
+        observer: F,
         child: Child,
         cleaned: bool,
     }
-    impl Group {
+    impl<F: FnMut(u32) -> Result<bool, Error>> Group<F> {
         fn finish(&mut self) -> Result<std::process::ExitStatus, Error> {
-            self.cleaned = true;
-            // waitid(WNOWAIT) keeps the leader unreaped, reserving its PID/PGID
-            // until cleanup. Never signal a potentially reused process-group ID.
-            unsafe {
-                libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+            // Keep the leader unreaped until both waitid and complete /proc task
+            // scans acknowledge exit. Its reserved PID also reserves the PGID.
+            // No uncertainty may unwind into repository cleanup or guard release.
+            let mut quiet_passes = 0;
+            let mut warned = false;
+            loop {
+                let verified =
+                    (|| {
+                        let exited = self.exited()?;
+                        // Never signal a stale identity after waitid loses ownership.
+                        let result =
+                            unsafe { libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL) };
+                        if result < 0
+                            && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+                        {
+                            return Err(Error::Io);
+                        }
+                        // The direct child normally remains in its initial group.
+                        // Also terminate it if a command changed its own group.
+                        let result =
+                            unsafe { libc::kill(self.child.id() as libc::pid_t, libc::SIGKILL) };
+                        if result < 0
+                            && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+                        {
+                            return Err(Error::Io);
+                        }
+                        Ok(exited
+                            && group_quiet(self.child.id())?
+                            && (self.observer)(self.child.id())?)
+                    })();
+                let mut retry = Duration::from_millis(10);
+                match verified {
+                    Ok(true) => {
+                        quiet_passes += 1;
+                        if quiet_passes >= 2 {
+                            match self.child.wait() {
+                                Ok(status) => {
+                                    self.cleaned = true;
+                                    return Ok(status);
+                                }
+                                Err(_) => quiet_passes = 0,
+                            }
+                        }
+                    }
+                    Ok(false) => quiet_passes = 0,
+                    Err(_) => {
+                        retry = Duration::from_millis(250);
+                        quiet_passes = 0;
+                        if !warned {
+                            eprintln!("repository subprocess termination unconfirmed; retaining mirror ownership");
+                            warned = true;
+                        }
+                    }
+                }
+                std::thread::sleep(retry);
             }
-            let _ = self.child.kill();
-            self.child.wait().map_err(|_| Error::Io)
         }
         fn exited(&self) -> Result<bool, Error> {
             let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
@@ -57,7 +116,7 @@ pub fn output_until(command: &mut Command, deadline: Instant) -> Result<Output, 
             Ok(unsafe { info.si_pid() } != 0)
         }
     }
-    impl Drop for Group {
+    impl<F: FnMut(u32) -> Result<bool, Error>> Drop for Group<F> {
         fn drop(&mut self) {
             if !self.cleaned {
                 let _ = self.finish();
@@ -98,6 +157,7 @@ pub fn output_until(command: &mut Command, deadline: Instant) -> Result<Output, 
         return Err(Error::Deadline);
     }
     let mut group = Group {
+        observer,
         child: command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -131,6 +191,145 @@ pub fn output_until(command: &mut Command, deadline: Instant) -> Result<Output, 
             Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
         );
     }
+}
+/// /proc is inspected while the caller still owns the unreaped group leader.
+/// Zombies/dead tasks cannot perform further filesystem work; orphan zombies are
+/// reaped by their parent/init, not by a process-global subreaper in this daemon.
+#[cfg(target_os = "linux")]
+fn group_quiet(pgid: u32) -> Result<bool, Error> {
+    group_quiet_at(std::path::Path::new("/proc"), pgid, 65_536)
+}
+#[cfg(target_os = "linux")]
+fn group_quiet_at(root: &std::path::Path, pgid: u32, max_entries: usize) -> Result<bool, Error> {
+    use std::{
+        fs,
+        io::{ErrorKind, Read},
+        path::Path,
+        time::Duration,
+    };
+    struct Budget {
+        left: usize,
+        until: Instant,
+    }
+    impl Budget {
+        fn take(&mut self) -> Result<(), Error> {
+            if self.left == 0 || Instant::now() >= self.until {
+                return Err(Error::Io);
+            }
+            self.left -= 1;
+            Ok(())
+        }
+    }
+    fn stat(path: &Path) -> Result<Option<(u32, u8, u32)>, Error> {
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(Error::Io),
+        };
+        let mut bytes = Vec::new();
+        file.take(4097)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::Io)?;
+        if bytes.len() > 4096 {
+            return Err(Error::Io);
+        }
+        parse_stat(&bytes).map(Some)
+    }
+    fn terminal(state: u8) -> bool {
+        matches!(state, b'Z' | b'X' | b'x')
+    }
+    let mut budget = Budget {
+        left: max_entries,
+        until: Instant::now() + Duration::from_millis(100),
+    };
+    let processes = fs::read_dir(root).map_err(|_| Error::Io)?;
+    let mut saw_reserved_leader = false;
+    for entry in processes {
+        budget.take()?;
+        let entry = entry.map_err(|_| Error::Io)?;
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some((actual_pid, state, group)) = stat(&entry.path().join("stat"))? else {
+            continue;
+        };
+        if actual_pid != pid {
+            return Err(Error::Io);
+        }
+        if group != pgid {
+            continue;
+        }
+        saw_reserved_leader |= pid == pgid;
+        if !terminal(state) {
+            return Ok(false);
+        }
+        // A zombie process leader alone is insufficient: sibling threads may
+        // still be exiting. Inspect every task, including its dead leader.
+        let tasks = match fs::read_dir(entry.path().join("task")) {
+            Ok(tasks) => tasks,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                // Missing task visibility is safe only after the process itself
+                // vanished. A dead main thread may leave live sibling threads.
+                if stat(&entry.path().join("stat"))?.is_some() {
+                    return Err(Error::Io);
+                }
+                continue;
+            }
+            Err(_) => return Err(Error::Io),
+        };
+        let mut saw_leader = false;
+        for task in tasks {
+            budget.take()?;
+            let task = task.map_err(|_| Error::Io)?;
+            let tid = task
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+                .ok_or(Error::Io)?;
+            if let Some((actual_tid, state, group)) = stat(&task.path().join("stat"))? {
+                if actual_tid != tid || group != pgid {
+                    return Err(Error::Io);
+                }
+                saw_leader |= tid == pid;
+                if !terminal(state) {
+                    return Ok(false);
+                }
+            }
+        }
+        if !saw_leader && stat(&entry.path().join("stat"))?.is_some() {
+            return Err(Error::Io);
+        }
+    }
+    budget.take()?;
+    // waitid still owns this unreaped leader: an empty/foreign proc mount is
+    // missing visibility, not proof that the owned process group disappeared.
+    if !saw_reserved_leader {
+        return Err(Error::Io);
+    }
+    Ok(true)
+}
+#[cfg(target_os = "linux")]
+fn parse_stat(bytes: &[u8]) -> Result<(u32, u8, u32), Error> {
+    let text = std::str::from_utf8(bytes).map_err(|_| Error::Io)?;
+    let (pid, rest) = text.split_once(" (").ok_or(Error::Io)?;
+    let (_, fields) = rest.rsplit_once(") ").ok_or(Error::Io)?;
+    let mut fields = fields.split_whitespace();
+    let state = fields.next().ok_or(Error::Io)?.as_bytes();
+    if state.len() != 1 || !b"RSDZTWtXxKPI".contains(&state[0]) {
+        return Err(Error::Io);
+    }
+    fields
+        .next()
+        .ok_or(Error::Io)?
+        .parse::<u32>()
+        .map_err(|_| Error::Io)?;
+    let group = fields
+        .next()
+        .ok_or(Error::Io)?
+        .parse()
+        .map_err(|_| Error::Io)?;
+    Ok((pid.parse().map_err(|_| Error::Io)?, state[0], group))
 }
 #[cfg(not(target_os = "linux"))]
 pub fn output_until(_command: &mut Command, _deadline: Instant) -> Result<Output, Error> {
@@ -283,5 +482,85 @@ mod git_policy_tests {
                 .trim(),
             "true"
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod inspection_tests {
+    use super::*;
+    fn fixture() -> std::path::PathBuf {
+        crate::AppState::test_without_runtime()
+            .sessions
+            .repos_dir
+            .unwrap()
+    }
+    fn write_stat(root: &std::path::Path, path: &str, pid: u32, state: &str, group: u32) {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            format!("{pid} (a tricky ) process) {state} 1 {group} 0 0 0\n"),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn proc_stat_parses_parentheses_and_rejects_malformed_identity_or_state() {
+        assert_eq!(
+            parse_stat(b"31 (name ) and ( name) Z 1 31 0"),
+            Ok((31, b'Z', 31))
+        );
+        for text in [
+            "",
+            "31 name Z 1 31",
+            "abc (name) Z 1 31",
+            "31 (name) ZZ 1 31",
+            "31 (name) ? 1 31",
+            "31 (name) Z nope 31",
+            "31 (name) Z 1 nope",
+        ] {
+            assert_eq!(parse_stat(text.as_bytes()), Err(Error::Io), "{text}");
+        }
+    }
+    #[test]
+    fn zombie_leader_is_not_quiet_while_any_thread_is_live() {
+        let root = fixture();
+        write_stat(&root, "31/stat", 31, "Z", 31);
+        write_stat(&root, "31/task/31/stat", 31, "Z", 31);
+        write_stat(&root, "31/task/32/stat", 32, "D", 31);
+        assert_eq!(group_quiet_at(&root, 31, 100), Ok(false));
+        write_stat(&root, "31/task/32/stat", 32, "X", 31);
+        assert_eq!(group_quiet_at(&root, 31, 100), Ok(true));
+    }
+    #[test]
+    fn proc_enumeration_and_malformed_or_oversized_reads_fail_closed() {
+        let root = fixture();
+        assert_eq!(group_quiet_at(&root, 31, 100), Err(Error::Io));
+        assert_eq!(
+            group_quiet_at(&root.join("missing"), 31, 100),
+            Err(Error::Io)
+        );
+        write_stat(&root, "31/stat", 31, "Z", 31);
+        assert_eq!(group_quiet_at(&root, 31, 100), Err(Error::Io));
+        std::fs::create_dir(root.join("31/task")).unwrap();
+        assert_eq!(group_quiet_at(&root, 31, 100), Err(Error::Io));
+        std::fs::remove_dir(root.join("31/task")).unwrap();
+        std::fs::write(root.join("31/task"), "not a directory").unwrap();
+        assert_eq!(group_quiet_at(&root, 31, 100), Err(Error::Io));
+        std::fs::remove_file(root.join("31/task")).unwrap();
+        write_stat(&root, "31/task/31/stat", 31, "Z", 31);
+        std::fs::write(root.join("31/stat"), "malformed").unwrap();
+        assert_eq!(group_quiet_at(&root, 31, 100), Err(Error::Io));
+        std::fs::write(root.join("31/stat"), "x".repeat(4097)).unwrap();
+        assert_eq!(group_quiet_at(&root, 31, 100), Err(Error::Io));
+        write_stat(&root, "31/stat", 32, "Z", 31);
+        assert_eq!(group_quiet_at(&root, 31, 100), Err(Error::Io));
+    }
+    #[test]
+    fn proc_scan_budget_exhaustion_is_uncertainty_never_quiescence() {
+        let root = fixture();
+        write_stat(&root, "31/stat", 31, "Z", 31);
+        write_stat(&root, "31/task/31/stat", 31, "Z", 31);
+        assert_eq!(group_quiet_at(&root, 31, 1), Err(Error::Io));
+        assert_eq!(group_quiet_at(&root, 31, 100), Ok(true));
     }
 }

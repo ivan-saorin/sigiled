@@ -1074,6 +1074,52 @@ mod registry_clone_tests {
         );
     }
     #[test]
+    fn temporary_clone_cleanup_waits_for_group_exit_acknowledgement() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Arc,
+        };
+        let rt = runtime();
+        let allowed = Arc::new(AtomicBool::new(false));
+        let gate = allowed.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let task = std::thread::spawn(move || {
+            let result = rt.clone_mirror_using(
+                "sample",
+                Instant::now() + Duration::from_millis(60),
+                |target, deadline| {
+                    std::fs::write(target.join("partial"), "owned clone").unwrap();
+                    let target = target.to_path_buf();
+                    crate::bounded_process::output_until_observed(
+                        Command::new("sh").args(["-c", "sleep 5 & exit 0"]),
+                        deadline,
+                        move |_| {
+                            let _ = started_tx.send(target.clone());
+                            Ok(gate.load(Ordering::SeqCst))
+                        },
+                    )?;
+                    Ok(())
+                },
+            );
+            done_tx.send(result).unwrap();
+        });
+        let temporary = started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let premature = done_rx.recv_timeout(Duration::from_millis(120)).is_ok();
+        let retained = temporary.join("partial").exists();
+        allowed.store(true, Ordering::SeqCst);
+        task.join().unwrap();
+        assert!(!premature, "clone cleanup ran before exit acknowledgement");
+        assert!(
+            retained,
+            "owned temporary clone was removed while exit was unknown"
+        );
+        assert!(
+            !temporary.exists(),
+            "temporary clone not cleaned after verified exit"
+        );
+    }
+    #[test]
     fn atomic_clone_publish_never_replaces_an_incumbent_created_during_clone() {
         let rt = runtime();
         let source = crate::merge::tests::mk_repo("registry-clone-incumbent");
@@ -1134,5 +1180,62 @@ mod registry_lock_recovery_tests {
             with_refresh_lock_recovery(&repo, || panic!("ran across incumbent lock"));
         assert_eq!(result.unwrap_err(), Error::LockBusy);
         assert_eq!(std::fs::read_to_string(lock).unwrap(), "incumbent");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod registry_quiescence_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    };
+    use std::time::{Duration, Instant};
+    #[test]
+    fn git_lock_cleanup_waits_for_descendant_exit_acknowledgement() {
+        let repo = crate::merge::tests::mk_repo("registry-quiescence");
+        let lock = repo.join(".git/index.lock");
+        let allowed = Arc::new(AtomicBool::new(false));
+        let gate = allowed.clone();
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let task = std::thread::spawn(move || {
+            let result = with_refresh_lock_recovery(&repo, || {
+                std::fs::write(repo.join(".git/index.lock"), "owned").unwrap();
+                crate::bounded_process::output_until_observed(
+                    Command::new("sh").args(["-c", "sleep 5 & exit 0"]),
+                    Instant::now() + Duration::from_millis(60),
+                    move |pid| {
+                        let _ = observed_tx.send(pid);
+                        if gate.load(Ordering::SeqCst) {
+                            Ok(true)
+                        } else {
+                            Err(crate::bounded_process::Error::Io)
+                        }
+                    },
+                )
+            });
+            done_tx.send(result).unwrap();
+        });
+        let pid = observed_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let premature = done_rx.recv_timeout(Duration::from_millis(120)).is_ok();
+        let retained_lock = lock.exists();
+        let reserved_leader = std::path::Path::new(&format!("/proc/{pid}")).exists();
+        // Always release the injected uncertainty before asserting or joining.
+        allowed.store(true, Ordering::SeqCst);
+        task.join().unwrap();
+        assert!(
+            !premature,
+            "cleanup returned before descendant exit acknowledgement"
+        );
+        assert!(retained_lock, "Git lock removed before acknowledgement");
+        assert!(
+            reserved_leader,
+            "leader identity reaped before acknowledgement"
+        );
+        assert!(
+            !lock.exists(),
+            "safe cleanup did not recover the owned Git lock"
+        );
     }
 }

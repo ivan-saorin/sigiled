@@ -1,5 +1,21 @@
 # SIGILED â€” Log operativo
 
+
+## 2026-09-10 — A2/A3 review fix: acknowledge group exit before cleanup
+
+Refresh subprocess cleanup now reserves the unreaped leader until actual leader
+exit and bounded complete process/thread scans acknowledge group quiescence.
+Unknown or failed inspection never permits Git-lock/temp-clone cleanup or guard
+release. A 2-second acknowledgement grace after the 30-second work budget bounds
+the caller; `termination_unconfirmed` exposes quarantine while the blocking owner
+retains resources and continues verification. Healthy later scheduler work keeps
+its 2-second mirror/capacity wait boundary. Eventual verified exit performs safe
+cleanup and releases capacity. No global subreaper or lifecycle-runtime changes.
+Deterministic delayed/error acknowledgement tests cover Git locks, temporary
+clones, reserved identity, owned guard/permit, bounded caller, healthy later work
+and recovery; real inherited-pipe and malformed/bounded `/proc` tests remain.
+
+
 ## 2026-09-10 — A2/A3 review fixes: bounded refresh and hermetic fixtures
 
 Closed review I1/I2 and the small overview scaling issue. Shared refresh now
