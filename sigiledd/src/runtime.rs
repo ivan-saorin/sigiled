@@ -89,11 +89,14 @@ impl Runtime {
         })
     }
 
-    pub fn session_container(project: &str, id: &str) -> String {
-        format!("vm-{project}-{id}")
+    /// Keep the full random identity and any u64 generation within one DNS
+    /// label: vm-s- + 32 hex + -g + 20 decimal digits is at most 59 bytes.
+    /// Project identity lives in metadata/labels, not in the routing slug.
+    pub fn session_container(_project: &str, id: &str, generation: u64) -> String {
+        format!("vm-s-{id}-g{generation}")
     }
-    pub fn session_endpoint(&self, project: &str, id: &str) -> String {
-        self.endpoint(&format!("{project}-{id}"))
+    pub fn session_endpoint(&self, _project: &str, id: &str, generation: u64) -> String {
+        self.endpoint(&format!("s-{id}-g{generation}"))
     }
     pub fn vm_name(project: &str) -> String {
         format!("vm-{project}")
@@ -246,7 +249,32 @@ impl Runtime {
     /// with the debt in the choice — the session is the repair tool for its
     /// own dockerfile, so open must stay drivable (same philosophy as merge
     /// debt: never block, surface loudly). Jobs treat build_error as fatal.
+    /// Blocking image builds survive cancellation of their awaiting request.
+    /// Move the owned mirror guard into the worker and return it with the image,
+    /// so neither cancellation nor post-build mirror use creates an unlock gap.
+    pub async fn session_image_locked(
+        &self,
+        project: &str,
+        repo: &Path,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(ImageChoice, tokio::sync::OwnedMutexGuard<()>), String> {
+        let (rt, project, repo) = (self.clone(), project.to_owned(), repo.to_owned());
+        tokio::task::spawn_blocking(move || {
+            let image = rt.ensure_session_image(&project, &repo);
+            (image, guard)
+        })
+        .await
+        .map_err(|_| "image task interrupted".into())
+    }
+
     pub fn ensure_session_image(&self, project: &str, repo: &Path) -> ImageChoice {
+        #[cfg(test)]
+        if let Some(fake) = &self.fake {
+            let barrier = fake.build_barrier.lock().unwrap().clone();
+            if let Some(barrier) = barrier {
+                barrier.block();
+            }
+        }
         match self.session_image_tag(project, repo) {
             Ok(None) => ImageChoice::base(self.image.clone()),
             Ok(Some((tag, dockerfile))) => {
@@ -733,5 +761,22 @@ mod tests {
             !clone.join("local.txt").exists(),
             "local drift survived the reset"
         );
+    }
+}
+#[cfg(test)]
+mod bounded_session_names {
+    use super::*;
+    #[test]
+    fn full_session_entropy_and_every_u64_generation_fit_dns_labels() {
+        let id = "0123456789abcdef0123456789abcdef";
+        for generation in [0, 1, 9, 10, 999, u64::MAX] {
+            let name = Runtime::session_container(&"p".repeat(39), id, generation);
+            assert!(name.len() <= 63);
+            assert!(name.contains(id));
+            assert!(name.ends_with(&format!("-g{generation}")));
+            assert!(name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+        }
     }
 }

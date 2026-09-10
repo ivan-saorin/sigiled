@@ -17,7 +17,40 @@ use std::{
         Arc, Mutex,
     },
 };
+pub struct BuildBarrier {
+    pub entered: tokio::sync::Notify,
+    release: Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+impl BuildBarrier {
+    fn new() -> Self {
+        Self {
+            entered: tokio::sync::Notify::new(),
+            release: Mutex::new(false),
+            wake: std::sync::Condvar::new(),
+        }
+    }
+    pub fn block(&self) {
+        self.entered.notify_one();
+        let mut released = self.release.lock().unwrap();
+        while !*released {
+            released = self.wake.wait(released).unwrap();
+        }
+    }
+    fn release(&self) {
+        *self.release.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
+}
+struct ReleaseBuild(Arc<BuildBarrier>);
+impl Drop for ReleaseBuild {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
 pub struct FakeRuntime {
+    pub build_barrier: Mutex<Option<Arc<BuildBarrier>>>,
+    pub repo_url: String,
     pub root: PathBuf,
     pub origin: PathBuf,
     pub live: Mutex<HashMap<String, String>>,
@@ -36,6 +69,10 @@ impl FakeRuntime {
         match args[0] {
             "create" => {
                 let name = args[args.iter().position(|a| *a == "--name").unwrap() + 1];
+                let hostname = args[args.iter().position(|a| *a == "--hostname").unwrap() + 1];
+                if name.len() > 63 || hostname.len() > 63 {
+                    return Err("runtime DNS label exceeds 63 bytes".into());
+                }
                 self.calls.lock().unwrap().push(format!("create {name}"));
                 if live.contains_key(name) {
                     return Err("container exists".into());
@@ -77,10 +114,7 @@ impl FakeRuntime {
         if cmd.contains("autosave") && self.fail_flush.load(Ordering::SeqCst) {
             return Ok(json!({"exit":1,"stdout":"","stderr":"checkpoint failed"}));
         }
-        let cmd = cmd.replace(
-            "git@github.com:test/proj.git",
-            &self.origin.to_string_lossy(),
-        );
+        let cmd = cmd.replace(&self.repo_url, &self.origin.to_string_lossy());
         let out = std::process::Command::new("bash")
             .args(["-c", &cmd])
             .current_dir(self.root.join(container))
@@ -116,6 +150,9 @@ async fn body(resp: Response) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 fn setup() -> (AppState, Arc<FakeRuntime>) {
+    setup_project("proj")
+}
+fn setup_project(project: &str) -> (AppState, Arc<FakeRuntime>) {
     let root = crate::merge::tests::tmp_repo("foundation");
     std::fs::create_dir_all(&root).unwrap();
     let seed = crate::merge::tests::mk_repo("foundation-seed");
@@ -137,14 +174,16 @@ fn setup() -> (AppState, Arc<FakeRuntime>) {
         &[
             "clone",
             &origin.to_string_lossy(),
-            &repos.join("proj").to_string_lossy(),
+            &repos.join(project).to_string_lossy(),
         ],
     )
     .unwrap();
-    let keys = root.join("keys/proj");
+    let keys = root.join("keys").join(project);
     std::fs::create_dir_all(&keys).unwrap();
     std::fs::write(keys.join("id_ed25519"), "fake").unwrap();
     let fake = Arc::new(FakeRuntime {
+        build_barrier: Mutex::new(None),
+        repo_url: format!("git@github.com:test/{project}.git"),
         root: root.join("workspaces"),
         origin,
         live: Mutex::default(),
@@ -623,4 +662,110 @@ async fn missing_runtime_configuration_never_discards_custodied_session() {
     assert_eq!(v["error"], "runtime_unavailable");
     assert!(state.sessions.record(id).is_some());
     assert_eq!(fake.live.lock().unwrap().len(), 1);
+}
+#[tokio::test]
+async fn maximum_project_name_opens_and_recycles_with_bounded_runtime_names() {
+    let project = "a".repeat(39);
+    let (state, fake) = setup_project(&project);
+    let (status, a) =
+        body(sessions::open(actor("owner"), State(state.clone()), Path(project.clone())).await)
+            .await;
+    assert_eq!(status, StatusCode::CREATED, "{a}");
+    let id = a["session_id"].as_str().unwrap();
+    let mut records = state.sessions.dump_records();
+    records.get_mut(id).unwrap().generation = u64::MAX - 1;
+    state.sessions.hydrate(HashMap::new(), records);
+    let (status, b) =
+        body(sessions::recycle(actor("owner"), State(state.clone()), Path(id.into())).await).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    assert_eq!(b["generation"], u64::MAX);
+    assert!(target(&b["endpoint"]).len() <= 63);
+    assert!(target(&b["endpoint"]).contains(id));
+    fake.healthy(&target(&b["endpoint"]), b["token"].as_str().unwrap())
+        .unwrap();
+    let before = fake.calls.lock().unwrap().clone();
+    let (status, c) =
+        body(sessions::recycle(actor("owner"), State(state.clone()), Path(id.into())).await).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{c}");
+    assert_eq!(c["error"], "generation_exhausted");
+    assert_eq!(before, *fake.calls.lock().unwrap());
+}
+#[tokio::test]
+async fn cancelled_open_or_recycle_build_retains_mirror_lock_until_barrier_release() {
+    for recycling in [false, true] {
+        let (state, fake) = setup();
+        let id = if recycling {
+            Some(
+                open(&state).await["session_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        let barrier = Arc::new(BuildBarrier::new());
+        let release = ReleaseBuild(barrier.clone());
+        *fake.build_barrier.lock().unwrap() = Some(barrier.clone());
+        let s = state.clone();
+        let awaiting = tokio::spawn(async move {
+            match id {
+                Some(id) => sessions::recycle(actor("owner"), State(s), Path(id)).await,
+                None => sessions::open(actor("owner"), State(s), Path("proj".into())).await,
+            }
+        });
+        barrier.entered.notified().await;
+        awaiting.abort();
+        assert!(awaiting.await.unwrap_err().is_cancelled());
+        let lock = state.sessions.merge_lock("proj");
+        assert!(
+            lock.try_lock().is_err(),
+            "cancelled request released a still-running build's mirror"
+        );
+        let s = state.clone();
+        let consumer = tokio::spawn(async move {
+            crate::project::branches(actor("reader"), State(s), Path("proj".into())).await
+        });
+        assert!(!consumer.is_finished());
+        drop(release);
+        assert_eq!(consumer.await.unwrap().status(), StatusCode::OK);
+    }
+}
+#[tokio::test]
+async fn cancelled_job_image_helper_keeps_owned_lock_and_returns_it_after_build() {
+    let (state, fake) = setup();
+    let rt = state.sessions.runtime.as_ref().unwrap().clone();
+    let mirror = rt.repo_path("proj");
+    let lock = state.sessions.merge_lock("proj");
+    let barrier = Arc::new(BuildBarrier::new());
+    let release = ReleaseBuild(barrier.clone());
+    *fake.build_barrier.lock().unwrap() = Some(barrier.clone());
+    let guard = lock.clone().lock_owned().await;
+    let task = tokio::spawn(async move { rt.session_image_locked("proj", &mirror, guard).await });
+    barrier.entered.notified().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(
+        lock.try_lock().is_err(),
+        "job build must own the mirror after its waiter is cancelled"
+    );
+    let s = state.clone();
+    let consumer = tokio::spawn(async move {
+        crate::project::branches(actor("reader"), State(s), Path("proj".into())).await
+    });
+    drop(release);
+    assert_eq!(consumer.await.unwrap().status(), StatusCode::OK);
+    *fake.build_barrier.lock().unwrap() = None;
+    let rt = state.sessions.runtime.as_ref().unwrap();
+    let guard = lock.clone().lock_owned().await;
+    let (_, returned_guard) = rt
+        .session_image_locked("proj", &rt.repo_path("proj"), guard)
+        .await
+        .unwrap();
+    assert!(
+        lock.try_lock().is_err(),
+        "the returned guard protects post-build mirror operations"
+    );
+    drop(returned_guard);
+    assert!(lock.try_lock().is_ok());
 }

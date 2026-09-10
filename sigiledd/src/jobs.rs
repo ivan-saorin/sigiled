@@ -367,17 +367,14 @@ async fn execute_run(state: crate::AppState, project: String, jm: JobManifest, b
             extra.push((env_name.clone(), v));
         }
         let lock = state.sessions.merge_lock(&project);
-        let mirror_guard = lock.lock().await;
+        let mirror_guard = lock.lock_owned().await;
         let mirror = rt.ensure_mirror(&project)?;
         // DEC-25: jobs ride the project's declared image too — but batch has
         // no operator watching a shout, so a broken declaration FAILS the
         // run: a nightly silently missing its declared toolchain would lie.
-        let image = {
-            let (rt2, p2) = (rt.clone(), project.clone());
-            tokio::task::spawn_blocking(move || rt2.ensure_session_image(&p2, &mirror))
-                .await
-                .map_err(|e| format!("image resolve: {e}"))?
-        };
+        let (image, mirror_guard) = rt
+            .session_image_locked(&project, &mirror, mirror_guard)
+            .await?;
         drop(mirror_guard);
         if let Some(reason) = image.build_error {
             return Err(format!("session image: {reason}"));

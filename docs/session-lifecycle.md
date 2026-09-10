@@ -8,7 +8,10 @@ operator owns review, close/merge and deployment.
 
 Before deploying, back up the 0600 state snapshot and inventory session and
 container ownership. The existing edge `/s/<slug>` -> `vm-<slug>:8000` rule
-accepts the new names without a reload. Returned-endpoint clients continue to
+accepts the compact `vm-s-{full session ID}-g{generation}` names without a reload.
+The name is at most 59 bytes for the full 128-bit hex ID and any u64 generation,
+independent of the permitted 39-character project name. Project remains in
+record metadata and labels. Generation exhaustion fails before destructive work. Returned-endpoint clients continue to
 work; clients that reconstruct project-only URLs must use the response value.
 Recycle now changes endpoint as well as token. No machine authentication or
 browser authentication system changes are included.
@@ -67,7 +70,10 @@ an identity/branch and bootstrapping; it first locks the new identity before
 publishing the creating record, so inspection cannot race a close into boot.
 Mirror consumers in sessions, project branches, app manifest/build and job
 manifest/image resolution use the same project lock. Background app builds
-retain an owned guard until they finish reading the mirror. Job/workspace
+retain an owned guard until they finish reading the mirror. Session/job image
+builds use `Runtime::session_image_locked`, which moves an owned guard into
+the blocking worker and returns it with the image for post-build mirror use.
+Cancellation drops neither the worker's guard nor its protection prematurely. Job/workspace
 execution releases that lock when mirror use ends.
 
 `SessionRecord::container()` resolves a stored binding or the legacy alias.
@@ -86,7 +92,7 @@ orphan allocation, mirror locking, duplicate close, actor authority, safe HTTP
 inspection, legacy decoding/quarantine, persistence and interrupted restart.
 No Docker or external lifecycle operations are used by these tests.
 
-Final verification: `CARGO_BUILD_JOBS=2 cargo test --workspace` passed 126
+Final verification: `CARGO_BUILD_JOBS=2 cargo test --workspace` passed 130
 control-plane tests (vm-base: 0); `cargo fmt --all --check` passed;
 `CARGO_BUILD_JOBS=2 cargo clippy --workspace --all-targets` exited 0. Clippy
 reports only the existing catalog `unnecessary_map_or` and runtime

@@ -36,7 +36,7 @@ sessions.
 | Surface | Base | Auth |
 |---|---|---|
 | SIGILED verbs | `https://api.016180.xyz/sigiled` | `Authorization: Bearer <access-token>` |
-| Workspace | returned `endpoint` (`https://api.016180.xyz/s/{project}-{session_id}/` for new sessions) | `X-Session-Token: {token}` (send your Bearer too — the edge does not inspect it here, the token is the auth) |
+| Workspace | returned `endpoint` (`https://api.016180.xyz/s/s-{session_id}-g{generation}/` for new sessions) | `X-Session-Token: {token}` (send your Bearer too — the edge does not inspect it here, the token is the auth) |
 | Web search | `https://search.016180.xyz` | stack search credential (operator-provided; a stack service, not part of SIGILED auth) |
 
 **Machine leg (yours).** Each driver is an OAuth2 client of the stack IdP
@@ -124,8 +124,11 @@ dangling (rule 6).
 3. **Every commit pushes automatically.** You never push, you never lose
    committed work, and container destruction is always safe.
 4. **One branch per workload; master is the arbiter at close.** Sessions
-   never block each other. The only lock left is the per-project merge lock
-   — a critical section of seconds inside `close`. Never retry-hammer it.
+   execute independently inside their workspaces. Lifecycle operations serialize
+   per session; mirror preparation, image builds, branch listing and merges
+   serialize per project. An open or recycle can wait for an image build, and
+   cancelling its request does not release the mirror while that build runs.
+   Never retry-hammer a pending operation.
 5. **The sigil is the container.** `exec` is full bash, but only the
    container filesystem + declared mounts exist. Host paths, other
    projects, docker, ssh: structurally out of reach. Do not try.
@@ -186,7 +189,7 @@ need a live approval for `projects new`, app verbs, and any session on
 
 ```json
 {"session_id": "…", "project": "…", "branch": "session/…", "token": "…",
- "endpoint": "https://api.016180.xyz/s/{p}-{session_id}/", "head": "<sha>",
+ "endpoint": "https://api.016180.xyz/s/s-{session_id}-g1/", "head": "<sha>",
  "generation": 1, "state": "active",
  "stale": false, "last_commit": null,
  "merge_debt": null,
@@ -244,7 +247,12 @@ Each new open allocates a cryptographically random identity and persists its
 binding before runtime creation. Two opens for the same project keep separate
 containers, endpoints, tokens and branches. Orphan resume retains the branch
 but allocates a fresh session ID. Always use the returned endpoint; never
-construct it from the project name. No edge reload is needed for this routing.
+construct it from the project name. New routing slugs are
+`s-{full session ID}-g{generation}`; project identity remains in metadata and
+container labels. Names fit one DNS label even for a 39-character project and
+the largest u64 generation. Generation exhaustion returns a recoverable
+`generation_exhausted` error before recycle flushes or destroys anything.
+No edge reload is needed for this routing.
 
 One lifecycle transition runs at a time per session. Mirror refresh, branch
 allocation, image builds, merge and push serialize per project across session,
@@ -380,7 +388,7 @@ Project repos are born from **vm-tmpl v2** and pinned to it:
 | 401 | expired/invalid access token, or bad session token on `/s/` | mint a fresh token; if a fresh one still 401s, the operator rotated your credentials — ask |
 | 403 | capability requires approval | `POST /sigiled/auth/elevate`, relay code to operator, retry after approval |
 | 404 | unknown project / session / job / app | typo, or job defs not on master yet |
-| 409 | merge lock busy, job already in flight, or name taken | seconds-scale: retry close once after a beat; never hammer |
+| 409 | recoverable lifecycle failure, job already in flight, or name taken | inspect the typed error and retained session; repair the cause before retrying; never hammer |
 | 422 | invalid name / broken manifest | fix the input; do not retry as-is |
 | 503 + `retry` | fresh repo still materializing | wait ~5 s, retry the start |
 | 502 | upstream down | report to the operator |

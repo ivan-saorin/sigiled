@@ -46,6 +46,7 @@ pub enum Failure {
     CleanupFailed,
     RuntimeNotOwned,
     RuntimeUnavailable,
+    GenerationExhausted,
 }
 fn legacy_owned() -> bool {
     true
@@ -336,16 +337,6 @@ pub async fn detail(
         None => err(StatusCode::NOT_FOUND, "unknown session"),
     }
 }
-async fn session_image(
-    rt: &crate::runtime::Runtime,
-    project: &str,
-    repo: &std::path::Path,
-) -> Result<crate::runtime::ImageChoice, String> {
-    let (rt, project, repo) = (rt.clone(), project.to_owned(), repo.to_owned());
-    tokio::task::spawn_blocking(move || rt.ensure_session_image(&project, &repo))
-        .await
-        .map_err(|_| "image task interrupted".into())
-}
 pub async fn open(
     actor: Actor,
     State(state): State<crate::AppState>,
@@ -373,7 +364,7 @@ pub async fn open(
     let session_lock = state.sessions.session_lock(&id);
     let _session = session_lock.lock().await;
     let lock = state.sessions.merge_lock(&project);
-    let _guard = lock.lock().await;
+    let _guard = lock.lock_owned().await;
     let rt = state.sessions.runtime.as_ref();
     let mut record = SessionRecord {
         session_id: id.clone(),
@@ -384,8 +375,8 @@ pub async fn open(
         actor: actor.clone(),
         token: rt.map(|_| mint_token()),
         binding: rt.map(|r| WorkspaceBinding {
-            container: crate::runtime::Runtime::session_container(&project, &id),
-            endpoint: r.session_endpoint(&project, &id),
+            container: crate::runtime::Runtime::session_container(&project, &id, 1),
+            endpoint: r.session_endpoint(&project, &id, 1),
             generation: 1,
         }),
         lifecycle: Lifecycle::Creating,
@@ -430,7 +421,7 @@ pub async fn open(
     }
     let mut image = None;
     if let Some(rt) = rt {
-        let choice = match session_image(rt, &project, &repo).await {
+        let (choice, _guard) = match rt.session_image_locked(&project, &repo, _guard).await {
             Ok(c) => c,
             Err(_) => return failure(&state, &id, Failure::BootFailed),
         };
@@ -627,6 +618,9 @@ pub async fn recycle(
     if state.sessions.runtime.is_some() && (!record.runtime_owned || record.token.is_none()) {
         return failure(&state, &id, Failure::RuntimeNotOwned);
     }
+    let Some(next_generation) = record.generation.checked_add(1) else {
+        return failure(&state, &id, Failure::GenerationExhausted);
+    };
     state.sessions.mark(&id, Lifecycle::Recycling, None);
     if state.try_persist().is_err() {
         return failure(&state, &id, Failure::PersistFailed);
@@ -645,7 +639,7 @@ pub async fn recycle(
         }
     }
     let lock = state.sessions.merge_lock(&record.project);
-    let _mirror = lock.lock().await;
+    let _mirror = lock.lock_owned().await;
     let repo = if let Some(rt) = &state.sessions.runtime {
         match rt.ensure_mirror(&record.project) {
             Ok(p) => p,
@@ -671,9 +665,12 @@ pub async fn recycle(
         Err(_) => return failure(&state, &id, Failure::FetchFailed),
     };
     let mut image = None;
-    record.generation += 1;
+    record.generation = next_generation;
     if let Some(rt) = &state.sessions.runtime {
-        let choice = match session_image(rt, &record.project, &repo).await {
+        let (choice, _mirror) = match rt
+            .session_image_locked(&record.project, &repo, _mirror)
+            .await
+        {
             Ok(c) => c,
             Err(_) => return failure(&state, &id, Failure::BootFailed),
         };
@@ -682,10 +679,13 @@ pub async fn recycle(
         }
         // The former container's branch is confirmed on origin. Persist the
         // next binding and token before allocation; never reuse legacy aliases.
-        let slug = format!("{id}-g{}", record.generation);
         record.binding = Some(WorkspaceBinding {
-            container: crate::runtime::Runtime::session_container(&record.project, &slug),
-            endpoint: rt.session_endpoint(&record.project, &slug),
+            container: crate::runtime::Runtime::session_container(
+                &record.project,
+                &id,
+                record.generation,
+            ),
+            endpoint: rt.session_endpoint(&record.project, &id, record.generation),
             generation: record.generation,
         });
         record.token = Some(mint_token());

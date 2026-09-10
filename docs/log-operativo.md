@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-10 — A1 review round 1: bounded runtime names and cancellation-safe builds
+
+- **Review findings:** valid 39-character projects could exceed DNS/hostname
+  limits; a cancelled session/job request could release its mirror lock while
+  the blocking image build continued. Both were reproduced with failing tests.
+- **Fixed:** routing names use the complete random ID plus explicit generation,
+  independent of project length; u64 generation exhaustion fails before recycle
+  touches its runtime. Image builders own the mirror guard while running and
+  return it for any post-build mirror work. The contract now describes actual
+  lifecycle and image-build waiting behavior consistently.
+- **Verification:** 18 focused handler tests and the runtime name-bound test
+  passed; full workspace tests passed 130, formatting passed, Clippy passed
+  with its two previously documented warnings. All runtime tests are hermetic.
+- **State:** implementation only, not deployed. Parent owns review and rollout.
+
 ## 2026-09-10 — A1 independent, recoverable sessions (implementation, not deployed)
 
 - **Where we were:** sessions had separate branches but shared `vm-{project}`;
