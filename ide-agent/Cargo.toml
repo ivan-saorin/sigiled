@@ -13,3 +13,7 @@ subtle = "2.6.1"
 tracing = "0.1.44"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+
+[features]
+# Test composition exposes the actual router, never a replacement process runner.
+test-support = []

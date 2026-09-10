@@ -1,3 +1,18 @@
+## 2026-09-10 — B3b fix round 1 (I1–I4 and real verification joins)
+
+From8aa2923, closed successful-summary bearer redaction, definitively rejected
+draft correction, and encoded helper body/marker preflight gaps. Shared helper
+limit and exact file projection now precede pending. Added positive exact-u64
+stage/fresh-token resume and real companion extractor/log/Git/receipt fixtures.
+Measured native failure as repeated100 ms full-/proc budget exhaustion; preserved
+failed157.17 s diagnostic and fixed candidate lookup with getpgid without changing
+budgets, two-pass visibility, thread inspection, reap or detached custody.
+Native initial apply/replay plus helper7/7, checkpoint5/5, process11/11, scoped
+ecosystem/jobs deadline/cancellation/quarantine and actual-browser checks pass.
+No uncontrolled cleanup, deployment, inference, credentials or memory changes.
+Detailed exact receipts and prior failures remain in controller report/evidence;
+leave this session committed/pushed/clean/open for scoped independent fix review.
+
 ## 2026-09-10 — B3b pre-review filesystem coverage and custody clarification
 
 Follow-up to a740015c: extracted the unchanged index rename/disarm operation into

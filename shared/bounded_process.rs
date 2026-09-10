@@ -206,10 +206,27 @@ pub(crate) fn output_until_observed<F: FnMut(u32) -> Result<bool, Error>>(
 /// reaped by their parent/init, not by a process-global subreaper in this daemon.
 #[cfg(target_os = "linux")]
 pub(crate) fn group_quiet(pgid: u32) -> Result<bool, Error> {
-    group_quiet_at(std::path::Path::new("/proc"), pgid, 65_536)
+    group_quiet_filtered(std::path::Path::new("/proc"), pgid, 65_536, |pid| {
+        // A single kernel identity observation avoids opening stat for every
+        // unrelated process. Still enumerate the complete bounded inventory;
+        // inspect stat and every thread for all matching group candidates.
+        let group = unsafe { libc::getpgid(pid as libc::pid_t) };
+        if group >= 0 {
+            Ok(group as u32 == pgid)
+        } else if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            Ok(false)
+        } else {
+            Err(Error::Io)
+        }
+    })
 }
 #[cfg(target_os = "linux")]
-fn group_quiet_at(root: &std::path::Path, pgid: u32, max_entries: usize) -> Result<bool, Error> {
+fn group_quiet_filtered<F: FnMut(u32) -> Result<bool, Error>>(
+    root: &std::path::Path,
+    pgid: u32,
+    max_entries: usize,
+    mut candidate: F,
+) -> Result<bool, Error> {
     use std::{
         fs,
         io::{ErrorKind, Read},
@@ -260,6 +277,9 @@ fn group_quiet_at(root: &std::path::Path, pgid: u32, max_entries: usize) -> Resu
         let Some(pid) = name.to_str().and_then(|name| name.parse::<u32>().ok()) else {
             continue;
         };
+        if !candidate(pid)? {
+            continue;
+        }
         let Some((actual_pid, state, group)) = stat(&entry.path().join("stat"))? else {
             continue;
         };

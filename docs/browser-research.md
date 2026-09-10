@@ -101,3 +101,58 @@ write_bundle and verify_files. The empty FIFO case rejects before content reads,
 without waiting for a writer. These tests avoid native Git and passed 2/2. They
 do not replace the retained failing full commit replay evidence or establish
 its native failure cause. No shared subprocess supervisor or budgets changed.
+
+
+## B3b fix round 1: accepted boundaries and measured native correction
+
+Research list now scrubs the final serialized projection, including summary and
+pagination strings, using the actual forwarded caller bearer. The browser form
+validates nonblank problem, UTF-8 byte limits and numeric bounds before freezing
+the submitted snapshot. A definite local invalid_research_options rejection
+clears that snapshot and chooses a fresh operation identity for a deliberate
+corrected submission. Ambiguous service/auth outcomes retain the original
+operation and payload; no automatic retry occurs.
+
+The controller and real companion extractor share MAX_REQUEST_BYTES=1_100_000
+for serialized UTF-8 JSON. The controller projects exact path/content file DTOs,
+serializes the entire helper request and checks the limit before any helper POST
+or durable pending marker. An escaped oversized request returns HTTP413
+handoff_bundle_too_large_reduce_content with no newly created marker. Prior
+genuinely uncertain markers remain quarantined. An integration fixture uses the
+actual companion router/extractor/process implementation plus a temporary Git
+repository and the observed vm-base /git/log top-level-array contract. It covers
+oversize-before-write, rejected log precondition, immutable pushed content,
+lost response with pending preserved, matching terminal recovery without repost,
+and a normal same-operation receipt. Test-only loopback endpoint injection uses
+ephemeral ports; no runtime command runner or authority check is substituted.
+
+The old native path was measured under ~5,700 visible processes. Its unchanged
+100 ms full-/proc scan repeatedly exhausted time with most of the 65,536 entry
+budget remaining. A fixture rev-parse spent 152,076 ms waiting for confirmed
+cleanup, then the next call correctly saw the expired 30 s operation deadline.
+The diagnostic ended exit101 at157.17 s without external termination; fixture
+files and logs are preserved. Earlier failures remain evidence, not rewritten.
+
+The minimal shared correction keeps full enumeration and both original budgets,
+using getpgid to skip unrelated candidates before opening their stat files. Only
+ESRCH is treated as a vanished entry; other syscall errors retain uncertainty.
+For owned candidates, stat PID/group validation and every-thread inspection are
+unchanged. The reserved leader must still be visible; two complete quiet passes,
+the observer and leader reap remain required before ownership releases.
+
+The syscall is a membership observation, not PID ownership/adoption. If PID/group
+changes between getpgid and stat, the existing stat identity/group checks apply;
+the next complete pass re-observes inventory. The unreaped leader reserves its
+PID/PGID throughout cleanup. A skipped unrelated/vanished entry does not waive
+leader visibility or prove global quiescence. This retains the previous scan's
+non-atomic process-change model; it does not promise to fence arbitrary outside
+writers. Linux semantics: https://man7.org/linux/man-pages/man2/getpgrp.2.html.
+
+With this correction the strengthened native apply/pushed-SHA/blob/replay/conflict
+test passed, followed by handoff7/7 and durable-checkpoint5/5. Process11/11,
+ecosystem cancellation1/1, deadline2/2, quarantine1/1, ecosystem observations3/3,
+jobs registry deadline1/1, research joins3/3 plus final helper-contract1/1 and the
+actual-assets browser checks passed. Positive SDE fixtures establish numeric
+9007199254740993 forwarding and fresh-token resume with completed artifacts.
+All-target workspace Clippy and format/diff checks pass. These are scoped fix
+checks, not a full workspace or live deployment claim; prior199/2 remains historical.

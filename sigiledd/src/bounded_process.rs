@@ -128,6 +128,13 @@ mod git_policy_tests {
 #[cfg(all(test, target_os = "linux"))]
 mod inspection_tests {
     use super::*;
+    fn group_quiet_at(
+        root: &std::path::Path,
+        pgid: u32,
+        max_entries: usize,
+    ) -> Result<bool, Error> {
+        group_quiet_filtered(root, pgid, max_entries, |_| Ok(true))
+    }
     fn fixture() -> std::path::PathBuf {
         crate::AppState::test_without_runtime()
             .sessions
@@ -194,6 +201,43 @@ mod inspection_tests {
         assert_eq!(group_quiet_at(&root, 31, 100), Err(Error::Io));
         write_stat(&root, "31/stat", 32, "Z", 31);
         assert_eq!(group_quiet_at(&root, 31, 100), Err(Error::Io));
+    }
+    #[test]
+    fn candidate_filter_counts_full_inventory_and_preserves_uncertainty() {
+        let root = fixture();
+        write_stat(&root, "31/stat", 31, "Z", 31);
+        write_stat(&root, "31/task/31/stat", 31, "Z", 31);
+        std::fs::create_dir(root.join("44")).unwrap();
+        std::fs::write(root.join("44/stat"), "unrelated stat is not opened").unwrap();
+        let mut observed = Vec::new();
+        assert_eq!(
+            group_quiet_filtered(&root, 31, 100, |pid| {
+                observed.push(pid);
+                Ok(pid == 31)
+            }),
+            Ok(true)
+        );
+        observed.sort();
+        assert_eq!(observed, vec![31, 44]);
+        assert_eq!(
+            group_quiet_filtered(&root, 31, 100, |_| Err(Error::Io)),
+            Err(Error::Io)
+        );
+        assert_eq!(
+            group_quiet_filtered(&root, 31, 100, |_| Ok(false)),
+            Err(Error::Io),
+            "reserved leader visibility is mandatory"
+        );
+        assert_eq!(
+            group_quiet_filtered(&root, 31, 1, |pid| Ok(pid == 31)),
+            Err(Error::Io),
+            "filtered entries still consume the scan budget"
+        );
+        write_stat(&root, "31/task/32/stat", 32, "R", 31);
+        assert_eq!(
+            group_quiet_filtered(&root, 31, 100, |pid| Ok(pid == 31)),
+            Ok(false)
+        );
     }
     #[test]
     fn proc_scan_budget_exhaustion_is_uncertainty_never_quiescence() {

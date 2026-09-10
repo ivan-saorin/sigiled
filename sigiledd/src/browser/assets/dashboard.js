@@ -1057,7 +1057,7 @@ checkSession().then(() => refresh()).catch(e => {
 
 // Research operation drafts survive auth recovery and rendered instances.
 function inspectText(title,value) {return el('details',{},el('summary',{},title),el('pre',{class:'research-text'},typeof value==='string'?value:JSON.stringify(value,null,2)));}
-function researchFailure(e) {return ({workspace_changes_checkpoint_and_retry:"The workspace has uncommitted changes. Save and checkpoint them, then retry this handoff.",handoff_quarantined_recheck_operation:"The handoff result is not confirmed. The workspace is protected; recheck this same handoff.",editor_ownership_unknown:"The editor could not be safely paused. Workspace recovery is required.",workspace_changed:"The workspace changed during handoff. Your edits are preserved.",research_service_update_or_storage_repair_required:'Research service update or storage repair required. Existing runs remain readable.',research_operation_storage_required:'Durable research operation storage must be configured.',service_authorization_required:'Sign in again, then deliberately retry. Completed stages are preserved.',service_state_conflict:'The run changed or is no longer eligible. Refresh before retrying.',research_revision_conflict:'The run changed. Refresh and review its current stage.',research_project_association_required:'This run has no verified project association in Sigil.',research_operation_store_repair_required:'Operation storage needs repair. Keep the existing operation; do not start a replacement.'})[e.message]||errorText(e);}
+function researchFailure(e) {return ({handoff_bundle_too_large_reduce_content:"The dossier is too large to transfer. Reduce its content, then preview and retry. No handoff was started.",workspace_changes_checkpoint_and_retry:"The workspace has uncommitted changes. Save and checkpoint them, then retry this handoff.",handoff_quarantined_recheck_operation:"The handoff result is not confirmed. The workspace is protected; recheck this same handoff.",editor_ownership_unknown:"The editor could not be safely paused. Workspace recovery is required.",workspace_changed:"The workspace changed during handoff. Your edits are preserved.",research_service_update_or_storage_repair_required:'Research service update or storage repair required. Existing runs remain readable.',research_operation_storage_required:'Durable research operation storage must be configured.',service_authorization_required:'Sign in again, then deliberately retry. Completed stages are preserved.',service_state_conflict:'The run changed or is no longer eligible. Refresh before retrying.',research_revision_conflict:'The run changed. Refresh and review its current stage.',research_project_association_required:'This run has no verified project association in Sigil.',research_operation_store_repair_required:'Operation storage needs repair. Keep the existing operation; do not start a replacement.'})[e.message]||errorText(e);}
 function researchShell(project) {
  const root=el('section',{id:'research-root'}),message=el('p',{role:'status'}),list=el('div',{class:'research-list'}),detail=el('div',{class:'research-detail'});
  root.append(message);
@@ -1089,12 +1089,25 @@ function researchForm(root,project) {
  form.onsubmit=async(e)=>{
   e.preventDefault();if(d.accepted){researchDetail(root,root.querySelector(".research-detail"),d.accepted);return;}if(d.pending)return;d.pending=true;root.pending=true;start.disabled=true;
   try {
-   if(!d.sent)d.sent={operation_id:d.id,problem:d.problem,context:d.context,options:{papers_per_category:Number(d.papers),aperture:Number(d.aperture)}};
+   if(!d.sent){
+    const snapshot={operation_id:d.id,problem:d.problem,context:d.context,options:{papers_per_category:Number(d.papers),aperture:Number(d.aperture)}};
+    const bytes=new TextEncoder();
+    if(!snapshot.problem.trim() || bytes.encode(snapshot.problem).length>32768 || bytes.encode(snapshot.context).length>32768 || !Number.isInteger(snapshot.options.papers_per_category) || snapshot.options.papers_per_category<1 || snapshot.options.papers_per_category>10 || !Number.isInteger(snapshot.options.aperture) || snapshot.options.aperture<1 || snapshot.options.aperture>3)throw new Error('invalid_research_options');
+    d.sent=snapshot;
+   }
    await checkSession();
    const result=await request(`/browser/api/projects/${encodeURIComponent(project)}/research`,{method:"POST",body:JSON.stringify(d.sent)});
    d.accepted=result.run_id;root.accepted=true;feedback.replaceChildren("Research accepted. "+(d.context!==d.sent.context||d.problem!==d.sent.problem?"Newer edits remain unsent. Choose New research to use them. ":""),button("New research",()=>{researchDrafts.set(project,{...d,id:crypto.randomUUID(),sent:null,accepted:null,pending:false});const next=researchShell(project);root.replaceWith(next);}));
    start.textContent='View run';root.load();
-  }catch(e){feedback.textContent=researchFailure(e)+' The start result may be unknown. Retry start reuses the original submitted problem and options; newer edits stay unsent.';start.textContent='Retry start';}
+  }catch(e){
+   if(e.message==='invalid_research_options'){
+    // This code is emitted only before the server reserves an operation. A
+    // deliberate corrected submission receives a new identity; ambiguous
+    // service/auth failures retain the original frozen key and payload.
+    d.sent=null;d.id=crypto.randomUUID();
+    feedback.textContent='Research was not started. Enter a nonblank problem, keep each text field within 32,768 UTF-8 bytes, and check the options. Edit the draft, then choose Start research.';start.textContent='Start research';
+   }else{feedback.textContent=researchFailure(e)+' The start result may be unknown. Retry start reuses the original submitted problem and options; newer edits stay unsent.';start.textContent='Retry start';}
+  }
   finally{d.pending=false;root.pending=false;start.disabled=!d.accepted && !root.ready;}
  };
  root.append(form);

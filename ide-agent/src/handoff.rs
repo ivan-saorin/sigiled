@@ -1,6 +1,9 @@
 //! A fixed two-Markdown-file handoff. Uses a private index and immutable commit.
 //! Arbitrary external writers cannot contribute content to this commit.
 use crate::durable::{self, Repository};
+#[path = "../../shared/handoff_contract.rs"]
+mod contract;
+pub use contract::MAX_REQUEST_BYTES;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
@@ -546,6 +549,20 @@ mod tests {
         let first = apply(&repo, r.clone()).unwrap();
         assert!(first.pushed);
         assert!(!first.dirty);
+        assert_eq!(
+            git(
+                Path::new(&repo.remote),
+                &["rev-parse", "refs/heads/session/test"]
+            ),
+            first.sha
+        );
+        assert_eq!(
+            git(
+                Path::new(&repo.remote),
+                &["show", &format!("{}:{}", first.sha, r.files[0].path)]
+            ),
+            "# Dossier"
+        );
         let second = apply(&repo, r.clone()).unwrap();
         assert_eq!(first.sha, second.sha);
         assert_eq!(

@@ -1,4 +1,15 @@
 use super::*;
+#[path = "../../../../shared/handoff_contract.rs"]
+mod contract;
+fn request_size(body: &Value) -> Result<(), Error> {
+    if serde_json::to_vec(body).map_err(|_| unavailable())?.len() > contract::MAX_REQUEST_BYTES {
+        return Err(Error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "handoff_bundle_too_large_reduce_content",
+        ));
+    }
+    Ok(())
+}
 use crate::sessions::{Lifecycle, SessionRecord};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,6 +50,12 @@ fn bundle(v: Value, id: &str) -> Result<Value, Error> {
             return Err(Error(StatusCode::BAD_GATEWAY, "invalid_handoff_bundle"));
         }
     }
+    // Forward only the companion's exact File contract; upstream metadata must
+    // not trigger a deny_unknown_fields extractor rejection after pending.
+    let files: Vec<_> = files
+        .iter()
+        .map(|f| json!({"path":f["path"],"content":f["content"]}))
+        .collect();
     Ok(json!({"run_id":id,"slug":slug,"files":files}))
 }
 pub(super) fn preview(v: Value, id: &str) -> Result<Value, Error> {
@@ -75,6 +92,27 @@ fn persist(state: &AppState, r: &SessionRecord) -> Result<(), Error> {
         )
     })
 }
+// Tests bind ephemeral loopback listeners because the workspace already owns
+// ports 8000/8090. Only the transport destination changes; all HTTP/extractor,
+// authorization, marker and native subprocess paths remain real.
+#[cfg(test)]
+pub(super) static FIXTURE_ENDPOINTS: std::sync::LazyLock<Mutex<HashMap<String, (String, String)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+fn endpoint(r: &SessionRecord, helper: bool) -> String {
+    #[cfg(test)]
+    if let Some((helper_url, log_url)) = FIXTURE_ENDPOINTS.lock().unwrap().get(&r.session_id) {
+        return if helper {
+            helper_url.clone()
+        } else {
+            log_url.clone()
+        };
+    }
+    format!(
+        "http://{}:{}",
+        r.container(),
+        if helper { 8090 } else { 8000 }
+    )
+}
 async fn request(
     r: &SessionRecord,
     path: &str,
@@ -92,7 +130,7 @@ async fn request(
         .timeout(Duration::from_secs(45))
         .build()
         .map_err(|_| unavailable())?;
-    let url = format!("http://{}:8090/{path}", r.container());
+    let url = format!("{}/{path}", endpoint(r, true));
     let req = if let Some(body) = body {
         client.post(url).json(body)
     } else {
@@ -124,7 +162,7 @@ async fn log(r: &SessionRecord) -> Result<(), Error> {
         .build()
         .map_err(|_| unavailable())?;
     let mut response = client
-        .get(format!("http://{}:8000/git/log?limit=15", r.container()))
+        .get(format!("{}/git/log?limit=15", endpoint(r, false)))
         .bearer_auth(token)
         .send()
         .await
@@ -239,6 +277,7 @@ async fn owned(
         }
         json!({"operation_id":operation_id,"generation":a.generation,"run_id":id,"slug":b["slug"],"files":b["files"]})
     };
+    request_size(&request_body)?;
     let (_, observation) = request(&r, &format!("handoff-status/{operation_id}"), None).await?;
     if observation["contract"] != "sigil-handoff-v1" || observation["generation"] != a.generation {
         return Err(Error(

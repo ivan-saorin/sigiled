@@ -537,7 +537,9 @@ fn router(a: Arc<Agent>) -> Router {
         .route("/finish", post(finish))
         .route(
             "/handoff",
-            post(handoff).layer(axum::extract::DefaultBodyLimit::max(1100000)),
+            post(handoff).layer(axum::extract::DefaultBodyLimit::max(
+                sigil_ide_agent::handoff::MAX_REQUEST_BYTES,
+            )),
         )
         .route("/handoff-status/{id}", get(handoff_status))
         .route("/activity", post(activity))
@@ -1210,4 +1212,32 @@ mod handoff_owner_tests {
         assert!(dir.join(".editor-running").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+// Only enabled by the controller's dev dependency. All handlers, auth/extractors,
+// detached ownership and native process calls are the production implementation.
+#[cfg(feature = "test-support")]
+pub fn handoff_fixture_router(root: PathBuf, remote: String, generation: u64) -> Router {
+    // Keep profile state outside the repository so clean-workspace checks remain real.
+    let profile = root.parent().unwrap().join("profile");
+    router(Arc::new(Agent {
+        config: Config {
+            token: "fixture-helper-control-token-00000".into(),
+            activity_token: "fixture-helper-activity-token-0000".into(),
+            generation,
+            session: "fixture".into(),
+            branch: "session/test".into(),
+            remote,
+            profile: profile.to_string_lossy().into(),
+        },
+        profile_root: profile.clone(),
+        repository_root: root,
+        editor_address: "127.0.0.73:8091".into(),
+        checkpoint_busy: Default::default(),
+        handoff_observation: Default::default(),
+        process: Default::default(),
+        activity: Default::default(),
+        sync: Default::default(),
+        last: std::sync::Mutex::new(json!({"state":"saved_to_disk"})),
+    }))
 }

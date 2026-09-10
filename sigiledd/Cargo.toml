@@ -52,4 +52,4 @@ version = "0.1"
 version = "0.3"
 
 [dev-dependencies]
-sigil-ide-agent = { path = "../ide-agent" }
+sigil-ide-agent = { path = "../ide-agent", features = ["test-support"] }

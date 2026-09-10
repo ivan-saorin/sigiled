@@ -304,6 +304,7 @@ pub(super) async fn list(
         Err(e) if e.0 == StatusCode::UNAUTHORIZED => return Err(e),
         Err(_) => {}
     }
+    scrub(&mut result, &c.access_token);
     Ok(Json(result))
 }
 #[derive(Deserialize, Serialize)]
@@ -570,3 +571,6 @@ pub(super) async fn models(
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fix1_tests;
