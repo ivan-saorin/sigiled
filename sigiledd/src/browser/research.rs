@@ -153,7 +153,7 @@ impl Services {
         url.set_path(&format!("{}/{}", url.path().trim_end_matches('/'), path));
         url.query_pairs_mut()
             .extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));
-        let mut req = self.client.request(method, url).bearer_auth(token);
+        let mut req = self.client.request(method.clone(), url).bearer_auth(token);
         if let Some(body) = body {
             req = req.json(body);
         }
@@ -166,13 +166,22 @@ impl Services {
                 _ => unavailable(),
             });
         }
-        const MAX: usize = 2 * 1024 * 1024;
-        if response.content_length().is_some_and(|n| n > MAX as u64) {
+        // SDE stores at most 16 MiB of pretty-serialized RunRecord plus private metadata.
+        // A bare compact detail is no larger. Other engines and handoff retain their own cap.
+        let max = if matches!(e, Engine::Sde)
+            && method == Method::GET
+            && path.strip_prefix("runs/").is_some_and(identifier)
+        {
+            16 * 1024 * 1024
+        } else {
+            2 * 1024 * 1024
+        };
+        if response.content_length().is_some_and(|n| n > max as u64) {
             return Err(unavailable());
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
-            if bytes.len() + chunk.len() > MAX {
+            if bytes.len() + chunk.len() > max {
                 return Err(unavailable());
             }
             bytes.extend_from_slice(&chunk);
@@ -225,13 +234,14 @@ fn association(s: &Services, actor: &str, id: &str) -> Value {
         Err(_) => json!({"state":"unavailable"}),
     }
 }
+const SDE_PAGE_LIMIT: usize = 5;
 pub(super) async fn list(
     c: BrowserContext,
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, Error> {
     let s = state.browser.inner()?.research.clone();
-    let mut query = vec![("limit", "50".into())];
+    let mut query = vec![("limit", SDE_PAGE_LIMIT.to_string())];
     if let Some(cursor) = q.cursor {
         if cursor.len() > 2048 {
             return Err(Error(StatusCode::BAD_REQUEST, "invalid_cursor"));

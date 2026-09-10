@@ -82,7 +82,7 @@ async fn status(State(a): State<Arc<Agent>>) -> Json<serde_json::Value> {
     };
     let activity = a.activity.lock().unwrap();
     Json(
-        json!({"generation":a.config.generation,"session":a.config.session,"state":state,"idle_secs":activity.idle_secs(),"busy":activity.busy() || a.checkpoint_busy.load(std::sync::atomic::Ordering::SeqCst),"durability":*a.last.lock().unwrap()}),
+        json!({"generation":a.config.generation,"session":a.config.session,"state":state,"idle_secs":activity.idle_secs(),"activity_contract":"terminal-observation-v2","activity_observation":activity.observation(),"busy":activity.busy() || a.checkpoint_busy.load(std::sync::atomic::Ordering::SeqCst),"durability":*a.last.lock().unwrap()}),
     )
 }
 async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
@@ -156,12 +156,16 @@ async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
     if !settings.exists() {
         let _ = std::fs::write(
             &settings,
-            r#"{"remote.autoForwardPorts":false,"security.workspace.trust.enabled":true}"#,
+            if std::path::Path::new("/bin/bash").is_file() {
+                r#"{"remote.autoForwardPorts":false,"security.workspace.trust.enabled":true,"terminal.integrated.defaultProfile.linux":"bash","terminal.integrated.profiles.linux":{"bash":{"path":"/bin/bash"}}}"#
+            } else {
+                r#"{"remote.autoForwardPorts":false,"security.workspace.trust.enabled":true}"#
+            },
         );
     }
     // Extension state is session-specific. The bundled activity extension is not
     // downloaded from a marketplace and receives only the activity credential.
-    let extension = extensions.join("sigil.activity-0.1.0");
+    let extension = extensions.join("sigil.activity-0.2.0");
     let _ = std::fs::create_dir_all(&extension);
     for name in ["package.json", "extension.js"] {
         if std::fs::copy(
@@ -207,6 +211,7 @@ async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
         )
             .into_response();
     }
+    a.activity.lock().unwrap().require_observation();
     let mut child = match Process::start(&mut command) {
         Ok(p) => p,
         Err(e) => {
@@ -241,14 +246,14 @@ async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
     (StatusCode::CONFLICT,Json(json!({"state":"failed","error":if stopped{"editor_start_failed"}else{"editor_stop_unconfirmed"}}))).into_response()
 }
 async fn stop_inner(State(a): State<Arc<Agent>>) -> Response {
+    let mut p = a.process.lock().await;
     if a.activity.lock().unwrap().busy() {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error":"user_command_running"})),
+            Json(json!({"error":if matches!(a.activity.lock().unwrap().observation(),"ready"|"not_required"){"user_command_running"}else{"terminal_observation_unavailable"}})),
         )
             .into_response();
     }
-    let mut p = a.process.lock().await;
     match stop_locked(&a, &mut p).await {
         Ok(()) => Json(json!({"state":"stopped"})).into_response(),
         Err(e) => (StatusCode::CONFLICT, Json(json!({"error":e}))).into_response(),
@@ -278,6 +283,7 @@ async fn stop_locked(a: &Agent, p: &mut Option<Process>) -> Result<(), &'static 
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
         _ => return Err("editor_ownership_unknown"),
     }
+    a.activity.lock().unwrap().stopped();
     sigil_ide_agent::profile::save_pending(&a.profile_root, live)
         .map_err(|_| "preferences_save_failed")
 }
@@ -297,7 +303,7 @@ async fn finish_action(State(a): State<Arc<Agent>>) -> Response {
     if a.activity.lock().unwrap().busy() {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error":"user_command_running"})),
+            Json(json!({"error":if matches!(a.activity.lock().unwrap().observation(),"ready"|"not_required"){"user_command_running"}else{"terminal_observation_unavailable"}})),
         )
             .into_response();
     }
@@ -381,7 +387,7 @@ async fn checkpoint_action(State(a): State<Arc<Agent>>) -> Response {
     if a.activity.lock().unwrap().busy() {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error":"user_command_running"})),
+            Json(json!({"error":if matches!(a.activity.lock().unwrap().observation(),"ready"|"not_required"){"user_command_running"}else{"terminal_observation_unavailable"}})),
         )
             .into_response();
     }
@@ -399,16 +405,19 @@ struct ActivityRequest {
     generation: String,
     event: String,
     execution_id: Option<String>,
+    observation: Option<sigil_ide_agent::activity::Observation>,
 }
 async fn activity(State(a): State<Arc<Agent>>, Json(r): Json<ActivityRequest>) -> StatusCode {
     if r.generation != a.config.generation.to_string() {
         return StatusCode::CONFLICT;
     }
-    if a.activity
-        .lock()
-        .unwrap()
-        .report_execution(&r.event, r.execution_id.as_deref())
-    {
+    let mut activity = a.activity.lock().unwrap();
+    let accepted = if r.event == "observation" {
+        r.observation.is_some_and(|o| activity.observe(o))
+    } else {
+        activity.report_execution(&r.event, r.execution_id.as_deref())
+    };
+    if accepted {
         StatusCode::NO_CONTENT
     } else {
         StatusCode::BAD_REQUEST
@@ -1218,6 +1227,15 @@ mod handoff_owner_tests {
 // detached ownership and native process calls are the production implementation.
 #[cfg(feature = "test-support")]
 pub fn handoff_fixture_router(root: PathBuf, remote: String, generation: u64) -> Router {
+    handoff_fixture_router_for_branch(root, remote, generation, "session/test".into())
+}
+#[cfg(feature = "test-support")]
+pub fn handoff_fixture_router_for_branch(
+    root: PathBuf,
+    remote: String,
+    generation: u64,
+    branch: String,
+) -> Router {
     // Keep profile state outside the repository so clean-workspace checks remain real.
     let profile = root.parent().unwrap().join("profile");
     router(Arc::new(Agent {
@@ -1226,7 +1244,7 @@ pub fn handoff_fixture_router(root: PathBuf, remote: String, generation: u64) ->
             activity_token: "fixture-helper-activity-token-0000".into(),
             generation,
             session: "fixture".into(),
-            branch: "session/test".into(),
+            branch,
             remote,
             profile: profile.to_string_lossy().into(),
         },
@@ -1240,4 +1258,65 @@ pub fn handoff_fixture_router(root: PathBuf, remote: String, generation: u64) ->
         sync: Default::default(),
         last: std::sync::Mutex::new(json!({"state":"saved_to_disk"})),
     }))
+}
+
+/// Same real handlers with an explicitly owned pinned-provider process and
+/// temporary repository. This constructor is absent from production builds.
+#[cfg(feature = "test-support")]
+pub fn provider_fixture_router(
+    root: PathBuf,
+    remote: String,
+    generation: u64,
+    session: String,
+    branch: String,
+    process: Process,
+    profile: PathBuf,
+) -> (Router, ProviderFixture) {
+    let mut activity = Activity::default();
+    activity.require_observation();
+    let agent = Arc::new(Agent {
+        config: Config {
+            token: "fixture-helper-control-token-00000".into(),
+            activity_token: "fixture-helper-activity-token-0000".into(),
+            generation,
+            session,
+            branch,
+            remote,
+            profile: profile.to_string_lossy().into(),
+        },
+        profile_root: profile.join("snapshots"),
+        repository_root: root,
+        editor_address: "127.0.0.1:8091".into(),
+        checkpoint_busy: Default::default(),
+        handoff_observation: Default::default(),
+        process: tokio::sync::Mutex::new(Some(process)),
+        activity: std::sync::Mutex::new(activity),
+        sync: Default::default(),
+        last: std::sync::Mutex::new(json!({"state":"saved_to_disk"})),
+    });
+    (router(agent.clone()), ProviderFixture(agent))
+}
+
+#[cfg(feature = "test-support")]
+pub struct ProviderFixture(Arc<Agent>);
+#[cfg(feature = "test-support")]
+impl ProviderFixture {
+    pub async fn shutdown(&self) {
+        let mut process = self.0.process.lock().await;
+        if let Some(p) = process.as_mut() {
+            p.stop().expect("owned fixture provider cleanup");
+        }
+        *process = None;
+    }
+}
+#[cfg(feature = "test-support")]
+impl Drop for ProviderFixture {
+    fn drop(&mut self) {
+        if let Ok(mut process) = self.0.process.try_lock() {
+            if let Some(p) = process.as_mut() {
+                p.stop().expect("owned fixture provider fallback cleanup");
+            }
+            *process = None;
+        }
+    }
 }

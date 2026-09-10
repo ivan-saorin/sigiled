@@ -61,14 +61,16 @@ impl Store {
         }
         Store {
             path,
-            ..Default::default()
+            #[cfg(test)]
+            fail_after: None,
         }
     }
 
     pub fn at_dir(dir: &std::path::Path) -> Self {
         Store {
             path: Some(dir.join("state.json")),
-            ..Default::default()
+            #[cfg(test)]
+            fail_after: None,
         }
     }
 

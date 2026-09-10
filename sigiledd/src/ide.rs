@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 pub const PROVIDER: &str = "4.136.2";
-pub const HELPER: &str = "1";
+pub const HELPER: &str = "2";
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Binding {
     pub provider: String,
@@ -110,6 +110,13 @@ pub(crate) async fn request(
     if b.generation != record.generation {
         return Err("generation_changed");
     }
+    if matches!(path, "stop" | "finish") {
+        let status = Box::pin(request(state, record, "status")).await?;
+        observation_authority(&status)?;
+        if status["busy"].as_bool() != Some(false) {
+            return Err("user_command_running");
+        }
+    }
     #[cfg(test)]
     if let Some(fake) = state
         .sessions
@@ -131,7 +138,17 @@ pub(crate) async fn request(
         }))
         .build()
         .map_err(|_| "provider_unavailable")?;
-    let url = format!("http://{}:8090/{path}", record.container());
+    #[cfg(test)]
+    let fixture = FIXTURE_ENDPOINTS
+        .lock()
+        .unwrap()
+        .get(&record.session_id)
+        .cloned();
+    #[cfg(not(test))]
+    let fixture: Option<String> = None;
+    let url = fixture
+        .map(|base| format!("{base}/{path}"))
+        .unwrap_or_else(|| format!("http://{}:8090/{path}", record.container()));
     let req = if path == "status" {
         client.get(url)
     } else {
@@ -519,6 +536,7 @@ pub async fn idle_record(
     if status["generation"].as_u64() != Some(record.generation) {
         return Err("generation_changed");
     }
+    observation_authority(&status)?;
     if status["busy"].as_bool() == Some(true) {
         return Ok(0);
     }
@@ -683,6 +701,7 @@ fn safe_error(error: &str) -> &'static str {
         "git_busy" => "git_busy",
         "push_or_commit_failed" => "push_or_commit_failed",
         "user_command_running" => "user_command_running",
+        "terminal_observation_unavailable" => "terminal_observation_unavailable",
         "editor_ownership_unknown" => "editor_ownership_unknown",
         "editor_stop_unconfirmed" => "editor_stop_unconfirmed",
         "editor_start_failed" => "editor_start_failed",
@@ -731,7 +750,7 @@ fn safe_response(
         let d = &value["durability"];
         let durability = json!({"state":d["state"].as_str().filter(|s|matches!(*s,"saved_to_disk"|"dirty"|"pushed"|"paused")).unwrap_or("unknown"),"dirty":d["dirty"].as_bool(),"committed":sha(&d["committed"]),"pushed":sha(&d["pushed"]),"checkpointed":d["checkpointed"].as_bool(),"merged":false,"error":d["error"].as_str().map(safe_error)});
         Ok(
-            json!({"state":state,"generation":generation,"idle_secs":value["idle_secs"].as_u64().ok_or("provider_response_invalid")?,"busy":value["busy"].as_bool().ok_or("provider_response_invalid")?,"durability":durability}),
+            json!({"state":state,"generation":generation,"idle_secs":value["idle_secs"].as_u64().ok_or("provider_response_invalid")?,"busy":value["busy"].as_bool().ok_or("provider_response_invalid")?,"activity_contract":value["activity_contract"].as_str().filter(|s|*s=="terminal-observation-v2"),"activity_observation":value["activity_observation"].as_str().filter(|s|matches!(*s,"ready"|"not_required"|"missing"|"stale"|"unsupported")),"durability":durability}),
         )
     } else {
         Ok(json!({"state":state,"generation":generation,"sha":sha(&value["sha"])}))
@@ -795,5 +814,23 @@ mod safety_tests {
             crate::merge::git(&remote, &["rev-parse", "master"]).unwrap(),
             head
         );
+    }
+}
+
+#[cfg(test)]
+pub(crate) static FIXTURE_ENDPOINTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn observation_authority(status: &serde_json::Value) -> Result<(), &'static str> {
+    if status["activity_contract"] != "terminal-observation-v2"
+        || !matches!(
+            status["activity_observation"].as_str(),
+            Some("ready" | "not_required")
+        )
+    {
+        Err("terminal_observation_unavailable")
+    } else {
+        Ok(())
     }
 }

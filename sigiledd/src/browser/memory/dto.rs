@@ -195,6 +195,9 @@ pub(super) struct Index {
 #[derive(Deserialize)]
 pub(super) struct Search {
     pub hits: Vec<SearchHit>,
+    #[serde(default)]
+    pub response_limited: bool,
+    pub candidate_count: Option<usize>,
 }
 #[derive(Deserialize)]
 pub(super) struct SearchHit {

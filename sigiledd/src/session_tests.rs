@@ -160,7 +160,7 @@ async fn body(resp: Response) -> (StatusCode, Value) {
 fn setup() -> (AppState, Arc<FakeRuntime>) {
     setup_project("proj")
 }
-fn setup_project(project: &str) -> (AppState, Arc<FakeRuntime>) {
+pub(crate) fn setup_project(project: &str) -> (AppState, Arc<FakeRuntime>) {
     let root = crate::merge::tests::tmp_repo("foundation");
     std::fs::create_dir_all(&root).unwrap();
     let seed = crate::merge::tests::mk_repo("foundation-seed");
@@ -1007,7 +1007,7 @@ async fn ide_used_lifecycle_preserves_save_during_push_for_close_recycle_and_rea
             };
             match path {
                 "status" => Ok(
-                    json!({"state":"ready","generation":rec.generation,"idle_secs":10000,"busy":false}),
+                    json!({"state":"ready","generation":rec.generation,"idle_secs":10000,"busy":false,"activity_contract":"terminal-observation-v2","activity_observation":"ready"}),
                 ),
                 "stop" => Ok(json!({"state":"stopped"})),
                 "checkpoint" | "finish" => {
@@ -1068,5 +1068,53 @@ async fn ide_used_lifecycle_preserves_save_during_push_for_close_recycle_and_rea
                 .unwrap(),
             "during-push"
         );
+    }
+}
+
+#[tokio::test]
+async fn ide_missing_observation_never_authorizes_finish_or_idle() {
+    let (state, fake) = setup();
+    let opened = open(&state).await;
+    let id = opened["session_id"].as_str().unwrap();
+    let mut record = state.sessions.record(id).unwrap();
+    record.binding.as_mut().unwrap().ide = Some(crate::ide::Binding {
+        provider: crate::ide::PROVIDER.into(),
+        helper: "old".into(),
+        base_digest: String::new(),
+        image: String::new(),
+        generation: record.generation,
+        profile_volume: String::new(),
+        started: true,
+        state: "ready".into(),
+        error: None,
+        token: "fixture".into(),
+        activity_token: "fixture-activity".into(),
+    });
+    state.sessions.put(record.clone());
+    for observation in [
+        None,
+        Some("missing"),
+        Some("stale"),
+        Some("unsupported"),
+        Some("wrong-contract"),
+    ] {
+        *fake.ide_hook.lock().unwrap() = Some(Arc::new(move |path, rec| {
+            assert_eq!(
+                path, "status",
+                "uncertain observations must not reach a destructive command"
+            );
+            Ok(
+                json!({"generation":rec.generation,"state":"ready","busy":false,"idle_secs":10000,"activity_contract":observation.map(|v|if v=="wrong-contract"{"old-observer"}else{"terminal-observation-v2"}),"activity_observation":observation}),
+            )
+        }));
+        assert_eq!(
+            crate::ide::idle_record(&state, &record, 10000)
+                .await
+                .unwrap_err(),
+            "terminal_observation_unavailable"
+        );
+        assert!(!crate::ide::flush_record(&state, &record, "fixture").await);
+        assert!(state.sessions.record(id).is_some());
+        assert!(fake.live.lock().unwrap().contains_key(&record.container()));
     }
 }

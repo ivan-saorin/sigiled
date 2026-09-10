@@ -9,6 +9,12 @@ exports.activate = context => {
   let interaction = 0;
   const instance = randomUUID();
   const executions = new WeakMap();
+  const terminals = new WeakMap();
+  const active = new Map();
+  // Existing terminals may already be executing before this host subscribed.
+  const unobserved = new Set(vscode.window.terminals || []);
+  let terminalSequence = 0, observationSequence = 0;
+  const terminalId = terminal => {if(!terminals.has(terminal))terminals.set(terminal,instance+':terminal:'+(++terminalSequence));return terminals.get(terminal);};
   let sequence = 0;
   const executionId = execution => {
     if (!execution || typeof execution !== 'object') return undefined;
@@ -38,5 +44,23 @@ exports.activate = context => {
       if (e.reason === vscode.TextDocumentSaveReason.Manual) report('save');
     })
   );
-  if(vscode.window.onDidStartTerminalShellExecution)context.subscriptions.push(vscode.window.onDidStartTerminalShellExecution(e=>report('command_start', executionId(e.execution))),vscode.window.onDidEndTerminalShellExecution(e=>report('command_end', executionId(e.execution))));
+
+  const observe = event => {
+    const supported = vscode.window.onDidStartTerminalShellExecution && vscode.window.onDidEndTerminalShellExecution && vscode.window.onDidChangeTerminalShellIntegration;
+    const current = vscode.window.terminals || [];
+    const observation = {observer:instance,sequence:String(++observationSequence),terminals: supported ? current.map(t=>({id:terminalId(t),integrated:!!t.shellIntegration&&!unobserved.has(t)})) : [{id:'api-unavailable',integrated:false}],executions:[...active.values()].map(v=>v.id),event};
+    const body=JSON.stringify({event:'observation',generation,observation});
+    const req=http.request({hostname:'127.0.0.1',port:8090,path:'/activity',method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)},timeout:2000},res=>res.resume());
+    req.on('error',()=>{});req.on('timeout',()=>req.destroy());req.end(body);
+  };
+  if(vscode.window.onDidStartTerminalShellExecution)context.subscriptions.push(
+    vscode.window.onDidStartTerminalShellExecution(e=>{if(!(vscode.window.terminals||[]).includes(e.terminal)||active.has(e.execution)){observe();return;}unobserved.delete(e.terminal);active.set(e.execution,{id:executionId(e.execution),terminal:e.terminal});observe('command_start');}),
+    vscode.window.onDidEndTerminalShellExecution(e=>{const ended=active.delete(e.execution);const resolved=unobserved.delete(e.terminal);observe(ended||resolved?'command_end':undefined);})
+  );
+  if(vscode.window.onDidOpenTerminal)context.subscriptions.push(vscode.window.onDidOpenTerminal(()=>observe()));
+  if(vscode.window.onDidCloseTerminal)context.subscriptions.push(vscode.window.onDidCloseTerminal(t=>{unobserved.delete(t);for(const [key,v] of active)if(v.terminal===t)active.delete(key);observe();}));
+  if(vscode.window.onDidChangeTerminalShellIntegration)context.subscriptions.push(vscode.window.onDidChangeTerminalShellIntegration(()=>observe()));
+  observe();
+  const timer=setInterval(()=>observe(),2000);
+  context.subscriptions.push({dispose(){clearInterval(timer);}});
 };

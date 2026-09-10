@@ -8,7 +8,7 @@ All APIs below use BrowserContext: verified stable human actor, current server-h
 
 | Route | Contract |
 |---|---|
-| GET /browser/api/research?project=&cursor= | SDE summaries, observed_at, state, readiness, next_cursor. Server requests pages of 50. Project filtering uses Sigil's durable actor/run association, not caller-supplied upstream project references. An empty filtered page may have a next page. |
+| GET /browser/api/research?project=&cursor= | SDE summaries, observed_at, state, readiness, next_cursor. Server requests pages of five. Project filtering uses Sigil's durable actor/run association, not caller-supplied upstream project references. An empty filtered page may have a next page. |
 | GET /browser/api/research/{id} | Typed run/stages, full-u64 decimal-string revision, artifact/caller-payload/corpus/dossier/decision/catalog provenance, association and handoff availability. Legacy/global or other-actor records remain unassociated. |
 | POST /browser/api/projects/{project}/research | {operation_id,problem,context?,options?}. Explicit Start only. Server reserves a private random UUIDv4 with canonical request before contacting SDE. |
 | GET /browser/api/projects/{project}/research/operations | Actor/project-scoped durable acceptance and handoff recovery records. Contains public operation IDs and receipts, never the private SDE key. |
@@ -23,7 +23,7 @@ Global Research is /ui/research; project Research is /ui/projects/{project}/rese
 
 ## Downstream contract and limits
 
-Reserved sde/adhd/genie bases come from the validated reserved catalog seed; dynamic project declarations cannot override them. HTTPS required in production, no URL credentials/query/fragment, redirects disabled, 2-second connect and 6-second whole-request deadline, response maximum 2 MiB. IDs permit bounded ASCII letters/digits/_/-, so they cannot supply paths, query strings, traversal or redirects. Fixed supported operations are enumerated in the adapter. Responses omit raw upstream errors and private key/token fields; current caller tokens are redacted even from a malformed successful service response.
+Reserved sde/adhd/genie bases come from the validated reserved catalog seed; dynamic project declarations cannot override them. HTTPS required in production, no URL credentials/query/fragment, redirects disabled, 2-second connect and 6-second whole-request deadline, response maximum 2 MiB except the exact bare SDE run-detail GET (16 MiB; see Stage E compatibility below). IDs permit bounded ASCII letters/digits/_/-, so they cannot supply paths, query strings, traversal or redirects. Fixed supported operations are enumerated in the adapter. Responses omit raw upstream errors and private key/token fields; current caller tokens are redacted even from a malformed successful service response.
 
 The live health probe requires all accepted sde-runs-v1 capabilities: uuid_v4 operation keys, pagination, durable transitions, expected revision, pinned catalog attempts, and association=unverified, plus persistence.mode=durable, degraded=false, recovery=none. Probe happens on every deliberate research start/recover/resume/stage mutation. Unknown/older or memory-only/degraded services remain readable but mutations return update/storage-repair guidance. Reads cannot open workspaces or invoke inference. New browser research explicitly sends delegate=[] and shape_hint=true; there is no unsupported attached-caller mode. Problem/context are bounded at32768 UTF-8 bytes; options are conservative subsets: papers/category1..10, years0..50, breadth results1..20, aperture1..3. Defaults match SDE for all exposed options. The UI explains that stages run automatically and that starting can use paid providers.
 
@@ -156,3 +156,10 @@ actual-assets browser checks passed. Positive SDE fixtures establish numeric
 9007199254740993 forwarding and fresh-token resume with completed artifacts.
 All-target workspace Clippy and format/diff checks pass. These are scoped fix
 checks, not a full workspace or live deployment claim; prior199/2 remains historical.
+
+
+## Stage E response-size compatibility
+
+SDE list requests use five summaries per native cursor page. A supported 32,768-byte problem can expand sixfold in JSON, so the previous fifty-summary request could exceed the fixed 2 MiB transport guard. Native cursors and complete summaries are preserved; no extra executor is called for pagination. The exact bare GET `runs/{id}` response alone permits 16 MiB, matching the durable SDE pretty-serialized record bound (which also includes private metadata). Declared and streamed limits remain enforced. Health, handoff, mutations, ADHD and Genie keep the existing 2 MiB bound; this does not promise that every large machine-created dossier fits the separate native handoff contract. Existing running-binary readiness, original JWT forwarding and redaction are unchanged.
+
+The controlled regression uses actual SDE POST/executor/fake-engine/stage/dossier/GET output. The list diagnostic's twelve summaries exceed the old cap; the actual one-row response includes a native cursor. Subsequent small pages in the consumer cursor test are fixture partitions of those actual summaries, not a claimed native SDE cursor walk. Accepted SDE pagination tests remain the producer's completeness evidence.

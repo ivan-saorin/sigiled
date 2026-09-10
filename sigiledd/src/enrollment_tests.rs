@@ -519,8 +519,10 @@ fn enrollment_aggregate_snapshot_capacity_is_enforced_by_the_real_store() {
     let dir = crate::merge::tests::tmp_repo("memory-capacity");
     let store = crate::store::Store::at_dir(&dir);
     let mut snapshot = crate::store::StateSnapshot::default();
-    let mut e = Enrollment::default();
-    e.actor = Some("x".repeat(1024 * 1024));
+    let e = Enrollment {
+        actor: Some("x".repeat(1024 * 1024)),
+        ..Default::default()
+    };
     for n in 0..33 {
         snapshot.ecosystem.insert(
             format!("project-{n}"),

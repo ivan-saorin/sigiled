@@ -562,6 +562,7 @@ async fn open_inner(
     }
     (StatusCode::CREATED,Json(json!({"session_id":id,"project":project,"branch":record.branch,"token":record.token,"endpoint":record.binding.as_ref().map(|b|&b.endpoint),"head":record.head,"stale":record.stale,"last_commit":if record.stale{json!(record.head)}else{serde_json::Value::Null},"merge_debt":state.sessions.debts_for(&project).first(),"image":image,"actor":actor,"generation":record.generation,"state":record.lifecycle}))).into_response()
 }
+#[cfg(test)]
 pub async fn close(
     actor: Actor,
     State(state): State<crate::AppState>,
@@ -898,6 +899,25 @@ pub(crate) fn reserve_id() -> String {
     SessionState::session_id()
 }
 
+// Private browser allocation entry; machine callers never select an identity.
+
+pub async fn close_authenticated(
+    actor: Actor,
+    State(state): State<crate::AppState>,
+    AxPath(id): AxPath<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let project = state.sessions.record(&id).map(|r| r.project);
+    let driver = actor.driver.clone();
+    let response = close_expected(actor, state.clone(), id, None).await;
+    if response.status().is_success() {
+        if let Some(project) = project {
+            crate::enrollment::schedule_headers(state, project, driver, &headers);
+        }
+    }
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,23 +1218,4 @@ mod tests {
         sh(&repo, &["checkout", "-f", "master"]);
         assert!(repo.join("left.txt").exists() && repo.join("right.txt").exists());
     }
-}
-
-// Private browser allocation entry; machine callers never select an identity.
-
-pub async fn close_authenticated(
-    actor: Actor,
-    State(state): State<crate::AppState>,
-    AxPath(id): AxPath<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    let project = state.sessions.record(&id).map(|r| r.project);
-    let driver = actor.driver.clone();
-    let response = close_expected(actor, state.clone(), id, None).await;
-    if response.status().is_success() {
-        if let Some(project) = project {
-            crate::enrollment::schedule_headers(state, project, driver, &headers);
-        }
-    }
-    response
 }

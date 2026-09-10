@@ -147,7 +147,7 @@ integration and extension actions without observable interaction have limits.
 A known running command or manual checkpoint prevents automatic reaping. Lost
 command-end observations conservatively retain the workspace. Each shell execution
 has an extension-instance UUID plus sequence ID; activity requests carry
-`execution_id` with the existing decimal-string generation and credential. The
+full bounded observation snapshots with the existing decimal-string generation and credential. Legacy execution messages remain understood, but cannot establish the new observation contract by themselves. The
 helper tracks active IDs, ignores unmatched/duplicate ends, and conservatively
 retains late starts after an earlier end. IDs are bounded; overflow retains busy
 state instead of forgetting known work. Start/end observations without a valid
@@ -192,3 +192,16 @@ This manual custody recovery was not exercised against a live runtime here.
 ## C2 authenticated gateway
 
 See [ide-gateway.md](ide-gateway.md) for generation origins, B1 authority, declared isolated previews, resource-document restrictions and live release gates. The companion now supports authenticated bounded `/file-target` existence/containment probes. `/editor` and `/editor/` both preserve provider root queries. Lifecycle and strict finish receipts are unchanged.
+
+
+## Stage E terminal observation contract
+
+New provider layers use helper revision 2 and bundled `sigil.sigil-activity` version 0.2.0. The source hash remains part of the immutable image key. Each start copies the current extension version into the provider-only profile. When no user settings exist, the provider seeds a Bash profile if `/bin/bash` is available; machine caller environments are unchanged. Existing settings remain intact. A disabled or old activity extension cannot establish the required `terminal-observation-v2` status contract.
+
+The helper requires an initial full terminal observation after provider start. An observer sends bounded generation-scoped identities, increasing sequence numbers and full execution snapshots every two seconds. Observations older than ten seconds become stale; stale/missing observations never expire into verified idle. Heartbeats and status reads do not renew user activity. Supported new terminals become idle when shell integration is observed and no command is running. Terminals already present when the extension activates remain unobserved until actual execution start/end or confirmed closure establishes their state. A passive integration event alone cannot recover that startup gap.
+
+Unsupported shells, a missing observer, extension failure, or a replacement extension-host UUID prevent automatic idle reaping and strict stop/finish. Controller stop/finish first checks the exact bound generation and contract; the current companion still performs its final atomic activity/custody check. An old helper returning nominal finish success cannot bypass that check. Ordinary status, files and editing remain available. Closing an unsupported terminal or observing its integration/execution can recover the same observer. A replaced host cannot discard the previous observer's custody.
+
+The pinned browser fixture demonstrates that closing/reopening a tab can replace the extension host. Editing reconnects and saved files/session branches remain available, but terminal observation becomes stale and finish stays blocked. This requires operator custody recovery as described above: establish exact runtime/generation ownership, preserve workspace/profile and verify all prior editor writers terminated before restarting the companion/provider through supported operations. There is no browser force-reset or automatic observer adoption. This is a deliberate preservation cost, not a deployed recovery exercise.
+
+Controlled E evidence uses code-server 4.136.2 / Code 1.136.1, actual local extension activation, Bash terminal/Git, real companion handlers and temporary repository/runtime transport. The selected package lacks the exact `vsda.js` and `vsda_bg.wasm` resources. Those exact upstream distribution diagnostics are retained; arbitrary console/HTTP/aborted requests still fail. Deliberate successful finish also produces specifically identified pinned workbench/socket teardown errors; only that phase/resource/message is classified after strict finish and owned shutdown are independently confirmed. This is not a blanket clean-console claim. Production image launch, repository policy, edge/SSO and host process-start behavior remain live release requirements.

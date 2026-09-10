@@ -139,3 +139,6 @@ pub(super) fn readiness(state: &AppState) -> Result<(), Error> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+pub(crate) use tests::e_probe_source;

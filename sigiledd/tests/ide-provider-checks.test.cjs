@@ -5,3 +5,9 @@ test('unexpected HTTP, console, and request failures fail independently',()=>{fo
 test('exceptions are exact URL, status, method and console message',()=>{const url='https://ide.test/stable-pin/static/node_modules/vsda/rust/web/vsda.js';const d=new Diagnostics();d.expectHttp(url,404);d.http.push({url,method:'GET',status:404});d.console.push({url,text:'Failed to load resource: the server responded with a status of 404 (Not Found)'});d.check();for(const mutate of [d=>d.http[0].status=500,d=>d.http[0].method='POST',d=>d.console[0].text='unexpected exception',d=>d.console[0].url='https://ide.test/other.js']){const c=new Diagnostics();c.expectHttp(url,404);c.http=[{url,method:'GET',status:404}];c.console=[{url,text:'Failed to load resource: the server responded with a status of 404 (Not Found)'}];mutate(c);assert.throws(()=>c.check());}});
 
 test('VSDA abort exception requires exact observed404 GET script and never permits activity abort',()=>{const url='https://ide.test/pin/static/node_modules/vsda/rust/web/vsda.js';const make=()=>{const d=new Diagnostics();d.expectHttp(url,404);d.expectNetwork(url,'net::ERR_ABORTED',{status:404,resourceType:'script'});d.http.push({url,method:'GET',status:404});d.network.push({url,method:'GET',error:'net::ERR_ABORTED',resourceType:'script'});return d;};make().check();for(const mutate of [d=>d.http=[],d=>d.network[0].method='POST',d=>d.network[0].resourceType='fetch',d=>d.network[0].url='https://ide.test/_sigil/activity']){const d=make();mutate(d);assert.throws(()=>d.check());}});
+
+{
+ const script='https://fixture.test/pinned/workbench.js';const d=new Diagnostics();d.expectConsole('CloseEvent',script,'finish');
+ d.console.push({text:'CloseEvent',url:script,phase:'active'});assert.throws(()=>d.check());
+ d.console[0].phase='finish';d.check();d.console[0].url='https://fixture.test/other.js';assert.throws(()=>d.check());
+}

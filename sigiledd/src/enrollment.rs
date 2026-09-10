@@ -820,3 +820,63 @@ pub async fn correct_namespace(
     }
     retry(actor, State(state), Path(project), headers).await
 }
+
+#[cfg(test)]
+pub(crate) async fn export_e_accepted(mut state: AppState, project: &str) -> Value {
+    let (path, repository) = repo(&state, project).unwrap();
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&path)
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            &format!("git@github.com:{repository}.git"),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let mut d = state.registry.descriptor(project);
+    d.declaration.memory.enabled = true;
+    let e = d.memory_enrollment.as_mut().unwrap();
+    let snapshot = collect(&state, project, e, Instant::now() + Duration::from_secs(5)).unwrap();
+    e.snapshot = Some(snapshot.clone());
+    state
+        .registry
+        .descriptors
+        .write()
+        .unwrap()
+        .insert(project.into(), d);
+    state.try_persist().unwrap();
+    state.auth = crate::auth::AuthState {
+        config: crate::auth::tests::cfg().into(),
+        keys: crate::auth::tests::preloaded_keys(),
+        ..Default::default()
+    };
+    let token = crate::auth::tests::sign(
+        &json!({"sub":"fixture-subject","preferred_username":"driver","groups":["stack:drivers"],"iss":"https://idp.test/application/o/driver/","exp":crate::auth::now_epoch()+600}),
+    );
+    let mut h = HeaderMap::new();
+    h.insert("authorization", format!("Bearer {token}").parse().unwrap());
+    h.insert(crate::auth::SERVICE_HEADER, "memory".parse().unwrap());
+    let auth = crate::auth::verify(State(state.clone()), h.clone()).await;
+    assert_eq!(auth.status(), StatusCode::OK);
+    let auth: Value =
+        serde_json::from_slice(&axum::body::to_bytes(auth.into_body(), 16384).await.unwrap())
+            .unwrap();
+    let request = json!({"project":project,"index":project,"owner":snapshot.owner,"revision":snapshot.revision,"commit":snapshot.commit,"digest":snapshot.digest()});
+    let response = validate(
+        State(state),
+        h,
+        Json(serde_json::from_value(request.clone()).unwrap()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let proof: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    json!({"snapshot":snapshot,"request":request,"proof":proof,"auth":auth})
+}

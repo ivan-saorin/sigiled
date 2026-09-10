@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 fn capabilities() -> Value {
-    json!({"curation_contract":"1","browse":"live_keyset_v1","manual":"revisioned_uuid_v1","forget":"preview_suppression_v1","projection":"durable_outbox_v1","revision_encoding":"decimal_string","max_page":100,"max_scan":1000,"auth":{"oidc_verifier_configured":true}})
+    json!({"curation_contract":"1","response_budget":"encoded-pages-v1","browse":"live_keyset_v1","manual":"revisioned_uuid_v1","forget":"preview_suppression_v1","projection":"durable_outbox_v1","revision_encoding":"decimal_string","max_page":100,"max_scan":1000,"auth":{"oidc_verifier_configured":true}})
 }
 fn actor() -> Value {
     json!({"key":"human:fixture","principal_kind":"oidc","issuer":"https://idp.test","subject":"fixture"})
@@ -487,4 +487,314 @@ fn memory_projection_target_must_match_provenance() {
     assert!(row.validate("atlas").is_err());
     row.target = None;
     assert!(row.validate("other").is_err());
+}
+
+#[tokio::test]
+#[ignore = "requires exported actual Memory handler serialization"]
+async fn memory_e_actual_producer_history_transport() {
+    let path = std::env::var("SIGIL_MEMORY_HISTORY_FIXTURE").expect("actual producer fixture");
+    let pages: Vec<String> = if path.ends_with("pages.json") {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    } else {
+        vec![std::fs::read_to_string(path).unwrap()]
+    };
+    let mut revisions = vec![];
+    for bytes in pages {
+        let expected: Value = serde_json::from_str(&bytes).unwrap();
+        let app = Router::new().fallback(move |headers: axum::http::HeaderMap| {
+            let bytes = bytes.clone();
+            async move {
+                assert_eq!(headers["authorization"], "Bearer fixture-memory-bearer");
+                assert!(!headers.contains_key("cookie"));
+                ([("content-type", "application/json")], bytes)
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let svc = Service::test_at(format!("http://{}", listener.local_addr().unwrap()));
+        let task = tokio::spawn(axum::serve(listener, app).into_future());
+        let result = svc
+            .call(
+                Method::GET,
+                "idx/test/manual/m_00000000-0000-4000-8000-000000000099/history",
+                &[],
+                "fixture-memory-bearer",
+                None,
+            )
+            .await;
+        task.abort();
+        let (_, actual) = result.expect("valid actual Memory history must cross adapter");
+        assert_eq!(actual, expected);
+        let typed: History = decode(actual).unwrap();
+        revisions.extend(typed.items.into_iter().map(|m| m.revision));
+    }
+    assert_eq!(
+        revisions,
+        (1..=8).map(|n| n.to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires exported actual Memory handler serialization"]
+async fn memory_e_actual_producer_large_shapes_transport() {
+    let path = std::env::var("SIGIL_MEMORY_SHAPES_FIXTURE").expect("actual producer fixture");
+    let rows: Vec<Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for row in rows {
+        let bytes = row["body"].as_str().unwrap().to_owned();
+        let expected: Value = serde_json::from_str(&bytes).unwrap();
+        let path = row["path"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches('/')
+            .split('?')
+            .next()
+            .unwrap()
+            .to_owned();
+        let router = Router::new().fallback(move |h: axum::http::HeaderMap| {
+            let bytes = bytes.clone();
+            async move {
+                assert_eq!(h["authorization"], "Bearer fixture-memory-bearer");
+                assert!(!h.contains_key("cookie"));
+                ([("content-type", "application/json")], bytes)
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let svc = Service::test_at(format!("http://{}", listener.local_addr().unwrap()));
+        let server = tokio::spawn(axum::serve(listener, router).into_future());
+        let result = svc
+            .call(Method::GET, &path, &[], "fixture-memory-bearer", None)
+            .await;
+        server.abort();
+        let (_, actual) =
+            result.expect("complete large producer shape must cross finite adapter budget");
+        assert_eq!(actual, expected);
+        if path.ends_with("search") {
+            let shape: Search = decode(actual).unwrap();
+            assert!(shape.response_limited);
+            assert_eq!(shape.candidate_count, Some(8));
+        } else if path.contains("/manual/") {
+            let shape: Detail = decode(actual).unwrap();
+            shape.memory.validate().unwrap();
+            assert_eq!(shape.curation.annotations.len(), 100);
+        } else if path.ends_with("chunks") {
+            let _: Page = decode(actual).unwrap();
+        } else {
+            let shape: Chunk = decode(actual).unwrap();
+            assert_eq!(shape.curation.unwrap().annotations.len(), 100);
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the independently observed accepted temporary repository"]
+async fn memory_e_actual_chain_adapter_and_source() {
+    let chain: Value =
+        serde_json::from_str(include_str!("../../../tests/fixtures/e-memory-chain.json")).unwrap();
+    let captured = chain.clone();
+    let backend = Router::new().fallback(move |r: axum::extract::Request| {
+        let chain = captured.clone();
+        async move {
+            assert_eq!(r.headers()["authorization"], "Bearer fixture-memory-bearer");
+            assert!(!r.headers().contains_key("cookie"));
+            let path = r.uri().path().to_owned();
+            let method = r.method().to_string();
+            if path == "/capabilities" {
+                return (StatusCode::OK, Json(chain["capabilities"].clone()));
+            }
+            if path == "/idx/demo/enrollment" {
+                return (StatusCode::OK, Json(chain["ownership"].clone()));
+            }
+            let body = axum::body::to_bytes(r.into_body(), 1048576).await.unwrap();
+            let body: Value = if body.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&body).unwrap()
+            };
+            let row = chain["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["path"] == path && v["method"] == method)
+                .expect("actual captured route");
+            assert_eq!(body, row["request"]);
+            (
+                StatusCode::from_u16(row["status"].as_u64().unwrap() as u16).unwrap(),
+                Json(row["body"].clone()),
+            )
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let svc = Service::test_at(format!("http://{}", listener.local_addr().unwrap()));
+    let server = tokio::spawn(axum::serve(listener, backend).into_future());
+    let mut f = Fixture::new().await;
+    Arc::get_mut(f.state.browser.0.as_mut().unwrap())
+        .unwrap()
+        .memory = svc.clone();
+    let accepted: &Value = &chain["accepted"];
+    let snapshot: crate::enrollment_contract::Snapshot =
+        serde_json::from_value(accepted["snapshot"].clone()).unwrap();
+    let source =
+        std::env::var("SIGIL_E_ACCEPTED_REPO").expect("actual controlled accepted repository");
+    let root = crate::merge::tests::tmp_repo("e-source-association");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo = root.join("demo");
+    crate::merge::git(&root, &["clone", &source, repo.to_str().unwrap()]).unwrap();
+    crate::merge::git(
+        &repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:test/demo.git",
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        crate::merge::git(&repo, &["rev-parse", "master"])
+            .unwrap()
+            .trim(),
+        snapshot.commit
+    );
+    f.state.sessions = crate::sessions::SessionState::with_repos_dir(root.clone());
+    f.state.github = Some(crate::github::GitHub {
+        api_base: "http://127.0.0.1:1".into(),
+        pat: "unused-fixture".into(),
+        owner: "test".into(),
+        template: "unused".into(),
+        keys_dir: root.join("keys"),
+    });
+    f.state.registry.insert(crate::project::ProjectRecord::new(
+        "demo",
+        &crate::manifest::Manifest::parse("").unwrap(),
+        None,
+    ));
+    let mut d = f.state.registry.descriptor("demo");
+    let e = d.memory_enrollment.as_mut().unwrap();
+    e.owner = snapshot.owner.clone();
+    e.revision = snapshot.revision.clone();
+    e.desired_commit = Some(snapshot.commit.clone());
+    e.snapshot = Some(snapshot.clone());
+    e.state = "indexed".into();
+    f.state
+        .registry
+        .descriptors
+        .write()
+        .unwrap()
+        .insert("demo".into(), d);
+    let mut outputs = serde_json::Map::new();
+    for op in chain["operations"].as_array().unwrap() {
+        let action = op["action"].as_str().unwrap();
+        let n = "demo".to_owned();
+        let request = op["request"].clone();
+        let value = match action {
+            "browse" => {
+                browse(
+                    f.context(),
+                    State(f.state.clone()),
+                    Path(n),
+                    Query(Browse::default()),
+                )
+                .await
+                .unwrap()
+                .0
+            }
+            "chunk" => {
+                chunk(
+                    f.context(),
+                    State(f.state.clone()),
+                    Path((n, op["body"]["id"].as_str().unwrap().into())),
+                )
+                .await
+                .unwrap()
+                .0
+            }
+            "manual" => {
+                manual(
+                    f.context(),
+                    State(f.state.clone()),
+                    Path((n, op["body"]["memory"]["id"].as_str().unwrap().into())),
+                )
+                .await
+                .unwrap()
+                .0
+            }
+            "create" => {
+                let response = create(
+                    f.context(),
+                    State(f.state.clone()),
+                    Path(n),
+                    Json(decode(request).unwrap()),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    response.status().as_u16(),
+                    op["status"].as_u64().unwrap() as u16
+                );
+                serde_json::from_slice(
+                    &axum::body::to_bytes(response.into_body(), 1048576)
+                        .await
+                        .unwrap(),
+                )
+                .unwrap()
+            }
+            "curate" => {
+                curate(
+                    f.context(),
+                    State(f.state.clone()),
+                    Path(n),
+                    Json(decode(request).unwrap()),
+                )
+                .await
+                .unwrap()
+                .0
+            }
+            "preview" => {
+                preview(
+                    f.context(),
+                    State(f.state.clone()),
+                    Path(n),
+                    Json(decode(request).unwrap()),
+                )
+                .await
+                .unwrap()
+                .0
+            }
+            "forget" => {
+                forget(
+                    f.context(),
+                    State(f.state.clone()),
+                    Path(n),
+                    Json(decode(request).unwrap()),
+                )
+                .await
+                .unwrap()
+                .0
+            }
+            _ => panic!("unexpected action"),
+        };
+        outputs.insert(action.into(), value);
+    }
+    assert_eq!(outputs["chunk"]["source_edit"]["verified"], true);
+    assert_eq!(
+        outputs["chunk"]["source_edit"]["indexed_commit"],
+        snapshot.commit
+    );
+    assert_eq!(
+        outputs["chunk"]["source_edit"]["current_checkout"],
+        "checked_on_launch"
+    );
+    let probe =
+        crate::browser::ide_gateway::e_probe_source(repo.clone(), &outputs["chunk"]["source_edit"])
+            .await;
+    outputs.insert("source_probe".into(), probe);
+    let encoded = serde_json::to_string(&outputs).unwrap();
+    assert!(!encoded.contains("fixture-memory-bearer"));
+    assert!(!encoded.contains("fixture-subject"));
+    std::fs::write(
+        "/workspace/target/e-memory-adapter-chain.json",
+        serde_json::to_vec_pretty(&json!({"outputs":outputs,"operations":chain["operations"]}))
+            .unwrap(),
+    )
+    .unwrap();
+    server.abort();
 }

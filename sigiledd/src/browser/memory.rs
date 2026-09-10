@@ -116,6 +116,7 @@ fn public<T: Serialize>(v: T, token: &str) -> Result<Json<Value>, Error> {
 fn ready(v: &Value) -> bool {
     [
         ("curation_contract", "1"),
+        ("response_budget", "encoded-pages-v1"),
         ("browse", "live_keyset_v1"),
         ("manual", "revisioned_uuid_v1"),
         ("forget", "preview_suppression_v1"),
@@ -208,13 +209,20 @@ impl Service {
                 _ => unavailable(),
             });
         }
-        const MAX: usize = 2 * 1024 * 1024;
+        // Complete single records can contain 100 escaped annotations. Collection
+        // producers use encoded page budgets; history stays under the old cap.
+        let max = match p.as_slice() {
+            ["idx", _, "chunks" | "search" | "curation"] | ["idx", _, "chunks" | "manual", _] => {
+                8 * 1024 * 1024
+            }
+            _ => 2 * 1024 * 1024,
+        };
         let mut bytes = Vec::new();
-        if response.content_length().is_some_and(|n| n > MAX as u64) {
+        if response.content_length().is_some_and(|n| n > max as u64) {
             return Err(unavailable());
         }
         while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
-            if bytes.len() + chunk.len() > MAX {
+            if bytes.len() + chunk.len() > max {
                 return Err(unavailable());
             }
             bytes.extend_from_slice(&chunk);
@@ -407,9 +415,11 @@ async fn browse(
             return Err(invalid());
         }
         let total = page.hits.len();
+        let response_limited = page.response_limited;
+        let candidate_count = page.candidate_count.unwrap_or(total);
         let items: Vec<_> = page.hits.into_iter().map(Chunk::from).collect();
         return public(
-            json!({"items":items,"next_cursor":null,"result_limit":200,"observed_results":total,"mode":mode,"consistency":"bounded_search_candidates","limitation":"Search uses up to 200 candidates; path and archived filters require Browse.","readiness":"detail_requires_live_contract"}),
+            json!({"items":items,"next_cursor":null,"result_limit":200,"observed_results":total,"candidate_count":candidate_count,"response_limited":response_limited,"mode":mode,"consistency":"bounded_search_candidates","limitation":"Search returns up to 200 candidates within an encoded response budget; use Browse for complete traversal.","readiness":"detail_requires_live_contract"}),
             &c.access_token,
         );
     }

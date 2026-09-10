@@ -3,6 +3,11 @@ pub struct Activity {
     last: Instant,
     commands: HashSet<String>,
     uncertain: bool,
+    observation_required: bool,
+    observer: Option<String>,
+    sequence: u64,
+    observed_at: Option<Instant>,
+    unsupported: bool,
 }
 impl Default for Activity {
     fn default() -> Self {
@@ -10,10 +15,88 @@ impl Default for Activity {
             last: Instant::now(),
             commands: HashSet::new(),
             uncertain: false,
+            observation_required: false,
+            observer: None,
+            sequence: 0,
+            observed_at: None,
+            unsupported: false,
         }
     }
 }
 impl Activity {
+    pub fn require_observation(&mut self) {
+        self.observation_required = true;
+        self.observer = None;
+        self.observed_at = None;
+        self.sequence = 0;
+    }
+    pub fn stopped(&mut self) {
+        self.observation_required = false;
+        self.commands.clear();
+    }
+    pub fn observation(&self) -> &'static str {
+        if !self.observation_required {
+            return "not_required";
+        }
+        let Some(at) = self.observed_at else {
+            return "missing";
+        };
+        if at.elapsed().as_secs() >= 10 {
+            return "stale";
+        }
+        if self.unsupported {
+            return "unsupported";
+        }
+        "ready"
+    }
+    pub fn observe(&mut self, value: Observation) -> bool {
+        fn id(s: &str) -> bool {
+            !s.is_empty()
+                && s.len() <= 128
+                && s.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-:".contains(&c))
+        }
+        let Ok(sequence) = value.sequence.parse::<u64>() else {
+            return false;
+        };
+        if sequence.to_string() != value.sequence
+            || sequence == 0
+            || !id(&value.observer)
+            || value.terminals.len() > 256
+            || value.executions.len() > 4096
+            || value.terminals.iter().any(|t| !id(&t.id))
+            || value.executions.iter().any(|s| !id(s))
+            || !matches!(
+                value.event.as_deref(),
+                None | Some("command_start" | "command_end")
+            )
+        {
+            return false;
+        }
+        if self.observer.as_ref().is_some_and(|o| o != &value.observer) || sequence <= self.sequence
+        {
+            return false;
+        }
+        if value
+            .terminals
+            .iter()
+            .map(|t| &t.id)
+            .collect::<HashSet<_>>()
+            .len()
+            != value.terminals.len()
+        {
+            return false;
+        }
+        self.observer = Some(value.observer);
+        self.sequence = sequence;
+        self.observed_at = Some(Instant::now());
+        self.unsupported = value.terminals.iter().any(|t| !t.integrated);
+        self.commands = value.executions.into_iter().collect();
+        if value.event.is_some() {
+            self.last = Instant::now();
+        }
+        true
+    }
     pub fn report(&mut self, event: &str) -> bool {
         match event {
             "edit" | "save" | "selection" => self.last = Instant::now(),
@@ -53,7 +136,9 @@ impl Activity {
         self.last.elapsed().as_secs()
     }
     pub fn busy(&self) -> bool {
-        self.uncertain || !self.commands.is_empty()
+        self.uncertain
+            || !self.commands.is_empty()
+            || !matches!(self.observation(), "ready" | "not_required")
     }
 }
 #[cfg(test)]
@@ -96,5 +181,76 @@ mod tests {
         assert!(a.busy());
         a.report_execution("command_end", Some("test:1"));
         assert!(!a.busy());
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Observation {
+    pub observer: String,
+    pub sequence: String,
+    pub terminals: Vec<Terminal>,
+    pub executions: Vec<String>,
+    pub event: Option<String>,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Terminal {
+    pub id: String,
+    pub integrated: bool,
+}
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    fn snapshot(n: u64, integrated: bool) -> Observation {
+        Observation {
+            observer: "instance-1".into(),
+            sequence: n.to_string(),
+            terminals: vec![Terminal {
+                id: "terminal-1".into(),
+                integrated,
+            }],
+            executions: vec![],
+            event: None,
+        }
+    }
+    #[test]
+    fn missing_stale_unsupported_and_reordered_observations_never_prove_idle() {
+        let mut a = Activity::default();
+        a.require_observation();
+        assert!(a.busy());
+        assert_eq!(a.observation(), "missing");
+        a.last = Instant::now() - std::time::Duration::from_secs(100);
+        assert!(a.observe(snapshot(1, false)));
+        assert!(a.busy());
+        assert_eq!(a.observation(), "unsupported");
+        assert!(a.idle_secs() >= 100);
+        assert!(a.observe(snapshot(3, true)));
+        assert!(!a.busy());
+        assert!(a.idle_secs() >= 100);
+        assert!(!a.observe(snapshot(2, false)));
+        assert!(!a.busy());
+        a.observed_at = Some(Instant::now() - std::time::Duration::from_secs(11));
+        assert!(a.busy());
+        assert_eq!(a.observation(), "stale");
+        let mut replacement = snapshot(4, true);
+        replacement.observer = "new-extension".into();
+        assert!(!a.observe(replacement));
+        assert!(a.busy());
+        let mut closed = snapshot(4, false);
+        closed.terminals.clear();
+        assert!(a.observe(closed));
+        assert!(!a.busy());
+        assert!(a.idle_secs() >= 100);
+        let mut running = snapshot(5, true);
+        running.executions.push("command-1".into());
+        running.event = Some("command_start".into());
+        assert!(a.observe(running));
+        assert!(a.busy());
+        assert!(a.observe(snapshot(6, true)));
+        assert!(
+            !a.busy(),
+            "complete same-instance later snapshot confirms command end"
+        );
     }
 }

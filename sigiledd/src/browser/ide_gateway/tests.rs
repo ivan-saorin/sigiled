@@ -603,18 +603,134 @@ async fn pinned_provider_gateway_browser_smoke() {
         "/workspace/target/gateway-provider-smoke-{}",
         std::process::id()
     ));
+    let (mut f, mut binding, _) = fixture().await;
+    let original = f.state.sessions.record(&binding.session).unwrap();
+    let (controlled, fake_runtime) = crate::session_tests::setup_project("demo");
+    f.state.sessions = controlled.sessions;
+    f.state.store = controlled.store;
+    f.state.sessions.put(original.clone());
+    fake_runtime
+        .live
+        .lock()
+        .unwrap()
+        .insert(original.container(), original.token.clone().unwrap());
+    let repo = fake_runtime.root.join(original.container());
+    std::fs::create_dir_all(&repo).unwrap();
+    let remote = fake_runtime.origin.clone();
+    std::fs::create_dir_all(&root).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.test")
+            .env("GIT_COMMITTER_NAME", "Fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.test")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    git(
+        &root,
+        &["clone", remote.to_str().unwrap(), repo.to_str().unwrap()],
+    );
     std::fs::create_dir_all(root.join("data/User")).unwrap();
-    std::fs::write(root.join("data/User/settings.json"),r#"{"security.workspace.trust.enabled":false,"workbench.startupEditor":"none","telemetry.telemetryLevel":"off"}"#).unwrap();
+    std::fs::write(root.join("data/User/settings.json"),r#"{"security.workspace.trust.enabled":false,"workbench.startupEditor":"none","telemetry.telemetryLevel":"off","terminal.integrated.defaultProfile.linux":"bash","terminal.integrated.profiles.linux":{"bash":{"path":"/bin/bash"}}}"#).unwrap();
     std::fs::write(
-        root.join("navigation.txt"),
+        repo.join("navigation.txt"),
         "First line\nSecond navigation line\nThird line\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("project.html"),
+        repo.join("project.html"),
         "<script>window.compromised=true</script>",
     )
     .unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "fixture base"]);
+    git(&repo, &["push", "origin", "master"]);
+    let branch = format!("session/{}", binding.session);
+    git(&repo, &["checkout", "-b", &branch]);
+    git(&repo, &["push", "origin", &branch]);
+    // Immutable output from actual SDE POST/executor/dossier/handoff at af836b3f.
+    let bundle: Value =
+        serde_json::from_str(include_str!("../../../tests/fixtures/e-sde-handoff.json")).unwrap();
+    let handoff_request = json!({"operation_id":"stage-e-research","run_id":bundle["run_id"],"slug":bundle["slug"],"generation":binding.generation.to_string(),"files":bundle["files"]});
+    let transport = sigil_ide_agent::test_support::handoff_fixture_router_for_branch(
+        repo.clone(),
+        remote.to_string_lossy().into(),
+        binding.generation,
+        branch.clone(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let helper = Abort(tokio::spawn(async move {
+        axum::serve(listener, transport).await.unwrap()
+    }));
+    let result = reqwest::Client::new()
+        .post(format!("http://{address}/handoff"))
+        .bearer_auth("fixture-helper-control-token-00000")
+        .json(&handoff_request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(result.status(), StatusCode::OK);
+    let receipt: Value = result.json().await.unwrap();
+    assert_eq!(receipt["pushed"], true);
+    for file in bundle["files"].as_array().unwrap() {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&remote)
+            .args([
+                "show",
+                &format!(
+                    "{}:{}",
+                    receipt["sha"].as_str().unwrap(),
+                    file["path"].as_str().unwrap()
+                ),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, file["content"].as_str().unwrap().as_bytes());
+    }
+    drop(helper);
+    tokio::task::yield_now().await;
+    assert!(tokio::net::TcpStream::connect(address).await.is_err());
+    let mut joined = f.state.sessions.record(&binding.session).unwrap();
+    joined.handoff = Some(
+        json!({"phase":"complete","run_id":bundle["run_id"],"receipt":{"commit":receipt["sha"],"pushed":receipt["pushed"]},"request":handoff_request}),
+    );
+    f.state.sessions.put(joined);
+    std::fs::write(
+        root.join("research-native-receipt.json"),
+        serde_json::to_vec_pretty(&receipt).unwrap(),
+    )
+    .unwrap();
+    let extensions = root.join("extensions/sigil.activity-0.2.0");
+    std::fs::create_dir_all(&extensions).unwrap();
+    for file in ["package.json", "extension.js"] {
+        std::fs::copy(
+            format!("/workspace/ide-agent/activity/{file}"),
+            extensions.join(file),
+        )
+        .unwrap();
+    }
+    let extension = root.join("extensions/sigil.integration-fixture-0.1.0");
+    std::fs::create_dir_all(&extension).unwrap();
+    for file in ["package.json", "extension.js"] {
+        std::fs::copy(
+            format!("/workspace/sigiledd/tests/provider-fixture-extension/{file}"),
+            extension.join(file),
+        )
+        .unwrap();
+    }
     let mut command = Command::new(provider);
     command
         .args([
@@ -631,7 +747,12 @@ async fn pinned_provider_gateway_browser_smoke() {
         .arg(root.join("data"))
         .arg("--extensions-dir")
         .arg(root.join("extensions"))
-        .arg("/workspace")
+        .arg(&repo)
+        .env(
+            "SIGIL_IDE_ACTIVITY_TOKEN",
+            "fixture-helper-activity-token-0000",
+        )
+        .env("SIGIL_IDE_GENERATION", binding.generation.to_string())
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("xdg-data"))
         .env("TMPDIR", "/workspace/target/gateway-tmp")
@@ -641,7 +762,7 @@ async fn pinned_provider_gateway_browser_smoke() {
         .stderr(Stdio::from(
             std::fs::File::create(root.join("provider-error.log")).unwrap(),
         ));
-    let mut provider = Owned::start(&mut command);
+    let provider = sigil_ide_agent::process::Process::start(&mut command).unwrap();
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(1))
         .build()
@@ -660,25 +781,31 @@ async fn pinned_provider_gateway_browser_smoke() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert!(ready, "bounded provider startup");
-    let (f, mut binding, _) = fixture().await;
     let b = f.state.browser.inner().unwrap();
-    let helper_token = "private-helper-token".repeat(3);
+    let helper_token = "fixture-helper-control-token-00000".to_owned();
     let mut record = f.state.sessions.record(&binding.session).unwrap();
+    record.head = git(&repo, &["rev-parse", "HEAD"]);
     record.binding.as_mut().unwrap().ide.as_mut().unwrap().token = helper_token.clone();
     f.state.sessions.put(record.clone());
-    let config = root.join("helper.json");
-    std::fs::write(&config,json!({"token":helper_token,"activity_token":"synthetic-activity-token".repeat(3),"generation":binding.generation,"session":binding.session,"branch":record.branch,"remote":"synthetic-unused","profile":"unused"}).to_string()).unwrap();
-    let mut command = Command::new("/workspace/target/debug/sigil-ide-agent");
-    command
-        .arg(&config)
-        .env("TMPDIR", "/workspace/target/gateway-tmp")
-        .stdout(Stdio::from(
-            std::fs::File::create(root.join("helper.log")).unwrap(),
-        ))
-        .stderr(Stdio::from(
-            std::fs::File::create(root.join("helper-error.log")).unwrap(),
-        ));
-    let mut helper = Owned::start(&mut command);
+    let (helper_router, provider_owner) = sigil_ide_agent::test_support::provider_fixture_router(
+        repo.clone(),
+        remote.to_string_lossy().into(),
+        binding.generation,
+        binding.session.clone(),
+        branch.clone(),
+        provider,
+        root.clone(),
+    );
+    let helper_listener = tokio::net::TcpListener::bind("127.0.0.1:8090")
+        .await
+        .unwrap();
+    let helper = Abort(tokio::spawn(async move {
+        axum::serve(helper_listener, helper_router).await.unwrap()
+    }));
+    crate::ide::FIXTURE_ENDPOINTS
+        .lock()
+        .unwrap()
+        .insert(binding.session.clone(), "http://127.0.0.1:8090".into());
     let mut ready = false;
     for _ in 0..40 {
         if http
@@ -700,19 +827,24 @@ async fn pinned_provider_gateway_browser_smoke() {
         .unwrap()
         .insert(binding.session.clone(), "127.0.0.1:8090".parse().unwrap());
     let target = targets::FileTarget {
-        path: format!(
-            "{}/navigation.txt",
-            root.strip_prefix("/workspace")
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .trim_start_matches('/')
-        ),
+        path: "navigation.txt".into(),
         line: Some(2),
         column: Some(3),
     };
     targets::probe(&f.state, &record, &target).await.unwrap();
-    binding.destination = targets::destination(&binding.origin, Some(&target)).unwrap();
+    // Root-only fixture substitution: deployed companions always use /workspace.
+    let encoded: String = reqwest::Url::parse("http://fixture/")
+        .unwrap()
+        .query_pairs_mut()
+        .append_pair("root", repo.to_str().unwrap())
+        .finish()
+        .query()
+        .unwrap()
+        .trim_start_matches("root=")
+        .to_owned();
+    binding.destination = targets::destination(&binding.origin, Some(&target))
+        .unwrap()
+        .replace("%2Fworkspace", &encoded);
     binding.target = Some(target);
     let mut probes = Vec::new();
     for (name, url) in [
@@ -785,12 +917,43 @@ async fn pinned_provider_gateway_browser_smoke() {
     let preview_server = Abort(tokio::spawn(async move {
         axum::serve(preview_listener,Router::new().fallback(|h:HeaderMap|async move{assert!(!h.contains_key("authorization"));assert!(!h.contains_key("cookie"));([( "content-type","text/html"),("set-cookie","attack=1; Domain=.example.test")],"<!doctype html><title>Isolated project preview</title><h1>Isolated project preview</h1>")})).await.unwrap()
     }));
+    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let control_base = format!("http://{}", control_listener.local_addr().unwrap());
+    let controlled_app = crate::app(f.state.clone());
+    let _control_server = Abort(tokio::spawn(async move {
+        axum::serve(control_listener, controlled_app).await.unwrap()
+    }));
+    let mut independent = original.clone();
+    independent.session_id = "e-independent-agent".into();
+    independent.branch = "session/agent".into();
+    independent.actor.driver = "agent:fixture".into();
+    independent.handoff = None;
+    independent.binding.as_mut().unwrap().container = "independent-agent".into();
+    f.state.sessions.put(independent.clone());
+    let agent_repo = fake_runtime.root.join("independent-agent");
+    git(
+        &root,
+        &[
+            "clone",
+            remote.to_str().unwrap(),
+            agent_repo.to_str().unwrap(),
+        ],
+    );
+    git(&agent_repo, &["checkout", "-b", "session/agent"]);
+    std::fs::write(
+        agent_repo.join("agent-unsaved.txt"),
+        "independent agent work",
+    )
+    .unwrap();
     let ticket = access::issue(&b, binding.clone()).unwrap();
     let mut command = Command::new("/workspace/target/ide-provider/lib/node");
     command
         .arg("/workspace/sigiledd/tests/ide-provider-browser.cjs")
         .env("GATEWAY_SMOKE_ROOT", &root)
-        .env("GATEWAY_SMOKE_UPSTREAM", &f.base)
+        .env("GATEWAY_SMOKE_REPO", &repo)
+        .env("GATEWAY_SMOKE_REMOTE", &remote)
+        .env("GATEWAY_SMOKE_BRANCH", &branch)
+        .env("GATEWAY_SMOKE_UPSTREAM", &control_base)
         .env(
             "GATEWAY_SMOKE_URL",
             format!("{}/_sigil/launch#{ticket}", binding.origin),
@@ -816,7 +979,7 @@ async fn pinned_provider_gateway_browser_smoke() {
             std::fs::File::create(root.join("browser-stderr.log")).unwrap(),
         ));
     let mut node = Owned::start(&mut command);
-    let deadline = std::time::Instant::now() + Duration::from_secs(100);
+    let deadline = std::time::Instant::now() + Duration::from_secs(150);
     // WNOWAIT keeps ownership of the child PID/group until final cleanup.
     let result = loop {
         let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
@@ -838,11 +1001,23 @@ async fn pinned_provider_gateway_browser_smoke() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     node.stop();
+    assert_eq!(
+        std::fs::read_to_string(agent_repo.join("agent-unsaved.txt")).unwrap(),
+        "independent agent work"
+    );
+    assert_eq!(
+        git(&agent_repo, &["branch", "--show-current"]),
+        "session/agent"
+    );
     drop(preview_server);
     tokio::task::yield_now().await;
     assert!(tokio::net::TcpStream::connect(preview_addr).await.is_err());
-    helper.stop();
-    provider.stop();
+    provider_owner.shutdown().await;
+    drop(helper);
+    crate::ide::FIXTURE_ENDPOINTS
+        .lock()
+        .unwrap()
+        .remove(&binding.session);
     for port in [8090, 8091] {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
@@ -867,6 +1042,62 @@ async fn pinned_provider_gateway_browser_smoke() {
         std::fs::read_to_string(root.join("browser-stdout.log")).unwrap(),
         std::fs::read_to_string(root.join("browser-stderr.log")).unwrap()
     );
+    if std::env::var("SIGIL_TEST_DISCONNECT_ONLY").as_deref() == Ok("1") {
+        assert!(f.state.sessions.record(&binding.session).is_some());
+        assert_eq!(
+            f.state
+                .sessions
+                .record(&independent.session_id)
+                .unwrap()
+                .actor
+                .driver,
+            "agent:fixture"
+        );
+        return;
+    }
+    assert!(f.state.sessions.record(&binding.session).is_none());
+    assert_eq!(
+        f.state
+            .sessions
+            .record(&independent.session_id)
+            .unwrap()
+            .actor
+            .driver,
+        "agent:fixture"
+    );
+    let accepted = crate::enrollment::research_receipt(
+        &f.state,
+        "demo",
+        bundle["run_id"].as_str().unwrap(),
+        &record.actor.driver,
+    )
+    .unwrap();
+    assert_eq!(accepted["master_accepted"], true);
+    assert_eq!(accepted["indexed"], false);
+    for file in bundle["files"].as_array().unwrap() {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&remote)
+            .args([
+                "show",
+                &format!("master:{}", file["path"].as_str().unwrap()),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, file["content"].as_str().unwrap().as_bytes());
+    }
+    let exported = crate::enrollment::export_e_accepted(f.state.clone(), "demo").await;
+    std::fs::write(
+        "/workspace/target/e-accepted-export.json",
+        serde_json::to_vec_pretty(&exported).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("research-accepted-receipt.json"),
+        serde_json::to_vec_pretty(&accepted).unwrap(),
+    )
+    .unwrap();
 }
 
 #[tokio::test]
@@ -1270,4 +1501,50 @@ async fn workspace_agent_port_is_never_a_preview_even_with_invalid_registry_data
         access::record(&f.state, &binding).is_err(),
         "runtime grant check must reject invalid persisted/mutated declarations before forwarding"
     );
+}
+
+pub(crate) async fn e_probe_source(repo: std::path::PathBuf, source: &Value) -> Value {
+    let (f, binding, _) = fixture().await;
+    let record = f.state.sessions.record(&binding.session).unwrap();
+    let app = sigil_ide_agent::test_support::handoff_fixture_router(
+        repo.clone(),
+        "unused".into(),
+        record.generation,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    f.state
+        .browser
+        .inner()
+        .unwrap()
+        .gateway
+        .upstreams
+        .lock()
+        .unwrap()
+        .insert(binding.session.clone(), listener.local_addr().unwrap());
+    let server = Abort(tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap()
+    }));
+    let mut record = record;
+    record.binding.as_mut().unwrap().ide.as_mut().unwrap().token =
+        "fixture-helper-control-token-00000".into();
+    f.state.sessions.put(record.clone());
+    let target = targets::FileTarget {
+        path: source["path"].as_str().unwrap().into(),
+        line: Some(1),
+        column: Some(1),
+    };
+    targets::probe(&f.state, &record, &target).await.unwrap();
+    let destination = targets::destination(&binding.origin, Some(&target)).unwrap();
+    let file = repo.join(&target.path);
+    let bytes = std::fs::read(&file).unwrap();
+    let moved = repo.join("e-moved-source");
+    std::fs::rename(&file, &moved).unwrap();
+    let missing = targets::probe(&f.state, &record, &target)
+        .await
+        .unwrap_err();
+    std::fs::rename(&moved, &file).unwrap();
+    assert_eq!(missing.1, "source_missing_or_moved");
+    targets::probe(&f.state, &record, &target).await.unwrap();
+    drop(server);
+    json!({"target":target,"destination":destination,"sha":crate::enrollment_contract::digest(&bytes),"missing":missing.1,"restored":true})
 }
