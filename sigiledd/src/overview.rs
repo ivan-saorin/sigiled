@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -16,7 +17,7 @@ pub struct Page {
     pub limit: Option<usize>,
 }
 impl Page {
-    fn bounds(&self) -> Result<(usize, usize), Box<Response>> {
+    pub(crate) fn bounds(&self) -> Result<(usize, usize), Box<Response>> {
         let (offset, limit) = (self.offset.unwrap_or(0), self.limit.unwrap_or(25));
         if !(1..=100).contains(&limit) || offset > 1_000_000 {
             return Err(Box::new(
@@ -280,6 +281,13 @@ pub async fn root(
     };
     let mut projects = state.registry.snapshot();
     projects.sort_by(|a, b| a.name.cmp(&b.name));
+    let inventory_revision = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&projects.iter().map(|p| &p.name).collect::<Vec<_>>())
+                .expect("project names")
+        )
+    );
     let (_, errors) = crate::catalog::dynamic(&state.registry);
     let sessions = SessionIndex::capture(&state);
     let mut items = vec![];
@@ -310,7 +318,7 @@ pub async fn root(
         summary(&state, p, errors.get(&p.name), &sessions)
     });
     Json(
-        json!({"observed_at":crate::auth::now_epoch(),"counts":counts,"projects":projects,
+        json!({"observed_at":crate::auth::now_epoch(),"inventory_revision":inventory_revision,"counts":counts,"projects":projects,
         "attention":{"items":items,"total":attention_count,"truncated":attention_count>100}}),
     )
     .into_response()
@@ -709,5 +717,50 @@ mod pagination_cost_tests {
         assert_eq!(projected, ["project-050", "project-051", "project-052"]);
         assert_eq!(page["total"], 100);
         assert_eq!(page["next_offset"], 53);
+    }
+}
+
+#[cfg(test)]
+mod dashboard_inventory_tests {
+    use super::*;
+    #[tokio::test]
+    async fn dashboard_inventory_revision_changes_with_membership_not_page() {
+        let s = AppState::test_without_runtime();
+        let actor = Actor {
+            driver: "fixture".into(),
+            role: crate::auth::Role::Admin,
+            approval: None,
+        };
+        let a = root(actor.clone(), State(s.clone()), Query(Page::default())).await;
+        let a: Value =
+            serde_json::from_slice(&axum::body::to_bytes(a.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        assert!(
+            a["inventory_revision"].as_str().is_some(),
+            "pagination needs a membership revision"
+        );
+        s.registry.insert(ProjectRecord::new(
+            "sample",
+            &crate::manifest::Manifest::parse("").unwrap(),
+            None,
+        ));
+        let b = root(actor.clone(), State(s.clone()), Query(Page::default())).await;
+        let b: Value =
+            serde_json::from_slice(&axum::body::to_bytes(b.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        let c = root(
+            actor,
+            State(s),
+            Query(Page {
+                offset: Some(1),
+                limit: Some(1),
+            }),
+        )
+        .await;
+        let c: Value =
+            serde_json::from_slice(&axum::body::to_bytes(c.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        assert_ne!(a["inventory_revision"], b["inventory_revision"]);
+        assert_eq!(b["inventory_revision"], c["inventory_revision"]);
     }
 }

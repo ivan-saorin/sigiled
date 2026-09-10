@@ -9,7 +9,7 @@ Only the exact root `/browser/` paths below accept cookies. The existing bare an
 | Route | Contract |
 | --- | --- |
 | `GET /browser/login?return_to=/projects/example` | Creates a five-minute, one-use PKCE S256 transaction, sets `__Host-sigil_login`, preserves an established session and redirects to the fixed authorization endpoint. Default return path `/`. |
-| `GET /browser/callback?code=â€¦&state=â€¦` | Exact registered authorization-code callback, validates state plus independent login cookie, nonce, RS256 signature, exact issuer, ID audience/azp, expiry/iat, optional at_hash, access-token identity/group and matching subject. Atomically publishes a new session and revokes only the established session linked to this still-current transaction. |
+| `GET /browser/callback?code=CODE&state=STATE` | Exact registered authorization-code callback, validates state plus independent login cookie, nonce, RS256 signature, exact issuer, ID audience/azp, expiry/iat, optional at_hash, access-token identity/group and matching subject. Atomically publishes a new session and revokes only the established session linked to this still-current transaction. |
 | `GET /browser/session` | Safe actor, stable identity, display name, role/capability/feature information, absolute/idle expiry epochs and CSRF token. No OAuth or workspace token. |
 | `POST /browser/logout` | Requires session cookie, exact Origin and `X-Sigil-CSRF`; removes the local session and cancels its linked pending/in-flight login transactions immediately, even if provider work is in flight. Clears cookies. No provider-wide logout or revocation is implied. |
 | `GET /browser/api/overview` | Existing safe overview projection with browser identity. Supports existing pagination. |

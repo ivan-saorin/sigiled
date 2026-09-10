@@ -554,3 +554,12 @@ latest failed build/job and revision drift. No inferred TODO/SDE/work-item
 records are synthesized. Revisioned explicit work items remain a separate API.
 
 See `docs/registry-rollout.md` for a complete example and deployment checks.
+
+
+## Browser dashboard and explicit work items (B2)
+
+The host-bound browser shell is served at `/` and `/ui/*`, with self-hosted `/browser/assets/*`. It consumes B1 session identity and A2 safe projections; cookie authentication never extends to bare or `/sigiled` machine endpoints. The complete route/body/persistence contract is in [browser-dashboard.md](browser-dashboard.md).
+
+Added browser-only adapters: POST `/browser/api/projects`; GET `/browser/api/projects/{project}/jobs/{job}/runs`; GET/POST `/browser/api/projects/{project}/work-items`; GET/PATCH `/browser/api/projects/{project}/work-items/{id}`. Mutations require actual B1 Origin/CSRF and identity. Project creation keeps the existing approval policy, serializes per-project work, and safely resumes partial provisioning without replacing incumbent keys. Explicit work items use durable UUID create deduplication and revision CAS with atomic audit history; they do not dismiss derived system attention.
+
+IDE controls, research/model actions and memory curation remain pending their reviewed adapters. Browser disconnect never closes/merges workspaces. See the dashboard contract for explicit origin selection, limits, uncertain-save recovery and release prerequisites.

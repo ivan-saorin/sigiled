@@ -26,6 +26,7 @@ mod runtime;
 mod sessions;
 mod skill;
 mod store;
+mod work_items;
 
 use axum::{
     routing::{get, post},
@@ -43,6 +44,7 @@ pub struct AppState {
     pub apps: apps::AppsState,
     pub jobs: jobs::JobsState,
     pub store: store::Store,
+    pub work_items: work_items::Store,
     /// Some only when GITHUB_PAT is configured: POST /projects needs it,
     /// nothing else does.
     pub github: Option<github::GitHub>,
@@ -191,6 +193,7 @@ async fn main() {
         apps: apps::AppsState::default(),
         jobs: jobs::JobsState::default(),
         store: store::Store::from_env(),
+        work_items: work_items::Store::from_env(),
         github: github::GitHub::from_env(),
     };
     state.hydrate_from_disk();
@@ -223,7 +226,7 @@ impl AppState {
         std::fs::create_dir_all(&repos).unwrap();
         Self {
             registry: project::Registry::default(),
-            sessions: sessions::SessionState::with_repos_dir(repos),
+            sessions: sessions::SessionState::with_repos_dir(repos.clone()),
             auth: auth::AuthState {
                 config: Arc::new(auth::AuthConfig::default()),
                 keys: auth::KeyStore::default(),
@@ -234,6 +237,7 @@ impl AppState {
             apps: apps::AppsState::default(),
             jobs: jobs::JobsState::default(),
             store: store::Store::default(),
+            work_items: work_items::Store::at_dir(&repos),
             github: None,
             browser: browser::BrowserState::default(),
         }

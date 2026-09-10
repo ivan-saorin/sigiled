@@ -259,6 +259,10 @@ pub async fn create(
             "name: lowercase alnum + dashes, 2-39 chars, letter first",
         );
     }
+    // Share ownership with other project/repository operations. Two tabs and
+    // machine callers cannot race key generation or registration.
+    let lock = state.sessions.merge_lock(&body.name);
+    let _project = lock.lock().await;
     if state.registry.contains(&body.name) {
         return err(
             StatusCode::CONFLICT,
@@ -268,10 +272,12 @@ pub async fn create(
     let Some(gh) = &state.github else {
         return err(StatusCode::SERVICE_UNAVAILABLE, "GITHUB_PAT not configured");
     };
-    // Order is the v1's: repo first (create or adopt), then the key pair,
-    // then the key on the repo, registration last — a failure anywhere
-    // leaves nothing registered, and the verb can simply be retried.
-    let http = reqwest::Client::new();
+    // Remote repository/key effects may survive a failed response. Retry reuses
+    // them; a failure never claims rollback of an existing remote resource.
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("GitHub client");
     let (repo_full, adopted) = match gh.create_or_adopt(&http, &body.name).await {
         Ok(r) => r,
         Err(e) => return err(StatusCode::BAD_GATEWAY, e),
@@ -300,7 +306,12 @@ pub async fn create(
             adopted,
         },
     );
-    state.persist();
+    if state.try_persist().is_err() {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "registration persistence uncertain; retry the same project name",
+        );
+    }
     tracing::info!(project = %body.name, %repo_full, adopted, "project registered");
     let mut resp = serde_json::to_value(&record).unwrap();
     resp["repo"] = json!(repo_full);

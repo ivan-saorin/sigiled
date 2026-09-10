@@ -5,6 +5,7 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct Config {
     pub origins: Vec<String>,
+    pub dashboard_origin: String,
     pub issuer: String,
     pub authorization: String,
     pub token: String,
@@ -39,6 +40,7 @@ impl Config {
         const KEYS: &[&str] = &[
             "ENABLED",
             "ORIGINS",
+            "DASHBOARD_ORIGIN",
             "ISSUER",
             "AUTHORIZATION_URL",
             "TOKEN_URL",
@@ -96,6 +98,10 @@ impl Config {
                 return Err("browser: origins must be unique canonical exact origins without trailing slash");
             }
         }
+        let dashboard_origin = get("DASHBOARD_ORIGIN").unwrap_or(&origins[0]).to_owned();
+        if !origins.contains(&dashboard_origin) {
+            return Err("browser: dashboard origin must be an explicitly configured origin");
+        }
         let scopes = required("SCOPES")?.to_owned();
         let scope_names: Vec<_> = scopes.split(' ').collect();
         if scopes.len() > 512
@@ -136,6 +142,7 @@ impl Config {
         let idle_seconds = duration("IDLE_SECONDS", 900, absolute_seconds)?;
         Ok(Some(Self {
             origins,
+            dashboard_origin,
             issuer,
             authorization,
             token,

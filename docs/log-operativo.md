@@ -686,3 +686,10 @@ _aggiornato: 2026-08-09, sessione b83823e4 (DEC-26 editto lingua + lettera alla 
 - **Stato a fine sessione**: vedi Â«Stato attualeÂ» sopra.
 - **Prossimo passo previsto**: ratifica delle DEC-01â€¦10 da parte del Re; eventuale confronto incrociato con altro modello prima della ratifica.
 
+
+
+## 2026-09-10 — B2 browser dashboard source
+
+Implemented the embedded host-bound Sigil shell, dynamic A2 project views, project creation adapter and durable explicit work items. Browser creation uses the verified human actor and existing approval policy; per-project locking, incumbent-key reuse and exact GitHub key verification protect retries/two tabs. Work-item transactions persist CAS and audit together before acknowledging. Narrow JSON body allowlists preserve B1 bodyless routes. Corrected the B1 callback documentation placeholders.
+
+Fixture verification covers B1-authorized real handlers, CAS/restart/write failure, partial project provisioning/concurrent retries, and Edge desktop/mobile navigation, inventory search, conflict recovery and expiry-preserved drafts. The dashboard's pending IDE/research/model/memory controls are explicitly incomplete. No production mutations, session lifecycle operations or deployment were performed. See `browser-dashboard.md` for interfaces and live release prerequisites.

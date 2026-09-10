@@ -123,6 +123,44 @@ impl GitHub {
             .send()
             .await
             .map_err(|e| format!("github deploy key: {e}"))?;
+        if r.status().as_u16() == 422 {
+            // An earlier request may have installed the key before its response
+            // was lost. Accept only this exact write-capable key, never a title.
+            let probe = self
+                .req(
+                    http,
+                    reqwest::Method::GET,
+                    &format!("/repos/{}/{name}/keys?per_page=100", self.owner),
+                )
+                .send()
+                .await
+                .map_err(|_| "deploy key verification unavailable")?;
+            if probe.status().is_success() {
+                let keys: serde_json::Value = probe
+                    .json()
+                    .await
+                    .map_err(|_| "deploy key verification invalid")?;
+                let normalized = pubkey
+                    .split_whitespace()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if keys.as_array().is_some_and(|rows| {
+                    rows.iter().any(|key| {
+                        key["read_only"] == false
+                            && key["key"].as_str().is_some_and(|k| {
+                                k.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
+                                    == normalized
+                            })
+                    })
+                }) {
+                    return Ok(());
+                }
+            }
+            return Err(
+                "deploy key installation uncertain; incumbent key preserved for retry".into(),
+            );
+        }
         if r.status().as_u16() != 201 {
             return Err(format!(
                 "github deploy key: {} {}",
@@ -141,10 +179,22 @@ impl GitHub {
         let dir = self.keys_dir.join(project);
         std::fs::create_dir_all(&dir).map_err(|e| format!("keys dir: {e}"))?;
         let priv_path = dir.join("id_ed25519");
-        // Regenerate-from-scratch, as the v1 did: a half-written pair from
-        // a crashed attempt must never survive into a project's life.
-        let _ = std::fs::remove_file(&priv_path);
-        let _ = std::fs::remove_file(dir.join("id_ed25519.pub"));
+        // Never rotate a key on retry. Its public half can be recovered from
+        // the private key even after a crash between the two file writes.
+        if priv_path.exists() {
+            let out = std::process::Command::new("ssh-keygen")
+                .args(["-y", "-P", "", "-f"])
+                .arg(&priv_path)
+                .output()
+                .map_err(|_| "existing deploy key could not be read")?;
+            if !out.status.success() {
+                return Err("existing deploy key requires operator recovery; not replaced".into());
+            }
+            return Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned());
+        }
+        if dir.join("id_ed25519.pub").exists() {
+            return Err("public key exists without private key; operator recovery required".into());
+        }
         let out = std::process::Command::new("ssh-keygen")
             .args([
                 "-q",
@@ -212,5 +262,35 @@ mod tests {
             let mode = priv_path.metadata().unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "private key must be 0600");
         }
+    }
+}
+
+#[cfg(test)]
+mod dashboard_retry_tests {
+    use super::*;
+    #[test]
+    fn dashboard_retry_preserves_private_key_and_recovers_missing_public_half() {
+        let dir = std::env::temp_dir().join(format!("sigil-key-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let gh = GitHub {
+            api_base: "http://unused".into(),
+            pat: "synthetic".into(),
+            owner: "fixture".into(),
+            template: "fixture".into(),
+            keys_dir: dir.clone(),
+        };
+        let first = gh.generate_deploy_key("sample").unwrap();
+        let private = std::fs::read(dir.join("sample/id_ed25519")).unwrap();
+        std::fs::remove_file(dir.join("sample/id_ed25519.pub")).unwrap();
+        let retry = gh.generate_deploy_key("sample").unwrap();
+        assert_eq!(
+            private,
+            std::fs::read(dir.join("sample/id_ed25519")).unwrap(),
+            "retry must not rotate incumbent key"
+        );
+        assert_eq!(
+            first.split_whitespace().take(2).collect::<Vec<_>>(),
+            retry.split_whitespace().take(2).collect::<Vec<_>>()
+        );
     }
 }

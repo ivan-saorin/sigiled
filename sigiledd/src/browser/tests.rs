@@ -133,6 +133,9 @@ fn config_map(idp: &str) -> HashMap<String, String> {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::with_github(None).await
+    }
+    async fn with_github(github: Option<crate::github::GitHub>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let fake = Fake {
@@ -152,6 +155,7 @@ impl Fixture {
             .with_state(fake.clone());
         let idp = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let mut state = AppState::test_without_runtime();
+        state.github = github;
         state.auth.config = Arc::new(auth::AuthConfig {
             oidc_base: Some(origin),
             admin_group: "stack:admins".into(),
@@ -1196,4 +1200,289 @@ async fn browser_review_cancelled_callback_consumes_only_its_attempt() {
             .status(),
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn dashboard_shell_is_origin_bound_and_new_mutations_require_login() {
+    let f = Fixture::new().await;
+    let r = f.request(reqwest::Method::GET, "/").send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert!(r.headers().contains_key("content-security-policy"));
+    assert!(r
+        .text()
+        .await
+        .unwrap()
+        .contains("/browser/assets/dashboard.js"));
+    assert_eq!(
+        f.client
+            .get(format!("{}/", f.base))
+            .header("host", "machine.test")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let r = f
+        .request(
+            reqwest::Method::POST,
+            "/browser/api/projects/demo/work-items",
+        )
+        .json(&json!({"title":"test"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+#[tokio::test]
+async fn dashboard_work_items_auth_cas_audit_restart_and_failed_save() {
+    let f = Fixture::new().await;
+    f.state.registry.insert(crate::project::ProjectRecord::new(
+        "demo",
+        &crate::manifest::Manifest::parse("").unwrap(),
+        None,
+    ));
+    let (cookie, session) = f.signed_in().await;
+    let fields = json!({"title":"<script>fixture</script>","description":"Unsaved notes","state":"open","owner":"Operator","source_link":"/ui/projects/demo/pending"});
+    let payload = json!({"id":"f0000000-0000-4000-8000-000000000001","fields":fields});
+    let url = "/browser/api/projects/demo/work-items";
+    assert_eq!(
+        f.request(reqwest::Method::POST, url)
+            .header("cookie", &cookie)
+            .json(&payload)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let send = |method, path: &str, value: &Value| {
+        f.request(method, path)
+            .header("cookie", &cookie)
+            .header("origin", "https://sigil.test")
+            .header("x-sigil-csrf", session["csrf_token"].as_str().unwrap())
+            .json(value)
+    };
+    let r = send(reqwest::Method::POST, url, &payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let first: Value = r.json().await.unwrap();
+    assert_eq!(first["revision"], 1);
+    assert_eq!(first["creator"], session["actor"]["driver"]);
+    let retry: Value = send(reqwest::Method::POST, url, &payload)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first, retry);
+    let detail = format!("{url}/{}", first["id"].as_str().unwrap());
+    let update = json!({"expected_revision":1,"fields":fields});
+    let mut update = update;
+    update["fields"] = fields.clone();
+    update["fields"]["state"] = json!("blocked");
+    let (a, b) = tokio::join!(
+        send(reqwest::Method::PATCH, &detail, &update).send(),
+        send(reqwest::Method::PATCH, &detail, &update).send()
+    );
+    let mut statuses = vec![a.unwrap().status().as_u16(), b.unwrap().status().as_u16()];
+    statuses.sort();
+    assert_eq!(statuses, [200, 409]);
+    let dir = f.state.sessions.repos_dir.as_ref().unwrap();
+    let restarted = crate::work_items::Store::at_dir(dir);
+    let saved = restarted
+        .get("demo", first["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(saved.revision, 2);
+    assert_eq!(saved.audit.len(), 2);
+    for link in [
+        "javascript:alert(1)",
+        "//evil.test",
+        "/ui/../browser/logout",
+        "https://user:password@evil.test",
+    ] {
+        let mut invalid = payload.clone();
+        invalid["fields"]["source_link"] = json!(link);
+        assert_eq!(
+            send(reqwest::Method::POST, url, &invalid)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    assert_eq!(
+        f.request(reqwest::Method::GET, &format!("{url}?limit=0"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let list: Value = f
+        .request(reqwest::Method::GET, &format!("{url}?limit=1"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["total"], 1);
+    assert!(list["items"][0].get("audit").is_none());
+    // Force atomic replacement failure before publication: prior durable row/audit survive.
+    std::fs::create_dir(dir.join("work-items.json.tmp")).unwrap();
+    let mut next = update.clone();
+    next["expected_revision"] = json!(2);
+    next["fields"]["title"] = json!("must not appear");
+    assert_eq!(
+        send(reqwest::Method::PATCH, &detail, &next)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let saved = restarted
+        .get("demo", first["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(saved.revision, 2);
+    assert_eq!(saved.audit.len(), 2);
+    assert_eq!(
+        f.request(reqwest::Method::POST, "/browser/logout")
+            .header("cookie", &cookie)
+            .header("origin", "https://sigil.test")
+            .header("x-sigil-csrf", session["csrf_token"].as_str().unwrap())
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+}
+#[tokio::test]
+async fn dashboard_project_partial_retry_two_tabs_and_approval() {
+    let generated = Arc::new(AtomicUsize::new(0));
+    let installed = Arc::new(Mutex::new(String::new()));
+    let key_attempts = Arc::new(AtomicUsize::new(0));
+    let count = generated.clone();
+    let key = installed.clone();
+    let attempt = key_attempts.clone();
+    let read_key = installed.clone();
+    let mock = Router::new()
+        .route(
+            "/repos/fixture/template/generate",
+            post(move || {
+                let count = count.clone();
+                async move {
+                    if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                        (
+                            StatusCode::CREATED,
+                            Json(json!({"full_name":"fixture/demo"})),
+                        )
+                            .into_response()
+                    } else {
+                        StatusCode::UNPROCESSABLE_ENTITY.into_response()
+                    }
+                }
+            }),
+        )
+        .route("/repos/fixture/demo", get(|| async { StatusCode::OK }))
+        .route(
+            "/repos/fixture/demo/keys",
+            post(move |Json(body): Json<Value>| {
+                let key = key.clone();
+                let attempt = attempt.clone();
+                async move {
+                    let mut key = key.lock().unwrap();
+                    let value = body["key"]
+                        .as_str()
+                        .unwrap()
+                        .split_whitespace()
+                        .take(2)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if key.is_empty() {
+                        *key = value;
+                    } else {
+                        assert_eq!(*key, value, "retry key must match incumbent");
+                    }
+                    if attempt.fetch_add(1, Ordering::SeqCst) == 0 {
+                        StatusCode::BAD_GATEWAY
+                    } else {
+                        StatusCode::UNPROCESSABLE_ENTITY
+                    }
+                }
+            })
+            .get(move || {
+                let key = read_key.clone();
+                async move { Json(json!([{"key":key.lock().unwrap().clone(),"read_only":false}])) }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    let keys = std::env::temp_dir().join(format!("dashboard-project-retry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&keys);
+    let f = Fixture::with_github(Some(crate::github::GitHub {
+        api_base: base,
+        pat: "synthetic".into(),
+        owner: "fixture".into(),
+        template: "template".into(),
+        keys_dir: keys.clone(),
+    }))
+    .await;
+    *f.fake.options.lock().unwrap() = json!({"access":{"groups":["stack:admins"]}});
+    let (cookie, session) = f.signed_in().await;
+    let send = || {
+        f.request(reqwest::Method::POST, "/browser/api/projects")
+            .header("cookie", &cookie)
+            .header("origin", "https://sigil.test")
+            .header("x-sigil-csrf", session["csrf_token"].as_str().unwrap())
+            .json(&json!({"name":"demo"}))
+            .send()
+    };
+    let r = send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_GATEWAY);
+    let partial: Value = r.json().await.unwrap();
+    assert_eq!(partial["state"], "partial");
+    assert_eq!(partial["retry_same_name"], true);
+    assert!(!f.state.registry.contains("demo"));
+    let incumbent = std::fs::read(keys.join("demo/id_ed25519")).unwrap();
+    let (a, b) = tokio::join!(send(), send());
+    let mut statuses = vec![a.unwrap().status().as_u16(), b.unwrap().status().as_u16()];
+    statuses.sort();
+    assert_eq!(statuses, [200, 201]);
+    assert_eq!(generated.load(Ordering::SeqCst), 2);
+    assert_eq!(key_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        incumbent,
+        std::fs::read(keys.join("demo/id_ed25519")).unwrap()
+    );
+    assert_eq!(f.state.events.for_project("demo").len(), 1);
+    // Even a known project's retry must satisfy the actual new actor's policy.
+    *f.fake.options.lock().unwrap() =
+        json!({"access":{"sub":"unapproved-human","groups":["stack:drivers"]}});
+    let (other, other_session) = f.signed_in().await;
+    let r = f
+        .request(reqwest::Method::POST, "/browser/api/projects")
+        .header("cookie", other)
+        .header("origin", "https://sigil.test")
+        .header(
+            "x-sigil-csrf",
+            other_session["csrf_token"].as_str().unwrap(),
+        )
+        .json(&json!({"name":"demo"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(generated.load(Ordering::SeqCst), 2);
+    task.abort();
 }

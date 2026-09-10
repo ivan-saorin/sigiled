@@ -1,5 +1,6 @@
 //! Browser-only authentication boundary; machine routes never consume cookies.
 mod config;
+mod dashboard;
 mod provider;
 use crate::{
     auth::{self, Actor},
@@ -500,11 +501,11 @@ impl FromRequestParts<AppState> for BrowserContext {
         })
     }
 }
-async fn inspect(c: BrowserContext) -> Json<serde_json::Value> {
+async fn inspect(c: BrowserContext, State(state): State<AppState>) -> Json<serde_json::Value> {
     // A deliberate use of credential only as internal state: no serialized token or generic proxy.
     debug_assert!(!c.access_token.is_empty());
     Json(
-        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"workspace_actions":false,"memory_adapter":false},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
+        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"project_creation":true,"work_items":state.work_items.available(),"workspace_actions":false,"memory_adapter":false},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
     )
 }
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Error> {
@@ -542,6 +543,7 @@ async fn detail(
     crate::overview::detail(c.actor, state, p, q).await
 }
 async fn boundary(request: axum::extract::Request, next: Next) -> Response {
+    let limit = dashboard::body_limit(request.method(), request.uri().path());
     let login_path = matches!(request.uri().path(), "/browser/login" | "/browser/callback");
     let mut r = if request.uri().to_string().len() > 4096
         || request
@@ -550,22 +552,27 @@ async fn boundary(request: axum::extract::Request, next: Next) -> Response {
             .map(|(k, v)| k.as_str().len() + v.len())
             .sum::<usize>()
             > 16384
-        || request.headers().contains_key("transfer-encoding")
-        || request
-            .headers()
-            .get("content-length")
-            .is_some_and(|v| v != "0")
-    {
+        || (limit == 0 && request.headers().contains_key("transfer-encoding"))
+        || request.headers().get("content-length").is_some_and(|v| {
+            v.to_str()
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .is_none_or(|n| n > limit)
+        }) {
         Error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large").into_response()
     } else {
         match tokio::time::timeout(Duration::from_secs(15), async {
             let (parts, body) = request.into_parts();
-            if axum::body::to_bytes(body, 0).await.is_err() {
-                return Error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large").into_response();
-            }
+            let bytes = match axum::body::to_bytes(body, limit).await {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return Error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large")
+                        .into_response()
+                }
+            };
             next.run(axum::http::Request::from_parts(
                 parts,
-                axum::body::Body::empty(),
+                axum::body::Body::from(bytes),
             ))
             .await
         })
@@ -580,6 +587,7 @@ async fn boundary(request: axum::extract::Request, next: Next) -> Response {
     if !login_path && r.status() == StatusCode::UNAUTHORIZED {
         set_cookie(&mut r, SESSION, "", 0);
     }
+    r.headers_mut().insert("content-security-policy", HeaderValue::from_static("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"));
     r.headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-store"));
     r.headers_mut()
@@ -594,13 +602,30 @@ async fn boundary(request: axum::extract::Request, next: Next) -> Response {
 }
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(dashboard::shell))
+        .route("/ui", get(dashboard::shell))
+        .route("/ui/{*path}", get(dashboard::shell))
+        .route("/browser/assets/{name}", get(dashboard::asset))
+        .route("/browser/api/projects", post(dashboard::create))
+        .route(
+            "/browser/api/projects/{project}/work-items",
+            get(dashboard::list_items).post(dashboard::create_item),
+        )
+        .route(
+            "/browser/api/projects/{project}/work-items/{id}",
+            get(dashboard::get_item).patch(dashboard::update_item),
+        )
+        .route(
+            "/browser/api/projects/{project}/jobs/{job}/runs",
+            get(dashboard::job_runs),
+        )
         .route("/browser/login", get(login))
         .route("/browser/callback", get(callback))
         .route("/browser/session", get(inspect))
         .route("/browser/logout", post(logout))
         .route("/browser/api/overview", get(overview))
         .route("/browser/api/projects/{project}", get(detail))
-        .layer(axum::extract::DefaultBodyLimit::max(0))
+        .layer(axum::extract::DefaultBodyLimit::max(16384))
         .layer(middleware::from_fn(boundary))
         .with_state(state)
 }
