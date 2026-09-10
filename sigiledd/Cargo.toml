@@ -29,6 +29,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # OS entropy for session identities and workspace bearer tokens.
 getrandom = "0.2"
+# PKCE S256, OIDC at_hash and stable human identity encoding.
+sha2 = "0.10"
+base64 = "0.22"
 
 # Process-group termination and nonblocking pipes for bounded repository refresh.
 [target.'cfg(unix)'.dependencies]

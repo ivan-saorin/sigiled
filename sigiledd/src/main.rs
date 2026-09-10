@@ -8,6 +8,7 @@
 mod apps;
 mod auth;
 mod bounded_process;
+mod browser;
 mod catalog;
 mod contract;
 mod declaration;
@@ -37,6 +38,7 @@ pub struct AppState {
     pub registry: project::Registry,
     pub events: events::EventLog,
     pub auth: auth::AuthState,
+    pub browser: browser::BrowserState,
     pub sessions: sessions::SessionState,
     pub apps: apps::AppsState,
     pub jobs: jobs::JobsState,
@@ -141,6 +143,7 @@ pub fn app(state: AppState) -> Router {
     // Same routes bare and under /sigiled: the edge forwards /sigiled/* verbatim,
     // a local run can use either.
     Router::new()
+        .merge(browser::router(state.clone()))
         .merge(sigiled_router(state.clone()))
         .nest("/sigiled", sigiled_router(state))
 }
@@ -177,10 +180,13 @@ async fn main() {
     let mut registry =
         project::Registry::with_latest_template(std::env::var("SIGILED_TEMPLATE_LATEST").ok());
     registry.domain = std::env::var("DOMAIN").ok();
+    let auth = auth::AuthState::default();
+    let browser = browser::BrowserState::from_env(&auth.config);
     let state = AppState {
         registry,
         events: events::EventLog::default(),
-        auth: auth::AuthState::default(),
+        auth,
+        browser,
         sessions: sessions::SessionState::default(),
         apps: apps::AppsState::default(),
         jobs: jobs::JobsState::default(),
@@ -229,6 +235,10 @@ impl AppState {
             jobs: jobs::JobsState::default(),
             store: store::Store::default(),
             github: None,
+            browser: browser::BrowserState::default(),
         }
     }
 }
+
+#[cfg(test)]
+mod browser_tests;

@@ -124,7 +124,7 @@ impl AuthConfig {
     }
 }
 
-fn constant_time_eq(a: &str, b: &str) -> bool {
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;
@@ -226,19 +226,26 @@ impl Claims {
     }
 }
 
-/// kid → decoding key. Populated from the issuer's JWKS on miss (prod) or
-/// preloaded (tests). One store for all issuers under the configured base:
-/// kids are random enough, and a hostile issuer never gets fetched because
-/// the iss prefix is checked first.
+/// (issuer, kid) -> decoding key. Production keys never cross issuer boundaries.
+/// Browser verification uses a separate fixed-issuer/JWKS cache with bounded refresh.
 #[derive(Default, Clone)]
-pub struct KeyStore(Arc<RwLock<HashMap<String, DecodingKey>>>);
+pub struct KeyStore(Arc<RwLock<HashMap<(String, String), DecodingKey>>>);
 
 impl KeyStore {
+    #[cfg(test)]
     pub fn preload(&self, kid: &str, key: DecodingKey) {
-        self.0.write().unwrap().insert(kid.to_string(), key);
+        self.0
+            .write()
+            .unwrap()
+            .insert((String::new(), kid.to_string()), key);
     }
-    fn get(&self, kid: &str) -> Option<DecodingKey> {
-        self.0.read().unwrap().get(kid).cloned()
+    fn get(&self, issuer: &str, kid: &str) -> Option<DecodingKey> {
+        let scoped = (issuer.to_owned(), kid.to_owned());
+        let keys = self.0.read().unwrap();
+        let value = keys.get(&scoped).cloned();
+        #[cfg(test)]
+        let value = value.or_else(|| keys.get(&(String::new(), kid.to_owned())).cloned());
+        value
     }
 
     /// Fetch {iss}jwks/ and cache every RSA key found. Authentik serves the
@@ -258,7 +265,10 @@ impl KeyStore {
                 (k["kid"].as_str(), k["n"].as_str(), k["e"].as_str())
             {
                 if let Ok(key) = DecodingKey::from_rsa_components(n, e) {
-                    self.preload(kid, key);
+                    self.0
+                        .write()
+                        .unwrap()
+                        .insert((iss.to_owned(), kid.to_owned()), key);
                 }
             }
         }
@@ -304,11 +314,13 @@ pub async fn validate_jwt(
         ));
     }
 
-    if keys.get(&kid).is_none() {
+    if keys.get(&unverified.iss, &kid).is_none() {
         let http = http.ok_or("unknown kid and no http client to refresh JWKS")?;
         keys.refresh_from(http, &unverified.iss).await?;
     }
-    let key = keys.get(&kid).ok_or("kid not found in issuer JWKS")?;
+    let key = keys
+        .get(&unverified.iss, &kid)
+        .ok_or("kid not found in issuer JWKS")?;
 
     let mut validation = Validation::new(Algorithm::RS256);
     // aud is the per-driver client_id (§1.3): sigiledd accepts every provider
@@ -316,6 +328,25 @@ pub async fn validate_jwt(
     validation.validate_aud = false;
     let data = decode::<Claims>(token, &key, &validation).map_err(|e| format!("jwt: {e}"))?;
     Ok(data.claims)
+}
+
+/// Strict browser access-token validation using keys bound to a fixed trusted issuer/JWKS.
+pub(crate) fn validate_exact_jwt(
+    token: &str,
+    issuer: &str,
+    key: &DecodingKey,
+) -> Result<Claims, jsonwebtoken::errors::Error> {
+    let mut v = Validation::new(Algorithm::RS256);
+    v.leeway = 0;
+    v.validate_aud = false; // Same compatible access-token audience policy as machine callers.
+    v.set_issuer(&[issuer]);
+    v.set_required_spec_claims(&["iss", "sub", "exp"]);
+    let claims = decode::<Claims>(token, key, &v)?.claims;
+    // jsonwebtoken 9 accepts exp == now; browser credentials require strictly future expiry.
+    if claims.exp as u64 <= now_epoch() {
+        return Err(jsonwebtoken::errors::ErrorKind::ExpiredSignature.into());
+    }
+    Ok(claims)
 }
 
 pub fn actor_from_claims(
@@ -499,6 +530,9 @@ pub struct VerifyBody {
     caller: String,
     service: String,
     granted_by: &'static str,
+    issuer: String,
+    subject: String,
+    principal_kind: &'static str,
 }
 
 /// May `claims` call `service`? The whole policy, in one place and pure so
@@ -606,6 +640,9 @@ pub async fn verify(
         caller: caller.clone(),
         service,
         granted_by,
+        issuer: claims.iss.clone(),
+        subject: claims.sub.clone(),
+        principal_kind: "oidc",
     })
     .into_response();
     if let Ok(v) = axum::http::HeaderValue::from_str(&caller) {
@@ -992,7 +1029,7 @@ YQIDAQAB
         };
         crate::AppState {
             auth,
-            ..Default::default()
+            ..crate::AppState::test_without_runtime()
         }
     }
 
