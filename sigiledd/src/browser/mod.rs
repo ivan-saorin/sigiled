@@ -40,6 +40,7 @@ struct Store {
     logins: HashMap<String, Transaction>,
     sessions: HashMap<String, Arc<Session>>,
 }
+#[derive(Clone)]
 struct Transaction {
     binding: String,
     origin: String,
@@ -47,6 +48,8 @@ struct Transaction {
     verifier: String,
     return_to: String,
     expires: u64,
+    in_flight: bool,
+    replaces_session: Option<String>,
 }
 struct Session {
     origin: String,
@@ -257,9 +260,10 @@ async fn login(
     ]);
     let mut store = b.store.lock().unwrap();
     b.prune(&mut store);
-    if let Some(old) = cookie(&headers, SESSION) {
-        store.sessions.remove(&old);
-    }
+    // GET initiation never revokes an authenticated session. A successfully verified,
+    // still-current transaction may atomically replace this exact session later.
+    let replaces_session = cookie(&headers, SESSION)
+        .filter(|id| store.sessions.get(id).is_some_and(|s| s.origin == origin));
     if let Some(old) = cookie(&headers, LOGIN) {
         store.logins.retain(|_, t| t.binding != old);
     }
@@ -275,11 +279,12 @@ async fn login(
             verifier,
             return_to: return_to.to_owned(),
             expires: auth::now_epoch() + LOGIN_TTL,
+            in_flight: false,
+            replaces_session,
         },
     );
     let mut r = redirect(url.as_str());
     set_cookie(&mut r, LOGIN, &binding, LOGIN_TTL);
-    set_cookie(&mut r, SESSION, "", 0);
     Ok(r)
 }
 async fn callback(
@@ -290,22 +295,26 @@ async fn callback(
     let b = state.browser.inner()?;
     let origin = b.origin(&headers)?;
     let q = query(raw)?;
+    let state_id = q.get("state").ok_or_else(Error::login)?.clone();
+    let binding = cookie(&headers, LOGIN).ok_or_else(Error::login)?;
     let tx = {
         let mut store = b.store.lock().unwrap();
         b.prune(&mut store);
-        if let Some(old) = cookie(&headers, SESSION) {
-            store.sessions.remove(&old);
+        let tx = store.logins.get_mut(&state_id).ok_or_else(Error::login)?;
+        // Unbound requests cannot consume or revoke someone else's transaction.
+        if tx.in_flight || tx.origin != origin || !auth::constant_time_eq(&binding, &tx.binding) {
+            return Err(Error::login());
         }
-        store
-            .logins
-            .remove(q.get("state").ok_or_else(Error::login)?)
-            .ok_or_else(Error::login)?
+        tx.in_flight = true;
+        tx.clone()
     };
-    if tx.origin != origin
-        || !cookie(&headers, LOGIN).is_some_and(|c| auth::constant_time_eq(&c, &tx.binding))
-        || q.contains_key("error")
-        || q.get("iss").is_some_and(|s| s != &b.config.issuer)
-    {
+    // Membership remains visible to replacement login and authenticated logout while
+    // the IdP request is in flight. Cancellation/failure consumes only this attempt.
+    let _attempt = LoginGuard {
+        b: b.clone(),
+        state_id: state_id.clone(),
+    };
+    if q.contains_key("error") || q.get("iss").is_some_and(|s| s != &b.config.issuer) {
         return Err(Error::login());
     }
     let code = q
@@ -351,14 +360,40 @@ async fn callback(
     });
     let mut store = b.store.lock().unwrap();
     b.prune(&mut store);
-    if store.sessions.len() >= MAX_SESSIONS {
+    if !store.logins.get(&state_id).is_some_and(|current| {
+        current.in_flight && current.binding == tx.binding && current.origin == tx.origin
+    }) {
+        return Err(Error::login());
+    }
+    let replaces_live_session = tx
+        .replaces_session
+        .as_ref()
+        .is_some_and(|old| store.sessions.contains_key(old));
+    if store.sessions.len() >= MAX_SESSIONS && !replaces_live_session {
         return Err(Error(StatusCode::SERVICE_UNAVAILABLE, "session_capacity"));
+    }
+    store.logins.remove(&state_id);
+    if let Some(old) = &tx.replaces_session {
+        store.sessions.remove(old);
     }
     store.sessions.insert(id.clone(), session);
     let mut r = redirect(&tx.return_to);
-    set_cookie(&mut r, LOGIN, "", 0);
+    // Never clear the login cookie from a callback: a newer login response may
+    // already have installed its own binding. Consumed bindings expire naturally.
     set_cookie(&mut r, SESSION, &id, b.config.absolute_seconds);
     Ok(r)
+}
+
+// An owned callback attempt may remove only its random state generation.
+// Drop also runs when the route timeout or its task cancels provider exchange.
+struct LoginGuard {
+    b: Arc<Inner>,
+    state_id: String,
+}
+impl Drop for LoginGuard {
+    fn drop(&mut self) {
+        self.b.store.lock().unwrap().logins.remove(&self.state_id);
+    }
 }
 
 /// Internal, non-serializable credential context for fixed service adapters.
@@ -477,7 +512,15 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
     let origin = b.origin(&headers)?;
     let (id, s) = b.session(&headers, &origin)?;
     b.mutation(&headers, &s)?;
-    b.store.lock().unwrap().sessions.remove(&id);
+    {
+        let mut store = b.store.lock().unwrap();
+        store.sessions.remove(&id);
+        let binding = cookie(&headers, LOGIN);
+        store.logins.retain(|_, tx| {
+            tx.replaces_session.as_deref() != Some(&id)
+                && !(tx.origin == origin && binding.as_ref().is_some_and(|v| v == &tx.binding))
+        });
+    }
     let mut r = StatusCode::NO_CONTENT.into_response();
     set_cookie(&mut r, SESSION, "", 0);
     set_cookie(&mut r, LOGIN, "", 0);
@@ -532,10 +575,9 @@ async fn boundary(request: axum::extract::Request, next: Next) -> Response {
             Err(_) => Error(StatusCode::GATEWAY_TIMEOUT, "request_timeout").into_response(),
         }
     };
-    if login_path && (r.status().is_client_error() || r.status().is_server_error()) {
-        set_cookie(&mut r, LOGIN, "", 0);
-        set_cookie(&mut r, SESSION, "", 0);
-    } else if r.status() == StatusCode::UNAUTHORIZED {
+    // Failed auth attempts must not delete a separate established session or a
+    // newer login binding. Their owned server transaction cleanup is sufficient.
+    if !login_path && r.status() == StatusCode::UNAUTHORIZED {
         set_cookie(&mut r, SESSION, "", 0);
     }
     r.headers_mut()

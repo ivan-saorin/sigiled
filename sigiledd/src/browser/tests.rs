@@ -40,6 +40,7 @@ async fn other_jwks() -> Json<Value> {
 }
 async fn token(State(fake): State<Fake>, Form(form): Form<HashMap<String, String>>) -> Response {
     let options = fake.options.lock().unwrap().clone();
+    let login_nonce = fake.nonce.lock().unwrap().clone();
     let refresh = form.get("grant_type").is_some_and(|s| s == "refresh_token");
     if refresh {
         fake.refreshes.fetch_add(1, Ordering::SeqCst);
@@ -58,6 +59,10 @@ async fn token(State(fake): State<Fake>, Form(form): Form<HashMap<String, String
         );
         assert_eq!(form["code"], "synthetic-code");
         assert_eq!(form["redirect_uri"], "https://sigil.test/browser/callback");
+        if options["block_code"] == true {
+            fake.started.notify_one();
+            fake.release.notified().await;
+        }
     }
     if options["reject"] == true {
         return (StatusCode::BAD_REQUEST, "synthetic-secret-provider-error").into_response();
@@ -73,7 +78,7 @@ async fn token(State(fake): State<Fake>, Form(form): Form<HashMap<String, String
         access.as_object_mut().unwrap().extend(patch.clone());
     }
     let access_token = sign(&access);
-    let mut id = json!({"iss":format!("{}/issuer/",fake.origin),"sub":access["sub"],"aud":"shared-browser-client","azp":"shared-browser-client","exp":auth::now_epoch()+600,"iat":auth::now_epoch(),"nonce":*fake.nonce.lock().unwrap(),"at_hash":URL_SAFE_NO_PAD.encode(&Sha256::digest(access_token.as_bytes())[..16])});
+    let mut id = json!({"iss":format!("{}/issuer/",fake.origin),"sub":access["sub"],"aud":"shared-browser-client","azp":"shared-browser-client","exp":auth::now_epoch()+600,"iat":auth::now_epoch(),"nonce":login_nonce,"at_hash":URL_SAFE_NO_PAD.encode(&Sha256::digest(access_token.as_bytes())[..16])});
     if refresh {
         id.as_object_mut().unwrap().remove("nonce");
     }
@@ -400,6 +405,10 @@ async fn browser_callback_state_cookie_expiry_and_replay() {
     assert_safe_error(f.callback("missing", "").await, StatusCode::UNAUTHORIZED).await;
     let (state, binding) = f.start().await;
     assert_safe_error(f.callback(&state, "").await, StatusCode::UNAUTHORIZED).await;
+    assert_eq!(
+        f.callback(&state, &binding).await.status(),
+        StatusCode::SEE_OTHER
+    );
     assert_safe_error(f.callback(&state, &binding).await, StatusCode::UNAUTHORIZED).await;
     let (state, binding) = f.start().await;
     f.state
@@ -844,7 +853,7 @@ async fn browser_session_fixation_login_rotation_and_bounded_pruning() {
             .await
             .unwrap()
             .status(),
-        StatusCode::UNAUTHORIZED
+        StatusCode::OK
     );
     let response = f.callback(&state, &format!("{binding}; {cookie}")).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -872,6 +881,8 @@ async fn browser_session_fixation_login_rotation_and_bounded_pruning() {
                     verifier: "verifier".into(),
                     return_to: "/".into(),
                     expires: auth::now_epoch() + 300,
+                    in_flight: false,
+                    replaces_session: None,
                 },
             );
         }
@@ -970,4 +981,219 @@ async fn browser_access_and_id_token_expiry_are_exclusive_at_current_second() {
         .unwrap()
         .sessions
         .is_empty());
+}
+
+#[tokio::test]
+async fn browser_review_unbound_callback_preserves_established_session() {
+    let f = Fixture::new().await;
+    let (cookie, _) = f.signed_in().await;
+    let response = f
+        .request(
+            reqwest::Method::GET,
+            "/browser/callback?state=invalid&code=synthetic-code",
+        )
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        response.headers().get("set-cookie").is_none(),
+        "unbound callback must not change browser cookies"
+    );
+    assert_eq!(
+        f.request(reqwest::Method::GET, "/browser/session")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+#[tokio::test]
+async fn browser_review_login_initiation_and_failed_attempt_preserve_established_session() {
+    let f = Fixture::new().await;
+    let (cookie, _) = f.signed_in().await;
+    let response = f
+        .request(reqwest::Method::GET, "/browser/login")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .all(|v| !v.to_str().unwrap().starts_with(SESSION)),
+        "GET login must preserve the established session cookie"
+    );
+    assert_eq!(
+        f.request(reqwest::Method::GET, "/browser/session")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let (state, binding) = f.start_cookie(&cookie).await;
+    *f.fake.options.lock().unwrap() = json!({"reject":true});
+    let response = f.callback(&state, &format!("{binding}; {cookie}")).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(response.headers().get("set-cookie").is_none());
+    assert_eq!(
+        f.request(reqwest::Method::GET, "/browser/session")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+#[tokio::test]
+async fn browser_review_superseded_inflight_callback_cannot_publish_or_clear_new_cookie() {
+    let f = Fixture::new().await;
+    let (state_a, binding_a) = f.start().await;
+    *f.fake.options.lock().unwrap() = json!({"block_code":true});
+    let request = f
+        .request(
+            reqwest::Method::GET,
+            &format!("/browser/callback?code=synthetic-code&state={state_a}"),
+        )
+        .header("cookie", &binding_a);
+    let pending = tokio::spawn(async move { request.send().await.unwrap() });
+    f.fake.started.notified().await;
+    *f.fake.options.lock().unwrap() = json!({});
+    let (state_b, binding_b) = f.start_cookie(&binding_a).await;
+    assert_ne!(binding_a, binding_b);
+    f.fake.release.notify_one();
+    let stale = pending.await.unwrap();
+    assert_eq!(
+        stale.status(),
+        StatusCode::UNAUTHORIZED,
+        "superseded callback must not publish a session"
+    );
+    assert!(
+        stale.headers().get("set-cookie").is_none(),
+        "stale response must not clear B's binding"
+    );
+    assert!(f
+        .state
+        .browser
+        .inner()
+        .unwrap()
+        .store
+        .lock()
+        .unwrap()
+        .sessions
+        .is_empty());
+    let current = f.callback(&state_b, &binding_b).await;
+    assert_eq!(current.status(), StatusCode::SEE_OTHER);
+    let cookie = response_cookie(&current, SESSION);
+    assert_eq!(
+        f.request(reqwest::Method::GET, "/browser/session")
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[test]
+fn browser_review_id_token_expiry_checks_a_deterministic_same_instant() {
+    // This is the production verifier's shared initial/refresh time predicate.
+    assert!(provider::validate_id_time(999, 990, 1_000).is_err());
+    assert!(provider::validate_id_time(1_000, 990, 1_000).is_err());
+    assert!(provider::validate_id_time(1_001, 990, 1_000).is_ok());
+    assert!(provider::validate_id_time(1_100, 1_031, 1_000).is_err());
+}
+#[tokio::test]
+async fn browser_review_logout_cancels_pending_and_inflight_login_replacement() {
+    for in_flight in [false, true] {
+        let f = Fixture::new().await;
+        let (session_cookie, view) = f.signed_in().await;
+        let (state, binding) = f.start_cookie(&session_cookie).await;
+        let request = f
+            .request(
+                reqwest::Method::GET,
+                &format!("/browser/callback?code=synthetic-code&state={state}"),
+            )
+            .header("cookie", format!("{binding}; {session_cookie}"));
+        let pending = if in_flight {
+            *f.fake.options.lock().unwrap() = json!({"block_code":true});
+            let pending = tokio::spawn(async move { request.send().await.unwrap() });
+            f.fake.started.notified().await;
+            Some(pending)
+        } else {
+            None
+        };
+        let logout = f
+            .request(reqwest::Method::POST, "/browser/logout")
+            // The session linkage must cancel A even if the login cookie is absent.
+            .header("cookie", &session_cookie)
+            .header("origin", "https://sigil.test")
+            .header("x-sigil-csrf", view["csrf_token"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+        let stale = if let Some(pending) = pending {
+            f.fake.release.notify_one();
+            pending.await.unwrap()
+        } else {
+            f.callback(&state, &binding).await
+        };
+        assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+        assert!(stale.headers().get("set-cookie").is_none());
+        let b = f.state.browser.inner().unwrap();
+        let store = b.store.lock().unwrap();
+        assert!(store.sessions.is_empty());
+        assert!(store.logins.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn browser_review_cancelled_callback_consumes_only_its_attempt() {
+    let f = Fixture::new().await;
+    let (session_cookie, _) = f.signed_in().await;
+    let (state_id, binding) = f.start_cookie(&session_cookie).await;
+    *f.fake.options.lock().unwrap() = json!({"block_code":true});
+    let state = f.state.clone();
+    let mut headers = HeaderMap::new();
+    headers.insert("host", "sigil.test".parse().unwrap());
+    headers.insert(
+        "cookie",
+        format!("{binding}; {session_cookie}").parse().unwrap(),
+    );
+    let query = RawQuery(Some(format!("code=synthetic-code&state={state_id}")));
+    let pending = tokio::spawn(async move { callback(State(state), headers, query).await });
+    f.fake.started.notified().await;
+    pending.abort();
+    assert!(matches!(pending.await, Err(e) if e.is_cancelled()));
+    f.fake.release.notify_one();
+    assert!(!f
+        .state
+        .browser
+        .inner()
+        .unwrap()
+        .store
+        .lock()
+        .unwrap()
+        .logins
+        .contains_key(&state_id));
+    assert_eq!(
+        f.request(reqwest::Method::GET, "/browser/session")
+            .header("cookie", &session_cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
 }

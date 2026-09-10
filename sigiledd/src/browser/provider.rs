@@ -186,10 +186,9 @@ impl Provider {
                     .collect::<Result<_, _>>()?,
                 _ => return Err(Error::login()),
             };
+            validate_id_time(id.exp, id.iat, auth::now_epoch())?;
             if id.iss != cfg.issuer
                 || id.sub != claims.sub
-                || id.exp <= auth::now_epoch()
-                || id.iat > auth::now_epoch() + 30
                 || audiences.is_empty()
                 || (audiences.len() > 1 && id.azp.as_deref() != Some(&cfg.client_id))
                 || id.azp.as_ref().is_some_and(|s| s != &cfg.client_id)
@@ -224,6 +223,15 @@ impl Provider {
         })
     }
 }
+/// The same explicit instant drives expiry/issued-at checks, independently of
+/// jsonwebtoken's inclusive exp boundary. Shared by initial and refreshed ID tokens.
+pub(super) fn validate_id_time(exp: u64, iat: u64, now: u64) -> Result<(), Error> {
+    if exp <= now || iat > now.saturating_add(30) {
+        return Err(Error::login());
+    }
+    Ok(())
+}
+
 pub(crate) fn principal(issuer: &str, subject: &str) -> String {
     let tuple = serde_json::to_vec(&(issuer, subject)).expect("string tuple");
     format!("human:{}", URL_SAFE_NO_PAD.encode(Sha256::digest(tuple)))
