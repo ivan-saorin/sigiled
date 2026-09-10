@@ -253,7 +253,9 @@ impl Runtime {
 
     /// Push a ref with the project's deploy key (close, after the merge).
     pub fn push(&self, project: &str, refspec: &str) -> Result<String, String> {
-        if std::env::var("SIGILED_IDE_HOST_MERGE").as_deref() == Ok("github-pat") {
+        if refspec == "master"
+            && std::env::var("SIGILED_IDE_HOST_MERGE").as_deref() == Ok("github-pat")
+        {
             return crate::ide::host_merge_push(self, project, refspec);
         }
         let path = self.repo_path(project);

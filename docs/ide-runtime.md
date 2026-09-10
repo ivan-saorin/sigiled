@@ -13,7 +13,7 @@ compiled extensions, entrypoint, CMD, workdir, environment or toolchain.
 checksum-verified provider under `/usr/local/share/sigil-ide`. The operator may
 override `SIGILED_IDE_BUNDLE_DIR`; project declarations cannot supply a bundle,
 upstream URL, host mount or credential. Layer cache keys include the resolved
-project image ID, provider version and helper/extension content hash. Build
+project image ID (also used to inspect the preserved USER), provider version and helper/extension content hash. Build
 and control subprocesses have deadlines, retained process ownership and safe
 errors. Image preparation releases the project mirror lock and retains the
 session generation guard. No production Docker build was performed for this
@@ -30,7 +30,8 @@ PAT actor; the PAT stays in the control plane. When set, normal host merge
 pushes use that PAT over fixed GitHub HTTPS through a process-local credential
 helper. Neither Git remotes, command arguments, subprocess output nor workspace
 configuration contains the PAT. Without this explicit setting the old deploy
-key merge transport is unchanged. A bounded non-mutating `git push --dry-run`
+key merge transport is unchanged. Session-ref deletion keeps the deploy-key
+transport even when host PAT merge is enabled. A bounded non-mutating `git push --dry-run`
 negotiation also checks host transport authority before opening the editor.
 
 The supported GitHub policy subset is deliberately conservative:
@@ -64,15 +65,24 @@ image/provider/generation state and bounded observed helper status. `POST` takes
 `{"generation":1,"action":"start|stop|checkpoint|finish"}`. All operations
 apply existing authorization; they do not open or stop another workspace.
 Start is idempotent and policy-gated. Mutations retain the session guard after
-request cancellation. Finish checkpoints successfully and enters normal close
-with the same expected generation. Browser disconnect never finishes/merges.
+request cancellation. Finish uses the strict helper finish handshake and enters normal close with the
+same expected generation; close revalidates the handshake under its lifecycle
+lock. Browser disconnect never finishes/merges.
 
 The additive custodied `WorkspaceBinding.ide` includes separate random control
 and activity credentials. They are persisted only in Sigil state; public views
 use a strict projection, never serialize the binding. C2 uses the recorded
 container and generation, not project DNS. Internal helper HTTP is on port
 8090 with `Authorization: Bearer <custodied helper token>`; no port is published.
-`/status`, `/start`, `/stop`, `/checkpoint` are narrow operations. `/editor` and
+`/status`, `/start`, `/stop`, `/checkpoint`, `/finish` are narrow operations.
+Internal `POST /finish` refuses known running commands, stops the owned editor
+process group, publishes pending preferences, and then checkpoints saved work.
+Success is exactly `{"state":"finished","generation":1,"sha":"<pushed SHA>","dirty":false}`.
+The controller validates that receipt for IDE-used close/recycle/reap; ordinary
+checkpoint success alone cannot authorize destruction. A concurrent save during
+push or failed clean verification returns `workspace_changed` and retains the
+workspace for deliberate retry. Failed editor cleanup or preference publication
+also blocks destruction. No unbounded retry or reset is used. `/editor` and
 `/editor/*` relay only to `127.0.0.1:8091` (code-server), strip control credentials
 and cookies, and support HTTP and WebSocket upgrades. C2 must enforce browser
 authority and actively terminate sockets on revocation; a companion handshake
@@ -84,7 +94,11 @@ Readiness separates desired/default-on from image pending/setup required,
 starting, ready, stopped and failed. An existing generation without the provider
 layer requires a deliberate future recycle; it is never silently replaced.
 A crashed companion cannot adopt or kill an unknown process found on the editor
-port; it reports ownership unknown and retains files. Stop/restart acts only on
+port; it reports ownership unknown and retains files. An editor-running marker
+is written before spawn and removed only after confirmed cleanup. A restarted
+companion without that process ownership refuses start/finish while the marker
+remains, even if the old editor has not bound its listener yet. A live unexplained
+listener also blocks stop/finish before any preferences are published. Stop/restart acts only on
 its unreaped child process group. Log output is discarded, not exposed with
 potential credentials. Existing agent sessions keep their normal path when IDE
 setup/policy is unconfirmed.
@@ -97,7 +111,9 @@ inside it the companion uses private `uid-<effective workspace uid>` storage.
 Different project UIDs retain separate preference sets rather than changing the
 project user. Each session/generation has an independent live data, SQLite,
 extensions and IPC profile. Stop publishes an immutable preferences/extensions
-snapshot and atomically selects it for later sessions; concurrent sessions never
+snapshot and atomically selects it for later sessions. A session-local pending
+marker survives process exit and companion restart; repeated stop/finish must
+retry publication until it succeeds. Marker-read errors also fail closed; concurrent sessions never
 share a writable SQLite instance. Snapshots and live profiles survive container
 close/reap and require an explicit future operator retention policy. New profiles
 seed defaults without replacing deliberate settings, including JSONC settings;
@@ -129,7 +145,16 @@ checkpoint synchronization and an abandoned socket do not renew idle time.
 VS Code does not expose a universal human-input signal: terminals without shell
 integration and extension actions without observable interaction have limits.
 A known running command or manual checkpoint prevents automatic reaping. Lost
-command-end observations conservatively retain the workspace; inspect/reconcile
+command-end observations conservatively retain the workspace. Each shell execution
+has an extension-instance UUID plus sequence ID; activity requests carry
+`execution_id` with the existing decimal-string generation and credential. The
+helper tracks active IDs, ignores unmatched/duplicate ends, and conservatively
+retains late starts after an earlier end. IDs are bounded; overflow retains busy
+state instead of forgetting known work. Start/end observations without a valid
+ID are rejected. These controls do not supervise arbitrary agent-side writers;
+those must be coordinated before finish, and observed concurrent saved changes
+fail the final clean check. No advisory lock prevents a non-cooperating writer
+from changing files after that last observation. For lost end observations, inspect/reconcile
 that terminal state instead of silently killing work. Helper failure also retains
 IDE-used generations. Active command stop/checkpoint refusal is explicit.
 
@@ -151,3 +176,15 @@ GitHub rule/host User transport, C2 SSO and active socket revocation, and browse
 files/search/terminal/Git/extension paths. Rolling back to an older binary while
 IDE-used generations exist loses the new idle/checkpoint contract: stop/finish
 those sessions through the new binary first and preserve volumes/state backups.
+
+### Lost-ownership recovery
+
+The running marker belongs only to the recorded session/generation live profile
+under its operator volume and effective-UID directory. It contains no adoptable
+PID. There is no automatic or browser force-recovery operation. An operator may
+clear that generation's marker only after identifying its exact recorded runtime
+and verifying the previous editor and its writers have terminated, while
+preserving workspace files and the live profile. Then retry ordinary start or
+finish so pending preferences and saved Git work receive their normal checks.
+If termination or ownership cannot be proved, keep the workspace and marker.
+This manual custody recovery was not exercised against a live runtime here.

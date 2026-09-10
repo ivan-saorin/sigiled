@@ -1,15 +1,24 @@
 const vscode = require('vscode');
 const http = require('http');
+const {randomUUID} = require('crypto');
 exports.activate = context => {
   const token = process.env.SIGIL_IDE_ACTIVITY_TOKEN;
   const generation = process.env.SIGIL_IDE_GENERATION;
   if (!token || !/^\d+$/.test(generation || '')) return;
   let last = 0;
   let interaction = 0;
-  const report = event => {
+  const instance = randomUUID();
+  const executions = new WeakMap();
+  let sequence = 0;
+  const executionId = execution => {
+    if (!execution || typeof execution !== 'object') return undefined;
+    if (!executions.has(execution)) executions.set(execution, instance + ':' + (++sequence));
+    return executions.get(execution);
+  };
+  const report = (event, execution_id) => {
     if (!event.startsWith('command_') && Date.now() - last < 3000) return;
     last = Date.now();
-    const body = JSON.stringify({event,generation});
+    const body = JSON.stringify({event,generation,execution_id});
     const req = http.request({hostname:'127.0.0.1',port:8090,path:'/activity',method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)},timeout:2000},res=>res.resume());
     req.on('error',()=>{}); req.on('timeout',()=>req.destroy()); req.end(body);
   };
@@ -29,5 +38,5 @@ exports.activate = context => {
       if (e.reason === vscode.TextDocumentSaveReason.Manual) report('save');
     })
   );
-  if(vscode.window.onDidStartTerminalShellExecution)context.subscriptions.push(vscode.window.onDidStartTerminalShellExecution(()=>report('command_start')),vscode.window.onDidEndTerminalShellExecution(()=>report('command_end')));
+  if(vscode.window.onDidStartTerminalShellExecution)context.subscriptions.push(vscode.window.onDidStartTerminalShellExecution(e=>report('command_start', executionId(e.execution))),vscode.window.onDidEndTerminalShellExecution(e=>report('command_end', executionId(e.execution))));
 };

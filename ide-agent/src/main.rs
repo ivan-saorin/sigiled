@@ -24,6 +24,8 @@ struct Config {
 struct Agent {
     config: Config,
     profile_root: PathBuf,
+    repository_root: PathBuf,
+    editor_address: String,
     checkpoint_busy: Arc<std::sync::atomic::AtomicBool>,
     process: tokio::sync::Mutex<Option<Process>>,
     activity: std::sync::Mutex<Activity>,
@@ -53,7 +55,7 @@ fn valid(a: &Agent, r: &Request, activity: bool) -> bool {
 }
 fn repository(a: &Agent) -> Repository {
     Repository {
-        root: "/workspace".into(),
+        root: a.repository_root.clone(),
         branch: a.config.branch.clone(),
         remote: a.config.remote.clone(),
     }
@@ -82,11 +84,26 @@ async fn status(State(a): State<Arc<Agent>>) -> Json<serde_json::Value> {
 }
 async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
     let mut guard = a.process.lock().await;
+    let live = std::path::Path::new(&a.config.profile);
+    if guard.is_none() && editor_marker(live).unwrap_or(true) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"editor_ownership_unknown"})),
+        )
+            .into_response();
+    }
     if let Some(p) = guard.as_mut() {
         if p.running() {
             return Json(json!({"state":"ready"})).into_response();
         }
         if p.stop().is_err() {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error":"editor_stop_unconfirmed"})),
+            )
+                .into_response();
+        }
+        if clear_editor_marker(live).is_err() {
             return (
                 StatusCode::CONFLICT,
                 Json(json!({"error":"editor_stop_unconfirmed"})),
@@ -110,6 +127,13 @@ async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
         return (
             StatusCode::CONFLICT,
             Json(json!({"error":"profile_setup_required"})),
+        )
+            .into_response();
+    }
+    if sigil_ide_agent::profile::mark_pending(&profile).is_err() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"preferences_save_failed"})),
         )
             .into_response();
     }
@@ -173,9 +197,19 @@ async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
         .env("XDG_DATA_HOME", profile.join("data-home"))
         .env("SIGIL_IDE_ACTIVITY_TOKEN", &a.config.activity_token)
         .env("SIGIL_IDE_GENERATION", a.config.generation.to_string());
+    if std::fs::write(profile.join(".editor-running"), []).is_err() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"profile_setup_required"})),
+        )
+            .into_response();
+    }
     let mut child = match Process::start(&mut command) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::CONFLICT, Json(json!({"error":e}))).into_response(),
+        Err(e) => {
+            let _ = clear_editor_marker(&profile);
+            return (StatusCode::CONFLICT, Json(json!({"error":e}))).into_response();
+        }
     };
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -197,7 +231,7 @@ async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    let stopped = child.stop().is_ok();
+    let stopped = child.stop().is_ok() && clear_editor_marker(&profile).is_ok();
     if !stopped {
         *guard = Some(child)
     }
@@ -212,27 +246,85 @@ async fn stop_inner(State(a): State<Arc<Agent>>) -> Response {
             .into_response();
     }
     let mut p = a.process.lock().await;
-    if p.is_none() {
-        return Json(json!({"state":"stopped"})).into_response();
+    match stop_locked(&a, &mut p).await {
+        Ok(()) => Json(json!({"state":"stopped"})).into_response(),
+        Err(e) => (StatusCode::CONFLICT, Json(json!({"error":e}))).into_response(),
+    }
+}
+async fn stop_locked(a: &Agent, p: &mut Option<Process>) -> Result<(), &'static str> {
+    let live = std::path::Path::new(&a.config.profile);
+    if p.is_some() {
+        sigil_ide_agent::profile::mark_pending(live).map_err(|_| "preferences_save_failed")?;
+    }
+    if p.is_none() && editor_marker(live).map_err(|_| "editor_ownership_unknown")? {
+        return Err("editor_ownership_unknown");
     }
     if let Some(child) = p.as_mut() {
-        if let Err(e) = child.stop() {
-            return (StatusCode::CONFLICT, Json(json!({"error":e}))).into_response();
-        }
+        child.stop()?;
+        clear_editor_marker(live).map_err(|_| "editor_stop_unconfirmed")?;
     }
     *p = None;
-    if sigil_ide_agent::profile::save(&a.profile_root, std::path::Path::new(&a.config.profile))
-        .is_err()
+    // A live listener after owned cleanup (or a companion restart) is not ours
+    // to adopt or snapshot. Only a refused connection confirms it is absent.
+    match tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::net::TcpStream::connect(&a.editor_address),
+    )
+    .await
     {
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
+        _ => return Err("editor_ownership_unknown"),
+    }
+    sigil_ide_agent::profile::save_pending(&a.profile_root, live)
+        .map_err(|_| "preferences_save_failed")
+}
+fn editor_marker(live: &std::path::Path) -> std::io::Result<bool> {
+    live.join(".editor-running").try_exists()
+}
+fn clear_editor_marker(live: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_file(live.join(".editor-running")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+async fn finish_action(State(a): State<Arc<Agent>>) -> Response {
+    // Holding provider ownership prevents a concurrent restart while its
+    // process group is quiesced and the final snapshot is verified.
+    let mut process = a.process.lock().await;
+    if a.activity.lock().unwrap().busy() {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error":"preferences_save_failed"})),
+            Json(json!({"error":"user_command_running"})),
         )
             .into_response();
     }
-    Json(json!({"state":"stopped"})).into_response()
+    if let Err(e) = stop_locked(&a, &mut process).await {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":e,"work_preserved":true})),
+        )
+            .into_response();
+    }
+    match checkpoint_mode(a.clone(), true, true).await {
+        Ok(sha) => Json(
+            json!({"state":"finished","generation":a.config.generation,"sha":sha,"dirty":false}),
+        )
+        .into_response(),
+        Err(e) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error":e,"work_preserved":true})),
+        )
+            .into_response(),
+    }
 }
 async fn checkpoint_inner(a: Arc<Agent>, commit: bool) -> Result<String, &'static str> {
+    checkpoint_mode(a, commit, false).await
+}
+async fn checkpoint_mode(
+    a: Arc<Agent>,
+    commit: bool,
+    require_clean: bool,
+) -> Result<String, &'static str> {
     let serial = a.sync.clone().lock_owned().await;
     let repo = repository(&a);
     let busy = a.checkpoint_busy.clone();
@@ -250,7 +342,11 @@ async fn checkpoint_inner(a: Arc<Agent>, commit: bool) -> Result<String, &'stati
         if commit {
             busy.store(true, std::sync::atomic::Ordering::SeqCst)
         }
-        let result = repo.checkpoint(commit);
+        let result = if require_clean {
+            repo.checkpoint_clean()
+        } else {
+            repo.checkpoint(commit)
+        };
         let dirty = repo.dirty().unwrap_or(true);
         (result, dirty)
     })
@@ -259,12 +355,17 @@ async fn checkpoint_inner(a: Arc<Agent>, commit: bool) -> Result<String, &'stati
     match result {
         (Ok(sha), dirty) => {
             *a.last.lock().unwrap() = json!({"state":if dirty{"dirty"}else{"pushed"},"saved_to_disk":true,"dirty":dirty,"committed":sha,"pushed":sha,"checkpointed":commit,"merged":false});
-            Ok(sha)
+            if require_clean && dirty {
+                Err("workspace_changed")
+            } else {
+                Ok(sha)
+            }
         }
         (Err(e), dirty) => {
             let reason = match e {
                 sigil_ide_agent::durable::Error::Changed => "branch_or_remote_changed",
                 sigil_ide_agent::durable::Error::Busy => "git_busy",
+                sigil_ide_agent::durable::Error::Dirty => "workspace_changed",
                 _ => "push_or_commit_failed",
             };
             *a.last.lock().unwrap() =
@@ -294,12 +395,17 @@ async fn checkpoint_action(State(a): State<Arc<Agent>>) -> Response {
 struct ActivityRequest {
     generation: String,
     event: String,
+    execution_id: Option<String>,
 }
 async fn activity(State(a): State<Arc<Agent>>, Json(r): Json<ActivityRequest>) -> StatusCode {
     if r.generation != a.config.generation.to_string() {
         return StatusCode::CONFLICT;
     }
-    if a.activity.lock().unwrap().report(&r.event) {
+    if a.activity
+        .lock()
+        .unwrap()
+        .report_execution(&r.event, r.execution_id.as_deref())
+    {
         StatusCode::NO_CONTENT
     } else {
         StatusCode::BAD_REQUEST
@@ -388,6 +494,8 @@ async fn main() {
     let a = Arc::new(Agent {
         config,
         profile_root,
+        repository_root: "/workspace".into(),
+        editor_address: "127.0.0.1:8091".into(),
         checkpoint_busy: Default::default(),
         process: Default::default(),
         activity: Default::default(),
@@ -417,6 +525,7 @@ fn router(a: Arc<Agent>) -> Router {
         .route("/start", post(start))
         .route("/stop", post(stop))
         .route("/checkpoint", post(checkpoint))
+        .route("/finish", post(finish))
         .route("/activity", post(activity))
         .route("/editor", axum::routing::any(editor))
         .route("/editor/{*path}", axum::routing::any(editor))
@@ -446,6 +555,16 @@ async fn stop(State(a): State<Arc<Agent>>) -> Response {
     }
 }
 
+async fn finish(State(a): State<Arc<Agent>>) -> Response {
+    match tokio::spawn(finish_action(State(a))).await {
+        Ok(response) => response,
+        Err(_) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"operation_interrupted"})),
+        )
+            .into_response(),
+    }
+}
 async fn checkpoint(State(a): State<Arc<Agent>>) -> Response {
     match tokio::spawn(checkpoint_action(State(a))).await {
         Ok(response) => response,
@@ -472,6 +591,8 @@ mod tests {
                 profile: "/workspace/target/fixture".into(),
             },
             profile_root: "/workspace/target/fixture".into(),
+            repository_root: "/workspace".into(),
+            editor_address: "127.0.0.1:0".into(),
             checkpoint_busy: Default::default(),
             process: Default::default(),
             activity: Default::default(),
@@ -484,6 +605,259 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move { axum::serve(listener, router(a)).await.unwrap() });
         (url, task)
+    }
+    struct StopFixture(Arc<Agent>);
+    impl Drop for StopFixture {
+        fn drop(&mut self) {
+            if let Ok(mut p) = self.0.process.try_lock() {
+                if let Some(p) = p.as_mut() {
+                    let _ = p.stop();
+                }
+            }
+        }
+    }
+    fn git(root: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+            .env("GIT_COMMITTER_NAME", "fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().into()
+    }
+    #[tokio::test]
+    async fn finish_quiesces_owned_writer_then_rejects_concurrent_save_and_allows_clean_retry() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = PathBuf::from(format!(
+            "/workspace/target/ide-fix-finish-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let remote = root.join("remote.git");
+        git(&root, &["init", "--bare", remote.to_str().unwrap()]);
+        git(&repo, &["init", "-b", "session/fixture"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "initial"]);
+        git(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&repo, &["push", "origin", "session/fixture"]);
+        let mut a = Arc::try_unwrap(agent()).ok().unwrap();
+        a.repository_root = repo.clone();
+        a.config.remote = remote.to_string_lossy().into();
+        a.profile_root = root.join("profiles");
+        a.config.profile = a.profile_root.join("live").to_string_lossy().into();
+        sigil_ide_agent::profile::seed(&a.profile_root, std::path::Path::new(&a.config.profile))
+            .unwrap();
+        std::fs::write(
+            std::path::Path::new(&a.config.profile).join(".editor-running"),
+            [],
+        )
+        .unwrap();
+        let pid_file = root.join("writer-pid");
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            &format!("echo $$ > '{}'; exec sleep 60", pid_file.display()),
+        ]);
+        *a.process.get_mut() = Some(Process::start(&mut command).unwrap());
+        let a = Arc::new(a);
+        let _cleanup = StopFixture(a.clone());
+        for _ in 0..100 {
+            if pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let pid = std::fs::read_to_string(pid_file).unwrap();
+        assert!(
+            pid.trim().parse::<u32>().unwrap() > 1,
+            "fixture owns a real PID"
+        );
+        assert!(a.process.lock().await.as_mut().unwrap().running());
+        let hook = remote.join("hooks/pre-receive");
+        // Fail loudly if the owned editor is still alive when the push begins.
+        // Then emulate an independent agent save inside the push barrier.
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nkill -0 {} 2>/dev/null && exit 1\nprintf concurrent > '{}'\n",
+                pid.trim(),
+                repo.join("saved").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(repo.join("saved"), "before-push").unwrap();
+        let (url, server) = serve(a.clone()).await;
+        let http = reqwest::Client::new();
+        let response = http
+            .post(format!("{url}/finish"))
+            .bearer_auth(&a.config.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let value: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(value["error"], "workspace_changed");
+        assert!(a.process.lock().await.is_none());
+        assert!(!editor_marker(std::path::Path::new(&a.config.profile)).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(repo.join("saved")).unwrap(),
+            "concurrent"
+        );
+        assert_eq!(
+            git(&remote, &["show", "session/fixture:saved"]),
+            "before-push"
+        );
+        std::fs::remove_file(hook).unwrap();
+        let response = http
+            .post(format!("{url}/finish"))
+            .bearer_auth(&a.config.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(value["state"], "finished");
+        assert_eq!(value["dirty"], false);
+        assert_eq!(
+            git(&remote, &["show", "session/fixture:saved"]),
+            "concurrent"
+        );
+        server.abort();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn restart_with_unknown_editor_listener_preserves_pending_preferences_and_workspace() {
+        let root = PathBuf::from(format!(
+            "/workspace/target/ide-fix-unknown-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut a = Arc::try_unwrap(agent()).ok().unwrap();
+        a.profile_root = root.clone();
+        a.config.profile = root.join("live").to_string_lossy().into();
+        sigil_ide_agent::profile::seed(&root, std::path::Path::new(&a.config.profile)).unwrap();
+        sigil_ide_agent::profile::mark_pending(std::path::Path::new(&a.config.profile)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        a.editor_address = listener.local_addr().unwrap().to_string();
+        assert!(tokio::net::TcpStream::connect(&a.editor_address)
+            .await
+            .is_ok());
+        let a = Arc::new(a);
+        let response = finish_action(State(a.clone())).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(
+            sigil_ide_agent::profile::pending(std::path::Path::new(&a.config.profile)).unwrap(),
+            "unknown writer must be quiesced before publishing preferences"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["error"], "editor_ownership_unknown");
+        assert!(
+            tokio::net::TcpStream::connect(&a.editor_address)
+                .await
+                .is_ok(),
+            "unknown process must not be killed"
+        );
+        std::fs::write(
+            std::path::Path::new(&a.config.profile).join(".editor-running"),
+            [],
+        )
+        .unwrap();
+        drop(listener);
+        let response = finish_action(State(a.clone())).await;
+        let bytes = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            value["error"], "editor_ownership_unknown",
+            "lost ownership marker also blocks a not-yet-listening editor"
+        );
+        assert!(
+            sigil_ide_agent::profile::pending(std::path::Path::new(&a.config.profile)).unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn preference_failure_remains_retryable_after_owned_process_stops() {
+        let mut a = Arc::try_unwrap(agent()).ok().unwrap();
+        let root = PathBuf::from(format!(
+            "/workspace/target/ide-fix-preferences-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        a.profile_root = root.clone();
+        a.config.profile = root.join("live").to_string_lossy().into();
+        sigil_ide_agent::profile::seed(&root, std::path::Path::new(&a.config.profile)).unwrap();
+        std::fs::create_dir_all(root.join("live/data/User")).unwrap();
+        std::fs::write(root.join("live/data/User/settings.json"), "new preferences").unwrap();
+        // A directory at the atomic pointer destination makes publication fail.
+        std::fs::create_dir(root.join("preferences-current")).unwrap();
+        std::fs::write(
+            std::path::Path::new(&a.config.profile).join(".editor-running"),
+            [],
+        )
+        .unwrap();
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("60");
+        *a.process.get_mut() = Some(Process::start(&mut cmd).unwrap());
+        let a = Arc::new(a);
+        assert_eq!(
+            stop_inner(State(a.clone())).await.status(),
+            StatusCode::CONFLICT
+        );
+        assert!(a.process.lock().await.is_none());
+        assert!(!editor_marker(std::path::Path::new(&a.config.profile)).unwrap());
+        assert!(
+            sigil_ide_agent::profile::pending(std::path::Path::new(&a.config.profile)).unwrap()
+        );
+        assert_eq!(
+            finish_action(State(a.clone())).await.status(),
+            StatusCode::CONFLICT,
+            "finish cannot forget unpublished preferences"
+        );
+        assert_eq!(
+            stop_inner(State(a.clone())).await.status(),
+            StatusCode::CONFLICT,
+            "retry cannot forget unpublished preferences"
+        );
+        // Reconstruct helper state with no process slot, as on a companion
+        // restart: unresolved publication must remain observable from disk.
+        let mut restarted = Arc::try_unwrap(agent()).ok().unwrap();
+        restarted.profile_root = a.profile_root.clone();
+        restarted.config.profile = a.config.profile.clone();
+        drop(a);
+        let a = Arc::new(restarted);
+        assert_eq!(
+            stop_inner(State(a.clone())).await.status(),
+            StatusCode::CONFLICT
+        );
+        std::fs::remove_dir(root.join("preferences-current")).unwrap();
+        assert_eq!(stop_inner(State(a.clone())).await.status(), StatusCode::OK);
+        let next = root.join("next");
+        sigil_ide_agent::profile::seed(&root, &next).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(next.join("data/User/settings.json")).unwrap(),
+            "new preferences"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
     async fn credentials_generation_and_background_activity_are_isolated() {
@@ -524,7 +898,9 @@ mod tests {
             assert_eq!(
                 http.post(format!("{url}/activity"))
                     .bearer_auth(&a.config.activity_token)
-                    .json(&json!({"generation":generation,"event":event}))
+                    .json(
+                        &json!({"generation":generation,"event":event,"execution_id":"fixture:1"})
+                    )
                     .send()
                     .await
                     .unwrap()

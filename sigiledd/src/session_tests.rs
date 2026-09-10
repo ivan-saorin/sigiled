@@ -48,7 +48,10 @@ impl Drop for ReleaseBuild {
         self.0.release();
     }
 }
+type IdeHook =
+    Arc<dyn Fn(&str, &sessions::SessionRecord) -> Result<Value, &'static str> + Send + Sync>;
 pub struct FakeRuntime {
+    pub ide_hook: Mutex<Option<IdeHook>>,
     pub build_barrier: Mutex<Option<Arc<BuildBarrier>>>,
     pub repo_url: String,
     pub root: PathBuf,
@@ -187,6 +190,7 @@ fn setup_project(project: &str) -> (AppState, Arc<FakeRuntime>) {
     std::fs::create_dir_all(&keys).unwrap();
     std::fs::write(keys.join("id_ed25519"), "fake").unwrap();
     let fake = Arc::new(FakeRuntime {
+        ide_hook: Mutex::default(),
         build_barrier: Mutex::new(None),
         repo_url: format!("git@github.com:test/{project}.git"),
         root: root.join("workspaces"),
@@ -882,4 +886,187 @@ async fn resolved_ide_setup_is_persisted_before_container_allocation() {
         record.binding.unwrap().ide_error.as_deref(),
         Some("provider_bundle_required")
     );
+}
+
+#[tokio::test]
+async fn host_mode_close_deletes_remote_session_and_next_open_is_fresh() {
+    const CHILD: &str = "SIGIL_TEST_HOST_CLOSE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "session_tests::host_mode_close_deletes_remote_session_and_next_open_is_fresh",
+                "--exact",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("SIGILED_IDE_HOST_MERGE", "github-pat")
+            .env("GITHUB_PAT", "fixture-only")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let (state, fake) = setup();
+    let rt = state.sessions.runtime.as_ref().unwrap();
+    crate::merge::git(
+        &rt.repo_path("proj"),
+        &[
+            "config",
+            &format!("url.{}.insteadOf", fake.origin.display()),
+            "https://github.com/test/proj.git",
+        ],
+    )
+    .unwrap();
+    let opened = open(&state).await;
+    let id = opened["session_id"].as_str().unwrap();
+    let branch = opened["branch"].as_str().unwrap();
+    std::fs::write(
+        fake.root.join(target(&opened["endpoint"])).join("saved"),
+        "merge me",
+    )
+    .unwrap();
+    let (code, response) =
+        body(sessions::close(actor("owner"), State(state.clone()), Path(id.into())).await).await;
+    assert_eq!(code, StatusCode::OK, "{response}");
+    assert!(
+        crate::merge::git(&fake.origin, &["branch", "--list", branch])
+            .unwrap()
+            .is_empty(),
+        "merged branch remains on actual remote"
+    );
+    assert_eq!(
+        crate::merge::git(&fake.origin, &["show", "master:saved"]).unwrap(),
+        "merge me"
+    );
+    let next = open(&state).await;
+    assert_ne!(
+        next["branch"], opened["branch"],
+        "fresh open must not adopt a merged orphan"
+    );
+    assert_eq!(
+        body(
+            sessions::close(
+                actor("owner"),
+                State(state),
+                Path(next["session_id"].as_str().unwrap().into())
+            )
+            .await
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+#[tokio::test]
+async fn ide_used_lifecycle_preserves_save_during_push_for_close_recycle_and_reap() {
+    use std::os::unix::fs::PermissionsExt;
+    for action in ["close", "recycle", "reap"] {
+        let (state, fake) = setup();
+        let opened = open(&state).await;
+        let id = opened["session_id"].as_str().unwrap();
+        let mut record = state.sessions.record(id).unwrap();
+        record.binding.as_mut().unwrap().ide = Some(crate::ide::Binding {
+            provider: crate::ide::PROVIDER.into(),
+            helper: "fixture".into(),
+            base_digest: format!("sha256:{}", "a".repeat(64)),
+            image: "fixture".into(),
+            generation: record.generation,
+            profile_volume: "sigil-ide-profile-fixture".into(),
+            started: true,
+            state: "ready".into(),
+            error: None,
+            token: "fixture-control".into(),
+            activity_token: "fixture-activity".into(),
+        });
+        state.sessions.put(record.clone());
+        let workspace = fake.root.join(record.container());
+        std::fs::write(workspace.join("saved"), "before-push").unwrap();
+        let hook = fake.origin.join("hooks/pre-receive");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nprintf during-push > '{}'\n",
+                workspace.join("saved").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = workspace.clone();
+        let remote = fake.origin.clone();
+        *fake.ide_hook.lock().unwrap() = Some(Arc::new(move |path, rec| {
+            let repo = sigil_ide_agent::durable::Repository {
+                root: root.clone(),
+                branch: rec.branch.clone(),
+                remote: remote.to_string_lossy().into(),
+            };
+            match path {
+                "status" => Ok(
+                    json!({"state":"ready","generation":rec.generation,"idle_secs":10000,"busy":false}),
+                ),
+                "stop" => Ok(json!({"state":"stopped"})),
+                "checkpoint" | "finish" => {
+                    let result = if path == "finish" {
+                        repo.checkpoint_clean()
+                    } else {
+                        repo.checkpoint(true)
+                    };
+                    result.map(|sha| json!({"state":"finished","generation":rec.generation,"sha":sha,"dirty":false})).map_err(|_| "workspace_changed")
+                }
+                _ => panic!("unexpected IDE operation {path}"),
+            }
+        }));
+        let succeeded = match action {
+            "close" => {
+                body(sessions::close(actor("owner"), State(state.clone()), Path(id.into())).await)
+                    .await
+                    .0
+                    == StatusCode::OK
+            }
+            "recycle" => {
+                body(sessions::recycle(actor("owner"), State(state.clone()), Path(id.into())).await)
+                    .await
+                    .0
+                    == StatusCode::OK
+            }
+            _ => {
+                crate::reaper::reap_generation(&state, id, "fixture idle", Some(record.generation))
+                    .await
+            }
+        };
+        assert!(
+            !succeeded,
+            "{action} cannot authorize destruction with dirty saved work"
+        );
+        assert!(state.sessions.record(id).is_some());
+        assert!(fake.live.lock().unwrap().contains_key(&record.container()));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("saved")).unwrap(),
+            "during-push"
+        );
+        assert_eq!(
+            crate::merge::git(&fake.origin, &["show", &format!("{}:saved", record.branch)])
+                .unwrap(),
+            "before-push"
+        );
+        assert!(!fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("destroy")));
+        std::fs::remove_file(hook).unwrap();
+        // A deliberate retry now protects the retained saved content.
+        assert!(crate::ide::flush_record(&state, &record, "retry").await);
+        assert_eq!(
+            crate::merge::git(&fake.origin, &["show", &format!("{}:saved", record.branch)])
+                .unwrap(),
+            "during-push"
+        );
+    }
 }

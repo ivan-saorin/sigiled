@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 pub enum Error {
     Changed,
     Busy,
+    Dirty,
     Git,
 }
 pub struct Repository {
@@ -87,6 +88,9 @@ impl Repository {
         self.git(&["rev-parse", "HEAD"], deadline)
     }
     pub fn checkpoint(&self, commit: bool) -> Result<String, Error> {
+        self.checkpoint_mode(commit, false)
+    }
+    fn checkpoint_mode(&self, commit: bool, require_clean: bool) -> Result<String, Error> {
         let _lock = lock(&self.root)?;
         let deadline = Instant::now() + Duration::from_secs(30);
         let before = self.validate(deadline)?;
@@ -135,7 +139,16 @@ impl Repository {
         if self.validate(deadline)? != head {
             return Err(Error::Changed);
         }
+        if require_clean && !self.git(&["status", "--porcelain"], deadline)?.is_empty() {
+            return Err(Error::Dirty);
+        }
+        if require_clean && self.validate(deadline)? != head {
+            return Err(Error::Changed);
+        }
         Ok(head)
+    }
+    pub fn checkpoint_clean(&self) -> Result<String, Error> {
+        self.checkpoint_mode(true, true)
     }
     pub fn dirty(&self) -> Result<bool, Error> {
         Ok(!self
@@ -193,6 +206,43 @@ mod tests {
             branch: "session/test".into(),
             remote: remote.to_string_lossy().into(),
         }
+    }
+    #[test]
+    fn final_checkpoint_rejects_save_during_push_and_preserves_work() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = fixture();
+        std::fs::write(r.root.join("saved"), "before-push").unwrap();
+        let hook = Path::new(&r.remote).join("hooks/pre-receive");
+        // This synchronous hook is a deterministic save after commit creation,
+        // before push acknowledgement. No scheduling race or timed sleep.
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nprintf during-push > '{}'\n",
+                r.root.join("saved").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            r.checkpoint_clean().is_err(),
+            "dirty saved work cannot authorize destruction"
+        );
+        assert_eq!(
+            std::fs::read_to_string(r.root.join("saved")).unwrap(),
+            "during-push"
+        );
+        assert_eq!(
+            git(Path::new(&r.remote), &["show", "session/test:saved"]),
+            "before-push"
+        );
+        std::fs::remove_file(hook).unwrap();
+        r.checkpoint_clean().unwrap();
+        assert!(!r.dirty().unwrap());
+        assert_eq!(
+            git(Path::new(&r.remote), &["show", "session/test:saved"]),
+            "during-push"
+        );
     }
     #[test]
     fn dirty_checkpoint_and_terminal_commits_are_pushed_to_session_only() {

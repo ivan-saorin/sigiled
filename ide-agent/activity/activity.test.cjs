@@ -24,6 +24,15 @@ assert.equal(sent.length,0,'background editing, automatic saves and command sele
 callbacks.selection({kind:1}); assert.equal(sent.at(-1).event,'selection');
 now += 6000; callbacks.edit({contentChanges:[{}]}); assert.equal(sent.length,1,'background edits cannot renew the interaction window');
 callbacks.save({reason:1}); assert.equal(sent.at(-1).event,'save');
-callbacks.start({});callbacks.end({});assert.deepEqual(sent.slice(-2).map(e=>e.event),['command_start','command_end']);
+const executionA = {}, executionB = {}, missingStart = {};
+callbacks.start({execution:executionA}); callbacks.start({execution:executionB});
+callbacks.end({execution:missingStart}); callbacks.end({execution:executionA}); callbacks.end({execution:executionA}); callbacks.end({execution:executionB});
+const events=sent.slice(-6);
+assert.equal(events[0].execution_id,events[3].execution_id);
+assert.equal(events[3].execution_id,events[4].execution_id);
+assert.equal(events[1].execution_id,events[5].execution_id);
+assert.notEqual(events[0].execution_id,events[1].execution_id);
+assert.notEqual(events[2].execution_id,events[0].execution_id);
+assert(events.every(e=>typeof e.execution_id==='string'));
 assert(sent.every(e=>e.generation==='18446744073709551615'));
-console.log('activity extension: background isolation and full generation passed');
+console.log('activity extension: background isolation, full generation and stable execution identities passed');

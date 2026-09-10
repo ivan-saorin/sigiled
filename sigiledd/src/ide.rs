@@ -110,6 +110,18 @@ pub(crate) async fn request(
     if b.generation != record.generation {
         return Err("generation_changed");
     }
+    #[cfg(test)]
+    if let Some(fake) = state
+        .sessions
+        .runtime
+        .as_ref()
+        .and_then(|rt| rt.fake.as_ref())
+    {
+        let hook = fake.ide_hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            return hook(path, record).and_then(|v| safe_response(&v, path, record.generation));
+        }
+    }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(if path == "status" {
@@ -309,11 +321,7 @@ async fn operation_inner(
             Err(error) => response(StatusCode::CONFLICT, error),
         };
     }
-    let path = if op.action == "finish" {
-        "checkpoint"
-    } else {
-        &op.action
-    };
+    let path = &op.action;
     match request(&state, &r, path).await {
         Err(e) => response(StatusCode::CONFLICT, e),
         Ok(v) => {
@@ -354,17 +362,12 @@ impl crate::runtime::Runtime {
             )
         }
         let revision = format!("{HELPER}-{:x}", hash.finalize());
-        let digest = self
-            .ide_docker(&["image", "inspect", "--format", "{{.Id}}", base])
-            .map_err(|_| "project_image_unavailable")?;
+        let (digest, user) = resolve_base(base, |args| self.ide_docker(args))?;
         let image = key(&digest, PROVIDER, &revision)?;
         if self
             .ide_docker(&["image", "inspect", "--format", "ok", &image])
             .is_err()
         {
-            let user = self
-                .ide_docker(&["image", "inspect", "--format", "{{.Config.User}}", base])
-                .map_err(|_| "project_image_unavailable")?;
             let dockerfile = layer_dockerfile(&digest, &user)?;
             let input = private_input(dockerfile.as_bytes())?;
             let mut command = std::process::Command::new("docker");
@@ -465,8 +468,7 @@ pub async fn flush_record(state: &crate::AppState, record: &SessionRecord, label
         .and_then(|b| b.ide.as_ref())
         .is_some_and(|b| b.started)
     {
-        return request(state, record, "checkpoint").await.is_ok()
-            && request(state, record, "stop").await.is_ok();
+        return request(state, record, "finish").await.is_ok();
     }
     match (&state.sessions.runtime, &record.token) {
         (Some(rt), Some(token)) => {
@@ -559,6 +561,17 @@ fn private_input(bytes: &[u8]) -> Result<std::fs::File, &'static str> {
     file.rewind().map_err(|_| "provider_setup_failed")?;
     Ok(file)
 }
+fn resolve_base(
+    base: &str,
+    mut inspect: impl FnMut(&[&str]) -> Result<String, &'static str>,
+) -> Result<(String, String), &'static str> {
+    let digest = inspect(&["image", "inspect", "--format", "{{.Id}}", base])
+        .map_err(|_| "project_image_unavailable")?;
+    key(&digest, PROVIDER, HELPER)?;
+    let user = inspect(&["image", "inspect", "--format", "{{.Config.User}}", &digest])
+        .map_err(|_| "project_image_unavailable")?;
+    Ok((digest, user))
+}
 fn layer_dockerfile(digest: &str, user: &str) -> Result<String, &'static str> {
     key(digest, PROVIDER, HELPER)?;
     if !user
@@ -592,6 +605,27 @@ impl crate::runtime::Runtime {
 #[cfg(test)]
 mod layer_tests {
     use super::*;
+    #[test]
+    fn captured_image_identity_controls_user_despite_moving_tag() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let (id, user) = resolve_base("mutable-tag", |args| {
+            if args[3] == "{{.Id}}" {
+                return Ok(digest.clone());
+            }
+            Ok(if args[4] == digest {
+                "developer"
+            } else {
+                "root"
+            }
+            .into())
+        })
+        .unwrap();
+        assert_eq!(id, digest);
+        assert_eq!(
+            user, "developer",
+            "tag now points to a different root image"
+        );
+    }
     #[test]
     fn non_root_project_user_is_restored_and_project_server_is_untouched() {
         let digest = format!("sha256:{}", "a".repeat(64));
@@ -631,6 +665,7 @@ fn safe_error(error: &str) -> &'static str {
         "profile_setup_required" => "profile_setup_required",
         "preferences_save_failed" => "preferences_save_failed",
         "activity_extension_missing" => "activity_extension_missing",
+        "workspace_changed" => "workspace_changed",
         _ => "provider_operation_failed",
     }
 }
@@ -641,13 +676,30 @@ fn safe_response(
 ) -> Result<serde_json::Value, &'static str> {
     let state = value["state"]
         .as_str()
-        .filter(|s| matches!(*s, "ready" | "stopped" | "failed" | "checkpointed"))
+        .filter(|s| {
+            matches!(
+                *s,
+                "ready" | "stopped" | "failed" | "checkpointed" | "finished"
+            )
+        })
         .ok_or("provider_response_invalid")?;
     let sha = |v: &serde_json::Value| {
         v.as_str()
             .filter(|s| matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit()))
             .map(str::to_string)
     };
+    if path == "finish" {
+        if state != "finished"
+            || value["generation"].as_u64() != Some(generation)
+            || value["dirty"].as_bool() != Some(false)
+            || sha(&value["sha"]).is_none()
+        {
+            return Err("provider_response_invalid");
+        }
+        return Ok(
+            json!({"state":"finished","generation":generation,"sha":sha(&value["sha"]),"dirty":false}),
+        );
+    }
     if path == "status" {
         if value["generation"].as_u64() != Some(generation) {
             return Err("generation_changed");
@@ -664,6 +716,25 @@ fn safe_response(
 #[cfg(test)]
 mod safety_tests {
     use super::*;
+    #[test]
+    fn lifecycle_requires_verified_clean_finish_for_exact_generation() {
+        let valid = json!({"state":"finished","generation":7,"sha":"a".repeat(40),"dirty":false});
+        assert!(safe_response(&valid, "finish", 7).is_ok());
+        for (field, replacement) in [
+            ("state", json!("checkpointed")),
+            ("generation", json!(6)),
+            ("dirty", json!(true)),
+            ("dirty", json!(null)),
+            ("sha", json!(null)),
+        ] {
+            let mut v = valid.clone();
+            v[field] = replacement;
+            assert!(
+                safe_response(&v, "finish", 7).is_err(),
+                "{field} must authorize destruction explicitly"
+            );
+        }
+    }
     #[test]
     fn hostile_provider_metadata_is_allowlisted_and_generation_checked() {
         let value = json!({"state":"ready","generation":1,"idle_secs":2,"busy":false,"token":"SECRET","durability":{"state":"pushed","committed":"SECRET","error":"SECRET"}});

@@ -46,6 +46,22 @@ pub fn save(root: &Path, live: &Path) -> std::io::Result<()> {
     std::fs::write(&temporary, &name)?;
     std::fs::rename(temporary, root.join("preferences-current"))
 }
+// The marker survives confirmed process exit and companion restart. Publication
+// failure must never become successful merely because no process remains.
+pub fn mark_pending(live: &Path) -> std::io::Result<()> {
+    std::fs::write(live.join(".snapshot-pending"), [])
+}
+pub fn pending(live: &Path) -> std::io::Result<bool> {
+    live.join(".snapshot-pending").try_exists()
+}
+pub fn save_pending(root: &Path, live: &Path) -> std::io::Result<()> {
+    if pending(live)? {
+        save(root, live)?;
+        std::fs::remove_file(live.join(".snapshot-pending"))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

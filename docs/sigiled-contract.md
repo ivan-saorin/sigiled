@@ -578,3 +578,7 @@ only after checkpoint success. Browser disconnect does not merge. Settings and
 extensions use operator volumes with separate session/generation live profiles;
 unsaved browser buffers are outside the durability promise. C2/browser and live
 edge deployment remain separate release prerequisites.
+
+### IDE lifecycle durability receipt (C1/C3 review correction)
+
+IDE-used close, recycle and reap require internal companion POST /finish: owned editor process group stopped, pending preferences published, and the expected session commit pushed with a verified clean working tree. Receipt: state=finished, exact generation, valid pushed SHA and dirty=false. Concurrent saved changes or failed verification preserve the workspace. Manual checkpoint alone is insufficient for destruction. Public IDE action names remain start/stop/checkpoint/finish. Activity command events now require a stable execution_id alongside the existing generation string; unmatched/duplicate ends cannot release another known command.

@@ -709,3 +709,7 @@ No repository policy, production runtime, edge, live session lifecycle or
 deployment was changed. Pinned checksum, version and non-root provider health/
 owned-stop smoke passed inside the sealed development workspace. C2 and actual
 release acceptance remain required; see `ide-runtime.md` for precise limits.
+
+## 2026-09-10 — C1/C3 review fixes (source only)
+
+Lifecycle now consumes a generation-bound clean finish receipt after owned editor quiescence and retryable preference publication. Saved changes during push block close/recycle/reap. Host PAT routing applies only to master, retaining actual session branch deletion. Activity uses stable execution IDs; layer USER inspection uses the captured image ID. Deterministic Git/process/handler fixtures cover the review failures. Prior full regression qualification remains 199 control-plane passes / 2 timing failures; no timing deadlines changed, deployment or live policy mutation performed.
