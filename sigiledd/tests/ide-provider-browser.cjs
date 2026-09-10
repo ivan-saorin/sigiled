@@ -43,7 +43,8 @@ const {chromium}=require('/workspace/target/gateway-browser/node_modules/playwri
   diagnostics.expectConsole(`Refused to execute script from '${url.origin+prefix}/static/node_modules/vsda/rust/web/vsda.js' because its MIME type ('application/json') is not executable, and strict MIME type checking is enabled.`);
 
   await until(async()=>(await helperStatus()).activity_observation==='ready','extension startup must establish observation');
-  const before=await helperStatus();assert.equal(before.busy,false);
+  const before=await helperStatus();assert.equal(before.busy,false);assert.equal(before.activity_contract,'terminal-observation-v3');
+  fs.writeFileSync(root+'/activity-upgrade-observed.json',JSON.stringify({contract:before.activity_contract,observation:before.activity_observation,newObserverAccepted:true}));
   await frame.locator('.monaco-editor .view-lines').first().click({position:{x:40,y:10}});
   await page.keyboard.press('Control+a');await page.keyboard.type('Saved through actual browser editor\n');await page.keyboard.press('Control+s');
   await until(()=>fs.readFileSync(repo+'/navigation.txt','utf8')==='Saved through actual browser editor\n','actual browser save');
@@ -72,10 +73,10 @@ const {chromium}=require('/workspace/target/gateway-browser/node_modules/playwri
   assert.equal(cp.execFileSync('git',['-C',remote,'rev-parse',branch],{encoding:'utf8'}).trim(),pushed);
   assert.equal((await helperStatus()).state,'ready');
   page=await context.newPage();global.smokePage=page;await page.goto(url.origin+'/_sigil/workbench');frame=page.frameLocator('#editor');await frame.locator('.monaco-workbench').waitFor({timeout:30000});
-  await until(async()=>(await helperStatus()).activity_observation==='stale','replacement observer cannot release earlier custody');
+  await until(async()=>(await helperStatus()).activity_observation==='conflict','replacement observer cannot release earlier custody');
   page.once('dialog',d=>d.accept());await page.getByRole('button',{name:'Finish workspace',exact:true}).click();await page.getByRole('status').filter({hasText:'terminal observation unavailable'}).waitFor({timeout:15000});
   assert.equal(fs.readFileSync(repo+'/navigation.txt','utf8'),'Saved through actual browser editor\n');assert.equal((await helperStatus()).state,'ready');
-  fs.writeFileSync(root+'/disconnect-preservation.json',JSON.stringify({savedBytesPreserved:true,remoteUnchanged:true,providerPreserved:true,reopenedEditing:true,observation:'stale',finishBlocked:true,operatorRecoveryRequired:true}));
+  fs.writeFileSync(root+'/disconnect-preservation.json',JSON.stringify({savedBytesPreserved:true,remoteUnchanged:true,providerPreserved:true,reopenedEditing:true,observation:'conflict',finishBlocked:true,operatorRecoveryRequired:true}));
   console.log('PASS disconnected workspace preserved with explicit uncertain observation');return;
   }
   const resource='/vscode-remote-resource?path='+encodeURIComponent(repo+'/project.html');

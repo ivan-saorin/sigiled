@@ -8,6 +8,8 @@ pub struct Activity {
     sequence: u64,
     observed_at: Option<Instant>,
     unsupported: bool,
+    conflict: bool,
+    incomplete: bool,
 }
 impl Default for Activity {
     fn default() -> Self {
@@ -20,6 +22,8 @@ impl Default for Activity {
             sequence: 0,
             observed_at: None,
             unsupported: false,
+            conflict: false,
+            incomplete: false,
         }
     }
 }
@@ -29,6 +33,8 @@ impl Activity {
         self.observer = None;
         self.observed_at = None;
         self.sequence = 0;
+        self.conflict = false;
+        self.incomplete = false;
     }
     pub fn stopped(&mut self) {
         self.observation_required = false;
@@ -37,6 +43,12 @@ impl Activity {
     pub fn observation(&self) -> &'static str {
         if !self.observation_required {
             return "not_required";
+        }
+        if self.conflict {
+            return "conflict";
+        }
+        if self.incomplete {
+            return "incomplete";
         }
         let Some(at) = self.observed_at else {
             return "missing";
@@ -59,10 +71,27 @@ impl Activity {
         let Ok(sequence) = value.sequence.parse::<u64>() else {
             return false;
         };
-        if sequence.to_string() != value.sequence
-            || sequence == 0
-            || !id(&value.observer)
-            || value.terminals.len() > 256
+        if sequence.to_string() != value.sequence || sequence == 0 || !id(&value.observer) {
+            return false;
+        }
+        // A distinct authenticated observer is evidence of writers outside this
+        // custody. Neither fresh A telemetry nor time can discharge that conflict.
+        if self.observer.as_ref().is_some_and(|o| o != &value.observer) {
+            self.conflict = true;
+            return false;
+        }
+        if !value.observer.starts_with("v3:") {
+            self.incomplete = true;
+            return false;
+        }
+        if self.conflict || sequence <= self.sequence {
+            return false;
+        }
+        self.observer = Some(value.observer);
+        // Retain the watermark even on incomplete newer evidence, so a delayed
+        // complete packet cannot undo the newly observed uncertainty.
+        self.sequence = sequence;
+        if value.terminals.len() > 256
             || value.executions.len() > 4096
             || value.terminals.iter().any(|t| !id(&t.id))
             || value.executions.iter().any(|s| !id(s))
@@ -70,25 +99,30 @@ impl Activity {
                 value.event.as_deref(),
                 None | Some("command_start" | "command_end")
             )
+            || value
+                .terminals
+                .iter()
+                .map(|t| &t.id)
+                .collect::<HashSet<_>>()
+                .len()
+                != value.terminals.len()
+            || value.executions.iter().collect::<HashSet<_>>().len() != value.executions.len()
         {
+            self.incomplete = true;
             return false;
         }
-        if self.observer.as_ref().is_some_and(|o| o != &value.observer) || sequence <= self.sequence
-        {
-            return false;
-        }
+        // This reserved unsupported terminal uses the v2 wire shape too: an old
+        // helper sees busy, instead of rejecting an unknown overflow field while
+        // retaining its preceding idle observation. Do not discard known commands.
         if value
             .terminals
             .iter()
-            .map(|t| &t.id)
-            .collect::<HashSet<_>>()
-            .len()
-            != value.terminals.len()
+            .any(|t| t.id == "observation-overflow")
         {
-            return false;
+            self.incomplete = true;
+            return true;
         }
-        self.observer = Some(value.observer);
-        self.sequence = sequence;
+        self.incomplete = false;
         self.observed_at = Some(Instant::now());
         self.unsupported = value.terminals.iter().any(|t| !t.integrated);
         self.commands = value.executions.into_iter().collect();
@@ -204,7 +238,7 @@ mod observation_tests {
     use super::*;
     fn snapshot(n: u64, integrated: bool) -> Observation {
         Observation {
-            observer: "instance-1".into(),
+            observer: "v3:instance-1".into(),
             sequence: n.to_string(),
             terminals: vec![Terminal {
                 id: "terminal-1".into(),
@@ -213,6 +247,108 @@ mod observation_tests {
             executions: vec![],
             event: None,
         }
+    }
+    #[test]
+    fn old_extension_cannot_establish_new_contract_and_duplicate_capacity_is_benign() {
+        let mut a = Activity::default();
+        a.require_observation();
+        let mut old = snapshot(1, true);
+        old.observer = "old-extension".into();
+        assert!(!a.observe(old));
+        assert!(a.busy());
+        assert_eq!(a.observation(), "incomplete");
+        assert!(a.observe(snapshot(3, true)));
+        assert!(!a.busy());
+        let mut delayed = snapshot(2, true);
+        delayed.executions = (0..4097).map(|n| format!("c-{n}")).collect();
+        assert!(!a.observe(delayed));
+        assert!(
+            !a.busy(),
+            "same-observer delayed packet is not new evidence"
+        );
+        let mut invalid = snapshot(4, true);
+        invalid.terminals[0].id = "invalid space".into();
+        assert!(!a.observe(invalid));
+        assert!(a.busy());
+        assert!(!a.observe(snapshot(3, true)));
+        assert!(a.busy());
+        assert!(a.observe(snapshot(5, true)));
+        assert!(!a.busy());
+    }
+    #[test]
+    fn overflow_wire_is_legacy_unsupported_and_preserves_known_commands() {
+        let mut a = Activity::default();
+        a.require_observation();
+        let mut first = snapshot(1, true);
+        first.executions.push("known-command".into());
+        assert!(a.observe(first));
+        a.last = Instant::now() - std::time::Duration::from_secs(100);
+        let notice:Observation=serde_json::from_value(serde_json::json!({"observer":"v3:instance-1","sequence":"2","terminals":[{"id":"observation-overflow","integrated":false}],"executions":[]})).unwrap();
+        assert!(
+            !notice.terminals[0].integrated,
+            "v2 sees unsupported terminal in its unchanged wire shape"
+        );
+        assert!(a.observe(notice));
+        assert!(a.busy());
+        assert_eq!(a.observation(), "incomplete");
+        assert!(a.commands.contains("known-command"));
+        assert!(a.idle_secs() >= 100);
+        assert!(!a.observe(snapshot(2, true)));
+        assert!(a.busy());
+        assert!(a.observe(snapshot(3, true)));
+        assert!(!a.busy());
+        assert!(a.idle_secs() >= 100);
+    }
+    #[test]
+    fn fresh_observer_conflict_revokes_idle_permanently() {
+        let mut a = Activity::default();
+        a.require_observation();
+        a.last = Instant::now() - std::time::Duration::from_secs(100);
+        assert!(a.observe(snapshot(1, true)));
+        assert!(!a.busy());
+        let mut b = snapshot(1, true);
+        b.observer = "v3:instance-2".into();
+        assert!(!a.observe(b));
+        assert!(
+            a.busy(),
+            "fresh A cannot authorize cleanup after evidence of B"
+        );
+        assert_eq!(a.observation(), "conflict");
+        a.observe(snapshot(2, true));
+        assert!(a.busy(), "later empty A cannot discharge B custody");
+        assert!(a.idle_secs() >= 100);
+    }
+    #[test]
+    fn fresh_capacity_rejection_preserves_commands_and_recovers_only_complete_snapshot() {
+        let mut a = Activity::default();
+        a.require_observation();
+        a.last = Instant::now() - std::time::Duration::from_secs(100);
+        assert!(a.observe(snapshot(1, true)));
+        let mut large = snapshot(10, true);
+        large.terminals = (0..257)
+            .map(|n| Terminal {
+                id: format!("t-{n}"),
+                integrated: true,
+            })
+            .collect();
+        assert!(!a.observe(large));
+        assert!(
+            a.busy(),
+            "new over-limit evidence immediately revokes fresh idle"
+        );
+        assert_eq!(a.observation(), "incomplete");
+        assert!(!a.observe(snapshot(9, true)));
+        assert!(a.busy());
+        assert!(a.observe(snapshot(11, true)));
+        assert!(!a.busy());
+        let mut running = snapshot(12, true);
+        running.executions.push("known-command".into());
+        assert!(a.observe(running));
+        let mut too_many = snapshot(13, true);
+        too_many.executions = (0..4097).map(|n| format!("c-{n}")).collect();
+        assert!(!a.observe(too_many));
+        assert!(a.commands.contains("known-command"));
+        assert!(a.idle_secs() >= 100);
     }
     #[test]
     fn missing_stale_unsupported_and_reordered_observations_never_prove_idle() {
@@ -233,10 +369,6 @@ mod observation_tests {
         a.observed_at = Some(Instant::now() - std::time::Duration::from_secs(11));
         assert!(a.busy());
         assert_eq!(a.observation(), "stale");
-        let mut replacement = snapshot(4, true);
-        replacement.observer = "new-extension".into();
-        assert!(!a.observe(replacement));
-        assert!(a.busy());
         let mut closed = snapshot(4, false);
         closed.terminals.clear();
         assert!(a.observe(closed));

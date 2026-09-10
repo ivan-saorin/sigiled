@@ -82,7 +82,7 @@ async fn status(State(a): State<Arc<Agent>>) -> Json<serde_json::Value> {
     };
     let activity = a.activity.lock().unwrap();
     Json(
-        json!({"generation":a.config.generation,"session":a.config.session,"state":state,"idle_secs":activity.idle_secs(),"activity_contract":"terminal-observation-v2","activity_observation":activity.observation(),"busy":activity.busy() || a.checkpoint_busy.load(std::sync::atomic::Ordering::SeqCst),"durability":*a.last.lock().unwrap()}),
+        json!({"generation":a.config.generation,"session":a.config.session,"state":state,"idle_secs":activity.idle_secs(),"activity_contract":"terminal-observation-v3","activity_observation":activity.observation(),"busy":activity.busy() || a.checkpoint_busy.load(std::sync::atomic::Ordering::SeqCst),"durability":*a.last.lock().unwrap()}),
     )
 }
 async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
@@ -165,21 +165,10 @@ async fn start_inner(State(a): State<Arc<Agent>>) -> Response {
     }
     // Extension state is session-specific. The bundled activity extension is not
     // downloaded from a marketplace and receives only the activity credential.
-    let extension = extensions.join("sigil.activity-0.2.0");
-    let _ = std::fs::create_dir_all(&extension);
-    for name in ["package.json", "extension.js"] {
-        if std::fs::copy(
-            format!("/opt/sigil-ide/activity/{name}"),
-            extension.join(name),
-        )
-        .is_err()
-        {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({"error":"activity_extension_missing"})),
-            )
-                .into_response();
-        }
+    if let Err(error) =
+        install_activity_extension(std::path::Path::new("/opt/sigil-ide/activity"), &extensions)
+    {
+        return (StatusCode::CONFLICT, Json(json!({"error":error}))).into_response();
     }
     let mut command = std::process::Command::new("/opt/sigil-ide/code-server/bin/code-server");
     command
@@ -406,6 +395,20 @@ struct ActivityRequest {
     event: String,
     execution_id: Option<String>,
     observation: Option<sigil_ide_agent::activity::Observation>,
+}
+// Shared by production start and the pinned-provider upgrade fixture. Existing
+// profile settings/disabled-extension choices and unrelated extensions stay intact.
+pub fn install_activity_extension(
+    source: &std::path::Path,
+    extensions: &std::path::Path,
+) -> Result<(), &'static str> {
+    let extension = extensions.join("sigil.activity-0.3.0");
+    std::fs::create_dir_all(&extension).map_err(|_| "activity_extension_missing")?;
+    for name in ["package.json", "extension.js"] {
+        std::fs::copy(source.join(name), extension.join(name))
+            .map_err(|_| "activity_extension_missing")?;
+    }
+    Ok(())
 }
 async fn activity(State(a): State<Arc<Agent>>, Json(r): Json<ActivityRequest>) -> StatusCode {
     if r.generation != a.config.generation.to_string() {
@@ -859,6 +862,77 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
+    async fn fresh_observer_evidence_blocks_real_stop_and_finish() {
+        for kind in ["conflict", "capacity"] {
+            let mut a = agent();
+            let root = std::env::temp_dir()
+                .join(format!("observer-evidence-{}-{kind}", std::process::id()));
+            std::fs::create_dir_all(root.join("repo")).unwrap();
+            let inner = Arc::get_mut(&mut a).unwrap();
+            inner.repository_root = root.join("repo");
+            inner.profile_root = root.join("snapshots");
+            inner.config.profile = root.join("profile").to_string_lossy().into();
+            let _cleanup = StopFixture(a.clone());
+            a.activity.lock().unwrap().require_observation();
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg("60");
+            *a.process.lock().await = Some(Process::start(&mut cmd).unwrap());
+            let snapshot = |observer: &str, sequence: &str, terminals: serde_json::Value| json!({"generation":a.config.generation.to_string(),"event":"observation","observation":{"observer":observer,"sequence":sequence,"terminals":terminals,"executions":[]}});
+            let initial = snapshot("v3:observer-A", "1", json!([]));
+            assert_eq!(
+                activity(
+                    State(a.clone()),
+                    Json(serde_json::from_value(initial).unwrap())
+                )
+                .await,
+                StatusCode::NO_CONTENT
+            );
+            assert!(!a.activity.lock().unwrap().busy());
+            let contrary = if kind == "conflict" {
+                snapshot("v3:observer-B", "1", json!([]))
+            } else {
+                snapshot(
+                    "v3:observer-A",
+                    "2",
+                    json!((0..257)
+                        .map(|n| json!({"id":format!("terminal-{n}"),"integrated":true}))
+                        .collect::<Vec<_>>()),
+                )
+            };
+            let began = std::time::Instant::now();
+            assert_eq!(
+                activity(
+                    State(a.clone()),
+                    Json(serde_json::from_value(contrary).unwrap())
+                )
+                .await,
+                StatusCode::BAD_REQUEST
+            );
+            for response in [
+                stop_inner(State(a.clone())).await,
+                finish_action(State(a.clone())).await,
+            ] {
+                assert_eq!(response.status(), StatusCode::CONFLICT);
+                let body = axum::body::to_bytes(response.into_body(), 4096)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"],
+                    "terminal_observation_unavailable"
+                );
+            }
+            assert!(
+                began.elapsed().as_secs() < 10,
+                "denial must precede observation expiry"
+            );
+            assert!(
+                a.process.lock().await.is_some(),
+                "owned process slot survives both denials"
+            );
+            a.process.lock().await.as_mut().unwrap().stop().unwrap();
+        }
+    }
+    #[tokio::test]
     async fn preference_failure_remains_retryable_after_owned_process_stops() {
         let mut a = Arc::try_unwrap(agent()).ok().unwrap();
         let root = PathBuf::from(format!(
@@ -1236,9 +1310,18 @@ pub fn handoff_fixture_router_for_branch(
     generation: u64,
     branch: String,
 ) -> Router {
+    router(handoff_fixture_agent(root, remote, generation, branch))
+}
+#[cfg(feature = "test-support")]
+fn handoff_fixture_agent(
+    root: PathBuf,
+    remote: String,
+    generation: u64,
+    branch: String,
+) -> Arc<Agent> {
     // Keep profile state outside the repository so clean-workspace checks remain real.
     let profile = root.parent().unwrap().join("profile");
-    router(Arc::new(Agent {
+    Arc::new(Agent {
         config: Config {
             token: "fixture-helper-control-token-00000".into(),
             activity_token: "fixture-helper-activity-token-0000".into(),
@@ -1257,7 +1340,18 @@ pub fn handoff_fixture_router_for_branch(
         activity: Default::default(),
         sync: Default::default(),
         last: std::sync::Mutex::new(json!({"state":"saved_to_disk"})),
-    }))
+    })
+}
+#[cfg(feature = "test-support")]
+pub fn observation_fixture_router(root: PathBuf, generation: u64) -> Router {
+    let agent = handoff_fixture_agent(
+        root,
+        "/unreachable".into(),
+        generation,
+        "session/test".into(),
+    );
+    agent.activity.lock().unwrap().require_observation();
+    router(agent)
 }
 
 /// Same real handlers with an explicitly owned pinned-provider process and

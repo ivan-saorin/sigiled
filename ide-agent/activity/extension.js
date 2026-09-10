@@ -7,12 +7,18 @@ exports.activate = context => {
   if (!token || !/^\d+$/.test(generation || '')) return;
   let last = 0;
   let interaction = 0;
-  const instance = randomUUID();
+  const instance = 'v3:' + randomUUID();
   const executions = new WeakMap();
   const terminals = new WeakMap();
   const active = new Map();
-  // Existing terminals may already be executing before this host subscribed.
-  const unobserved = new Set(vscode.window.terminals || []);
+  const terminalLimit = 256, executionLimit = 4096;
+  // Never strongly retain all terminals at startup, or retain an execution
+  // beyond capacity. VS Code owns its terminal array; inspect length first.
+  const unobserved = new WeakSet();
+  const executionOverflow = new Set();
+  let capacityCustodyLost = false;
+  let terminalOverflow = (vscode.window.terminals || []).length > terminalLimit;
+  if (!terminalOverflow) for (const t of vscode.window.terminals || []) unobserved.add(t);
   let terminalSequence = 0, observationSequence = 0;
   const terminalId = terminal => {if(!terminals.has(terminal))terminals.set(terminal,instance+':terminal:'+(++terminalSequence));return terminals.get(terminal);};
   let sequence = 0;
@@ -48,17 +54,32 @@ exports.activate = context => {
   const observe = event => {
     const supported = vscode.window.onDidStartTerminalShellExecution && vscode.window.onDidEndTerminalShellExecution && vscode.window.onDidChangeTerminalShellIntegration;
     const current = vscode.window.terminals || [];
-    const observation = {observer:instance,sequence:String(++observationSequence),terminals: supported ? current.map(t=>({id:terminalId(t),integrated:!!t.shellIntegration&&!unobserved.has(t)})) : [{id:'api-unavailable',integrated:false}],executions:[...active.values()].map(v=>v.id),event};
+    if (current.length > terminalLimit) terminalOverflow = true;
+    else if (terminalOverflow) {
+      // Executions may have started while capacity prevented complete observation.
+      // Returning under the limit alone cannot establish an idle prompt.
+      terminalOverflow = false;
+      for (const t of current) unobserved.add(t);
+    }
+    const overflow = terminalOverflow || executionOverflow.size > 0 || capacityCustodyLost;
+    // Reserved unsupported-terminal sentinel is intentionally valid v2 wire:
+    // old helpers must see busy, not ignore an unknown field and retain idle.
+    const observation = {observer:instance,sequence:String(++observationSequence),terminals: overflow ? [{id:'observation-overflow',integrated:false}] : supported ? current.map(t=>({id:terminalId(t),integrated:!!t.shellIntegration&&!unobserved.has(t)})) : [{id:'api-unavailable',integrated:false}],executions:overflow?[]:[...active.values()].map(v=>v.id),event:overflow?undefined:event};
     const body=JSON.stringify({event:'observation',generation,observation});
     const req=http.request({hostname:'127.0.0.1',port:8090,path:'/activity',method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)},timeout:2000},res=>res.resume());
     req.on('error',()=>{});req.on('timeout',()=>req.destroy());req.end(body);
   };
   if(vscode.window.onDidStartTerminalShellExecution)context.subscriptions.push(
-    vscode.window.onDidStartTerminalShellExecution(e=>{if(!(vscode.window.terminals||[]).includes(e.terminal)||active.has(e.execution)){observe();return;}unobserved.delete(e.terminal);active.set(e.execution,{id:executionId(e.execution),terminal:e.terminal});observe('command_start');}),
+    vscode.window.onDidStartTerminalShellExecution(e=>{
+      const current=vscode.window.terminals||[];
+      if(current.length>terminalLimit || !current.includes(e.terminal) || !e.execution || typeof e.execution!=='object' || active.has(e.execution)){observe();return;}
+      if(active.size>=executionLimit){if(!executionOverflow.has(e.terminal)){if(executionOverflow.size<terminalLimit)executionOverflow.add(e.terminal);else capacityCustodyLost=true;}observe();return;}
+      unobserved.delete(e.terminal);active.set(e.execution,{id:executionId(e.execution),terminal:e.terminal});observe('command_start');
+    }),
     vscode.window.onDidEndTerminalShellExecution(e=>{const ended=active.delete(e.execution);const resolved=unobserved.delete(e.terminal);observe(ended||resolved?'command_end':undefined);})
   );
   if(vscode.window.onDidOpenTerminal)context.subscriptions.push(vscode.window.onDidOpenTerminal(()=>observe()));
-  if(vscode.window.onDidCloseTerminal)context.subscriptions.push(vscode.window.onDidCloseTerminal(t=>{unobserved.delete(t);for(const [key,v] of active)if(v.terminal===t)active.delete(key);observe();}));
+  if(vscode.window.onDidCloseTerminal)context.subscriptions.push(vscode.window.onDidCloseTerminal(t=>{unobserved.delete(t);executionOverflow.delete(t);for(const [key,v] of active)if(v.terminal===t)active.delete(key);observe();}));
   if(vscode.window.onDidChangeTerminalShellIntegration)context.subscriptions.push(vscode.window.onDidChangeTerminalShellIntegration(()=>observe()));
   observe();
   const timer=setInterval(()=>observe(),2000);

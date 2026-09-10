@@ -1007,7 +1007,7 @@ async fn ide_used_lifecycle_preserves_save_during_push_for_close_recycle_and_rea
             };
             match path {
                 "status" => Ok(
-                    json!({"state":"ready","generation":rec.generation,"idle_secs":10000,"busy":false,"activity_contract":"terminal-observation-v2","activity_observation":"ready"}),
+                    json!({"state":"ready","generation":rec.generation,"idle_secs":10000,"busy":false,"activity_contract":"terminal-observation-v3","activity_observation":"ready"}),
                 ),
                 "stop" => Ok(json!({"state":"stopped"})),
                 "checkpoint" | "finish" => {
@@ -1096,6 +1096,8 @@ async fn ide_missing_observation_never_authorizes_finish_or_idle() {
         Some("missing"),
         Some("stale"),
         Some("unsupported"),
+        Some("conflict"),
+        Some("incomplete"),
         Some("wrong-contract"),
     ] {
         *fake.ide_hook.lock().unwrap() = Some(Arc::new(move |path, rec| {
@@ -1104,7 +1106,7 @@ async fn ide_missing_observation_never_authorizes_finish_or_idle() {
                 "uncertain observations must not reach a destructive command"
             );
             Ok(
-                json!({"generation":rec.generation,"state":"ready","busy":false,"idle_secs":10000,"activity_contract":observation.map(|v|if v=="wrong-contract"{"old-observer"}else{"terminal-observation-v2"}),"activity_observation":observation}),
+                json!({"generation":rec.generation,"state":"ready","busy":false,"idle_secs":10000,"activity_contract":observation.map(|v|if v=="wrong-contract"{"terminal-observation-v2"}else{"terminal-observation-v3"}),"activity_observation":observation}),
             )
         }));
         assert_eq!(
@@ -1116,5 +1118,121 @@ async fn ide_missing_observation_never_authorizes_finish_or_idle() {
         assert!(!crate::ide::flush_record(&state, &record, "fixture").await);
         assert!(state.sessions.record(id).is_some());
         assert!(fake.live.lock().unwrap().contains_key(&record.container()));
+    }
+}
+
+#[tokio::test]
+async fn ide_fresh_real_helper_conflict_and_capacity_deny_lifecycle() {
+    for kind in ["conflict", "capacity", "overflow"] {
+        let (state, fake) = setup();
+        let opened = open(&state).await;
+        let id = opened["session_id"].as_str().unwrap();
+        let mut record = state.sessions.record(id).unwrap();
+        record.binding.as_mut().unwrap().ide = Some(crate::ide::Binding {
+            provider: crate::ide::PROVIDER.into(),
+            helper: crate::ide::HELPER.into(),
+            base_digest: String::new(),
+            image: String::new(),
+            generation: record.generation,
+            profile_volume: String::new(),
+            started: true,
+            state: "ready".into(),
+            error: None,
+            token: "fixture-helper-control-token-00000".into(),
+            activity_token: "fixture-helper-activity-token-0000".into(),
+        });
+        state.sessions.put(record.clone());
+        let router = sigil_ide_agent::test_support::observation_fixture_router(
+            fake.root.join("observer-fixture"),
+            record.generation,
+        );
+        let destructive = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = destructive.clone();
+        let router = router.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let calls = calls.clone();
+                async move {
+                    if matches!(req.uri().path(), "/stop" | "/finish") {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                    }
+                    next.run(req).await
+                }
+            },
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("http://{address}");
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        crate::ide::FIXTURE_ENDPOINTS
+            .lock()
+            .unwrap()
+            .insert(id.into(), url.clone());
+        let http = reqwest::Client::new();
+        let send = |observer: &str, sequence: &str, terminals: Value| {
+            http.post(format!("{url}/activity")).bearer_auth("fixture-helper-activity-token-0000").json(&json!({"generation":record.generation.to_string(),"event":"observation","observation":{"observer":observer,"sequence":sequence,"terminals":terminals,"executions":[]}})).send()
+        };
+        assert_eq!(
+            send("v3:A", "1", json!([])).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let initial = crate::ide::idle_record(&state, &record, 0).await.unwrap();
+        assert_eq!(initial, 0);
+        let began = std::time::Instant::now();
+        let (observer, sequence, terminals) = match kind {
+            "conflict" => ("v3:B", "1", json!([])),
+            "capacity" => (
+                "v3:A",
+                "10",
+                json!((0..257)
+                    .map(|n| json!({"id":format!("t-{n}"),"integrated":true}))
+                    .collect::<Vec<_>>()),
+            ),
+            _ => (
+                "v3:A",
+                "10",
+                json!([{"id":"observation-overflow","integrated":false}]),
+            ),
+        };
+        let response = send(observer, sequence, terminals).await.unwrap();
+        assert_eq!(
+            response.status(),
+            if kind == "overflow" {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        );
+        let denied = crate::ide::idle_record(&state, &record, 0).await;
+        assert_eq!(denied.unwrap_err(), "terminal_observation_unavailable");
+        assert!(!crate::ide::flush_record(&state, &record, "fixture").await);
+        assert_eq!(
+            crate::ide::request(&state, &record, "stop")
+                .await
+                .unwrap_err(),
+            "terminal_observation_unavailable"
+        );
+        assert_eq!(
+            destructive.load(Ordering::SeqCst),
+            0,
+            "controller never reaches helper stop/finish"
+        );
+        assert!(
+            began.elapsed().as_secs() < 10,
+            "controller refusal precedes freshness timeout"
+        );
+        assert!(state.sessions.record(id).is_some());
+        assert!(fake.live.lock().unwrap().contains_key(&record.container()));
+        // A delayed complete snapshot cannot clear a newer incomplete watermark;
+        // an observer conflict remains sticky even for genuinely newer A.
+        send(
+            "v3:A",
+            if kind == "conflict" { "11" } else { "9" },
+            json!([]),
+        )
+        .await
+        .unwrap();
+        assert!(crate::ide::idle_record(&state, &record, 0).await.is_err());
+        crate::ide::FIXTURE_ENDPOINTS.lock().unwrap().remove(id);
+        server.abort();
     }
 }

@@ -716,12 +716,33 @@ async fn pinned_provider_gateway_browser_smoke() {
     let extensions = root.join("extensions/sigil.activity-0.2.0");
     std::fs::create_dir_all(&extensions).unwrap();
     for file in ["package.json", "extension.js"] {
-        std::fs::copy(
-            format!("/workspace/ide-agent/activity/{file}"),
-            extensions.join(file),
-        )
-        .unwrap();
+        let output = Command::new("git")
+            .args([
+                "show",
+                &format!("46f1e1b79b225e9489d8cac108885563a89fcb72:ide-agent/activity/{file}"),
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        std::fs::write(extensions.join(file), output.stdout).unwrap();
     }
+    let settings_before = std::fs::read(root.join("data/User/settings.json")).unwrap();
+    sigil_ide_agent::test_support::install_activity_extension(
+        std::path::Path::new("/workspace/ide-agent/activity"),
+        &root.join("extensions"),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(root.join("data/User/settings.json")).unwrap(),
+        settings_before,
+        "upgrade preserves actual profile settings"
+    );
+    let installed: Value = serde_json::from_slice(
+        &std::fs::read(root.join("extensions/sigil.activity-0.3.0/package.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(installed["version"], "0.3.0");
+    std::fs::write(root.join("activity-upgrade.json"),serde_json::to_vec_pretty(&json!({"old_source":"46f1e1b79b225e9489d8cac108885563a89fcb72","old_version":"0.2.0","installed_version":installed["version"],"profile_settings_preserved":true,"ready_requires_v3_observer_prefix":true})).unwrap()).unwrap();
     let extension = root.join("extensions/sigil.integration-fixture-0.1.0");
     std::fs::create_dir_all(&extension).unwrap();
     for file in ["package.json", "extension.js"] {
@@ -914,7 +935,7 @@ async fn pinned_provider_gateway_browser_smoke() {
         .lock()
         .unwrap()
         .insert(format!("{}:3000", binding.session), preview_addr);
-    let preview_server = Abort(tokio::spawn(async move {
+    let mut preview_server = Abort(tokio::spawn(async move {
         axum::serve(preview_listener,Router::new().fallback(|h:HeaderMap|async move{assert!(!h.contains_key("authorization"));assert!(!h.contains_key("cookie"));([( "content-type","text/html"),("set-cookie","attack=1; Domain=.example.test")],"<!doctype html><title>Isolated project preview</title><h1>Isolated project preview</h1>")})).await.unwrap()
     }));
     let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1009,10 +1030,10 @@ async fn pinned_provider_gateway_browser_smoke() {
         git(&agent_repo, &["branch", "--show-current"]),
         "session/agent"
     );
-    drop(preview_server);
-    tokio::task::yield_now().await;
-    assert!(tokio::net::TcpStream::connect(preview_addr).await.is_err());
+    preview_server.0.abort();
+    let _ = (&mut preview_server.0).await;
     provider_owner.shutdown().await;
+    assert!(tokio::net::TcpStream::connect(preview_addr).await.is_err());
     drop(helper);
     crate::ide::FIXTURE_ENDPOINTS
         .lock()
