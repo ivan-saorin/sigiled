@@ -810,7 +810,7 @@ pub async fn approvals(
 // --- tests ------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use jsonwebtoken::{encode, EncodingKey, Header};
 
@@ -853,7 +853,7 @@ DPJCxvQu+6AIOceNUq0vqd8RLR54G3bNpROlFalZgibGr7zJ0QV3WMh8TwfcTMeK
 YQIDAQAB
 -----END PUBLIC KEY-----";
 
-    fn cfg() -> AuthConfig {
+    pub(crate) fn cfg() -> AuthConfig {
         AuthConfig {
             bootstrap_bearer: Some("legacy-bearer".into()),
             oidc_base: Some("https://idp.test".into()),
@@ -874,7 +874,7 @@ YQIDAQAB
         }
     }
 
-    fn sign(claims: &serde_json::Value) -> String {
+    pub(crate) fn sign(claims: &serde_json::Value) -> String {
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("test-kid".into());
         encode(
@@ -885,7 +885,7 @@ YQIDAQAB
         .unwrap()
     }
 
-    fn preloaded_keys() -> KeyStore {
+    pub(crate) fn preloaded_keys() -> KeyStore {
         let ks = KeyStore::default();
         ks.preload(
             "test-kid",

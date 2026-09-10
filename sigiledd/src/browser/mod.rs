@@ -2,7 +2,7 @@
 mod config;
 mod dashboard;
 pub(crate) mod ide_gateway;
-mod memory;
+pub(crate) mod memory;
 mod provider;
 mod research;
 use crate::{
@@ -210,7 +210,7 @@ fn redirect(path: &str) -> Response {
     r
 }
 #[derive(Clone, Copy, Debug)]
-pub struct Error(StatusCode, &'static str);
+pub struct Error(pub(crate) StatusCode, pub(crate) &'static str);
 impl Error {
     fn login() -> Self {
         Self(StatusCode::UNAUTHORIZED, "login_required")

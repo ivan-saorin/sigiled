@@ -1,3 +1,11 @@
+## 2026-09-10 — D3: durable accepted project Memory enrollment
+
+Added registry-owned enrollment and immediate partial-registration visibility/repair, bounded accepted documentation snapshots, original-token Retry and normal-close/IDE-finish scheduling after lifecycle locks, fixed read-only accepted-intent validation, durable accepted research receipts, verified namespace/source-file browser joins and honest accepted-versus-last-confirmed-indexed status. Stable git/repository/path curation identity is preserved; explicit mem0 propagation adds no ACL. Contract, bounds, lock ordering, recovery and Stage E configuration prerequisites are in docs/memory-enrollment.md.
+
+Verification: initial behavioral RED failed as expected (registration intent absent); focused recovery tests passed 9, partial-registration repair passed 1 and actual browser-assets checks passed. A broader sigiledd run returned 101 (256 passed, 3 obsolete empty-registry assertions failed, 1 ignored). Updated those assertions to verify unchanged read-only baselines and preserved pending-registration owner; settled affected checks returned 0 (1 registration browser, 6 overview, 7 IDE tests). Memory companion tests use FakeEmbedder; its settled enrollment suite includes UTF-8 aggregate byte/count rollback checks. Full numeric logs/read receipts, earlier setup/compile failures and exact commit receipts are retained in work/memory-enrollment-report.md by the orchestrator. No full-workspace/provider/live readiness inference.
+
+Current/next: source-only two-repository review, then Stage E release/configuration and authorized disposable live validation. No deployment, production mutation, migration, model download or inference was performed. Sessions remain open for parent review.
+
 ## 2026-09-10 — D2 fix round 1: unsafe provenance-link coverage (M1)
 
 Independent review approved D2 with one nonblocking coverage finding. Added controlled javascript:, data:, HTTP-userinfo and HTTPS-userinfo source-reference fixtures to the actual Memory browser-assets test. Each remains visible inert provenance text with no Open source reference link; ordinary HTTPS retains its source link with noopener/noreferrer. The harness blocks external requests and verifies rendering attempted none.

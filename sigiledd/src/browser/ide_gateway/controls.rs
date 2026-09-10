@@ -36,7 +36,7 @@ pub(crate) async fn status(
     v["session_id"] = json!(r.session_id);
     Ok((status, Json(v)).into_response())
 }
-pub(crate) async fn operation(
+async fn operation_inner(
     c: BrowserContext,
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -101,4 +101,23 @@ pub(super) fn convert_generations(v: &mut Value) {
         Value::Array(a) => a.iter_mut().for_each(convert_generations),
         _ => {}
     }
+}
+
+pub(crate) async fn operation(
+    c: BrowserContext,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(op): Json<Operation>,
+) -> Result<Response, Error> {
+    let project = state.sessions.record(&id).map(|r| r.project);
+    let actor = c.actor.driver.clone();
+    let token = c.access_token.clone();
+    let finish = op.action == "finish";
+    let response = operation_inner(c, State(state.clone()), Path(id), Json(op)).await;
+    if finish && response.as_ref().is_ok_and(|r| r.status().is_success()) {
+        if let Some(project) = project {
+            crate::enrollment::schedule(state, project, actor, token);
+        }
+    }
+    response
 }

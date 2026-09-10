@@ -528,7 +528,7 @@ async function openIDE(project,target) {
     draft.result=result;
     if(popup&&!popup.closed)popup.location.replace(result.launch_url);
     return result;
-  }catch(e){if(popup&&!popup.closed)popup.close();if(e.status===401)showAuth();draft.error=errorText(e);draft.absent=e.body?.error==='allocation_absent_or_closed';}
+  }catch(e){if(popup&&!popup.closed)popup.close();if(e.status===401)showAuth();draft.error=errorText(e);draft.absent=e.body?.error==='allocation_absent_or_closed';return {state:'failed',error:draft.error};}
   finally{draft.pending=false;syncWorkspaceLaunch(project);}
 }
 function workspaceControls(record) {
@@ -645,7 +645,8 @@ function renderProject(p) {
     }
     ,'Memory'),capability('memory',p),el('p', {
     }
-    ,'Project-to-memory association needs verified enrollment.'),link('Browse Memory','/ui/memory'),facts([['Sharing',p.memory?.sharing?label(p.memory.sharing):'Unknown']]));
+    ,({indexed:'Memory was indexed at the last confirmation',awaiting_authorization:'Sign in to retry Memory setup',disabled:'Memory enrollment is disabled',ownership_or_revision_conflict:'Memory setup needs a separate namespace',update_required:'Memory needs a service update',unavailable:'Memory is unavailable; retry setup',projection_pending:'Documents accepted; indexing is pending'}[p.memory_enrollment?.state]||'Memory setup pending')),link('Browse Memory',p.memory_enrollment?.confirmed?.verified?'/ui/memory?index='+encodeURIComponent(p.memory_enrollment.confirmed.index):'/ui/memory'),facts([['Sharing',p.memory?.sharing==='mem0'?'Shared with general Memory':'Project only'],['Indexed accepted commit',p.memory_enrollment?.confirmed?.commit||'Not confirmed']]),button('Retry Memory setup',async()=>{await checkSession();await request('/browser/api/projects/'+encodeURIComponent(route.project)+'/memory-enrollment',{method:'POST',body:'{}'});refresh();}));
+    if(p.memory_enrollment?.state==='ownership_or_revision_conflict'&&!p.memory_enrollment?.confirmed)panel.append(el('p',{},'An existing namespace belongs to another owner. Preserve it and create a separate project namespace.'),button('Use separate namespace',async()=>{await checkSession();await request('/browser/api/projects/'+encodeURIComponent(route.project)+'/memory-enrollment/namespace',{method:'POST',body:'{}'});refresh();}));
     break;
     case'research':panel.append(target.querySelector("#research-root") || researchShell(route.project));
     break;

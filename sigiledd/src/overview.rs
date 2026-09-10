@@ -116,7 +116,7 @@ fn capabilities(state: &AppState, d: &Descriptor) -> Value {
         "pending":capability(true,"ready","derived_attention_available",d),
         "workspace":capability(true,workspace,if state.sessions.runtime.is_none(){"runtime_not_configured"}else if repo_ready{"mirror_observed_runtime_configured"}else{"repository_pending"},d),
         "ide":capability(d.declaration.ide.enabled,"pending","ide_adapter_not_configured",d),
-        "memory":capability(d.declaration.memory.enabled,"pending","memory_adapter_not_configured",d),
+        "memory":capability(d.declaration.memory.enabled,if d.memory_enrollment.as_ref().is_some_and(|e|e.state=="indexed"){"ready"}else{"pending"},if d.memory_enrollment.as_ref().is_some_and(|e|e.state=="indexed"){"last_confirmed_indexed"}else{"memory_setup_pending"},d),
         "browser":capability(true,"pending","browser_auth_not_configured",d)
     })
 }
@@ -203,11 +203,23 @@ fn attention(
         ("ide", d.declaration.ide.enabled),
         ("memory", d.declaration.memory.enabled),
     ] {
-        if enabled {
+        if enabled
+            && !(name == "memory"
+                && d.memory_enrollment
+                    .as_ref()
+                    .is_some_and(|e| e.state == "indexed" || e.state == "disabled"))
+        {
             add(
                 format!("project:{}/setup/{name}", p.name),
                 "pending",
-                "adapter_not_configured",
+                if name == "memory" {
+                    d.memory_enrollment
+                        .as_ref()
+                        .map(|e| e.state.as_str())
+                        .unwrap_or("awaiting_authorization")
+                } else {
+                    "adapter_not_configured"
+                },
             );
         }
     }
@@ -261,7 +273,7 @@ fn summary(
         "repository_revision":d.desired_revision,"observed_revision":d.observed_revision,"needs_merge":p.needs_merge,
         "capabilities":capabilities(state,&d),
         "setup":{"state":if d.error==Some(crate::ecosystem::RefreshError::RefreshBusy){"pending"}else if d.error.is_some(){"failed"}else if d.observed_revision.is_some(){"ready"}else{"pending"},
-            "scope":"registry_manifest","desired_revision":d.desired_revision,"observed_revision":d.observed_revision,
+            "scope":"registry_manifest","registration_pending":d.registration_pending,"desired_revision":d.desired_revision,"observed_revision":d.observed_revision,
             "observed_at":d.observed_at,"attempted_at":d.attempted_at,"retry_at":d.retry_at,"failures":d.failures,
             "stale":d.error.is_some() || d.observed_at.is_none_or(|t|crate::auth::now_epoch().saturating_sub(t)>600),
             "error":d.error.map(|e|json!({"code":e,"message":e.message()})),"service_error":service_error},
@@ -362,6 +374,11 @@ pub(crate) fn detail_projection(
     let d = state.registry.descriptor(&project);
     let mut v = summary(&state, &p, errors.get(&project), &sessions);
     v["observed_at"] = json!(crate::auth::now_epoch());
+    v["memory_enrollment"] = d
+        .memory_enrollment
+        .as_ref()
+        .map(|e| e.public())
+        .unwrap_or(json!({"state":"awaiting_authorization"}));
     v["memory"] = json!(d.declaration.memory);
     v["memory"]["sharing"] = json!(d.declaration.memory.sharing.as_deref().unwrap_or("private"));
     v["ide"] = json!(d.declaration.ide);
@@ -426,6 +443,7 @@ mod tests {
     async fn overview_is_immediate_paginated_and_read_only_without_runtime() {
         let s = registered();
         let before = serde_json::to_value(s.sessions.dump_records()).unwrap();
+        let descriptors_before = serde_json::to_value(s.registry.descriptors()).unwrap();
         let (status, v) = body(
             root(
                 actor(),
@@ -465,7 +483,10 @@ mod tests {
             before
         );
         assert!(s.events.dump().is_empty());
-        assert!(s.registry.descriptors().is_empty());
+        assert_eq!(
+            serde_json::to_value(s.registry.descriptors()).unwrap(),
+            descriptors_before
+        );
         assert_eq!(
             body(
                 detail(
@@ -652,6 +673,7 @@ mod http_tests {
             &crate::manifest::Manifest::parse("").unwrap(),
             None,
         ));
+        let descriptors_before = serde_json::to_value(state.registry.descriptors()).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = crate::app(state.clone());
@@ -705,7 +727,10 @@ mod http_tests {
             .await
             .unwrap();
         assert!(projects.is_array());
-        assert!(state.registry.descriptors().is_empty());
+        assert_eq!(
+            serde_json::to_value(state.registry.descriptors()).unwrap(),
+            descriptors_before
+        );
         assert!(state.sessions.live_records().is_empty());
         assert!(state.events.dump().is_empty());
         server.abort();

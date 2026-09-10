@@ -648,6 +648,17 @@ pub(crate) async fn close_expected(
             return failure(&state, &id, Failure::PushFailed);
         }
     }
+    if debt.is_none() {
+        let mut map = state.registry.descriptors.write().unwrap();
+        map.entry(record.project.clone())
+            .or_default()
+            .memory_enrollment
+            .get_or_insert_with(Default::default)
+            .observe(&sha, true);
+    }
+    if debt.is_none() && crate::enrollment::accept_handoff(&state, &record, &repo, &sha).is_err() {
+        return failure(&state, &id, Failure::PersistFailed);
+    }
     // The successful checkpoint and master/debt are durable before cleanup.
     if state.try_persist().is_err() {
         return failure(&state, &id, Failure::PersistFailed);
@@ -1190,3 +1201,20 @@ mod tests {
 }
 
 // Private browser allocation entry; machine callers never select an identity.
+
+pub async fn close_authenticated(
+    actor: Actor,
+    State(state): State<crate::AppState>,
+    AxPath(id): AxPath<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let project = state.sessions.record(&id).map(|r| r.project);
+    let driver = actor.driver.clone();
+    let response = close_expected(actor, state.clone(), id, None).await;
+    if response.status().is_success() {
+        if let Some(project) = project {
+            crate::enrollment::schedule_headers(state, project, driver, &headers);
+        }
+    }
+    response
+}

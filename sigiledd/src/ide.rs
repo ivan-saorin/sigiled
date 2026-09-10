@@ -186,6 +186,24 @@ pub async fn status(
     }
     Json(json!({"desired":state.registry.descriptor(&r.project).declaration.ide.enabled,"provider":projection})).into_response()
 }
+pub async fn operation_authenticated(
+    actor: Actor,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(op): Json<Operation>,
+) -> Response {
+    let project = state.sessions.record(&id).map(|r| r.project);
+    let driver = actor.driver.clone();
+    let finish = op.action == "finish";
+    let response = operation(actor, State(state.clone()), Path(id), Json(op)).await;
+    if finish && response.status().is_success() {
+        if let Some(project) = project {
+            crate::enrollment::schedule_headers(state, project, driver, &headers);
+        }
+    }
+    response
+}
 pub async fn operation(
     actor: Actor,
     State(state): State<crate::AppState>,

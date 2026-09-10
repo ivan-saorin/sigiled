@@ -13,6 +13,8 @@ mod catalog;
 mod contract;
 mod declaration;
 mod ecosystem;
+mod enrollment;
+mod enrollment_contract;
 mod events;
 mod github;
 mod ide;
@@ -84,6 +86,16 @@ impl AppState {
             *self.sessions.browser_allocations.lock().unwrap() = snap.browser_allocations;
             self.registry.replace_all(snap.projects);
             self.registry.hydrate_descriptors(snap.ecosystem);
+            for d in self.registry.descriptors.write().unwrap().values_mut() {
+                if let Some(e) = d.memory_enrollment.as_mut() {
+                    if matches!(
+                        e.state.as_str(),
+                        "pending" | "unavailable" | "projection_pending"
+                    ) {
+                        e.state = "awaiting_authorization".into();
+                    }
+                }
+            }
             self.events.hydrate(snap.events);
             self.sessions.hydrate(snap.debts, snap.sessions);
             self.auth.approvals.hydrate(snap.approvals);
@@ -123,7 +135,10 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/services", get(catalog::serve))
         .route("/overview", get(overview::root))
         .route("/projects/{project}", get(overview::detail))
-        .route("/projects", get(project::list).post(project::create))
+        .route(
+            "/projects",
+            get(project::list).post(project::create_authenticated),
+        )
         .route("/projects/{project}/log", get(events::project_log))
         .route("/projects/{project}/branches", get(project::branches))
         .route("/projects/{project}/jobs/{job}/run", post(jobs::run))
@@ -131,12 +146,24 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/projects/{project}/sessions", post(sessions::open))
         .route("/sessions", get(sessions::list))
         .route("/sessions/{session_id}", get(sessions::detail))
-        .route("/sessions/{session_id}/close", post(sessions::close))
+        .route(
+            "/sessions/{session_id}/close",
+            post(sessions::close_authenticated),
+        )
         .route(
             "/sessions/{session_id}/ide",
-            get(ide::status).post(ide::operation),
+            get(ide::status).post(ide::operation_authenticated),
         )
         .route("/sessions/{session_id}/recycle", post(sessions::recycle))
+        .route("/memory/enrollment/validate", post(enrollment::validate))
+        .route(
+            "/projects/{project}/memory-enrollment",
+            get(enrollment::status).post(enrollment::retry),
+        )
+        .route(
+            "/projects/{project}/memory-enrollment/namespace",
+            post(enrollment::correct_namespace),
+        )
         .route("/auth/elevate", post(auth::elevate))
         // GET *and* POST: Caddy's forward_auth issues a GET (it rewrites the
         // method internally), while a human or a test reaches for POST. The

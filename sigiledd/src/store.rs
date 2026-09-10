@@ -37,9 +37,16 @@ pub struct StateSnapshot {
 #[derive(Clone, Default)]
 pub struct Store {
     path: Option<PathBuf>,
+    #[cfg(test)]
+    fail_after: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl Store {
+    #[cfg(test)]
+    pub(crate) fn fail_after(mut self, n: usize) -> Self {
+        self.fail_after = Some(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(n)));
+        self
+    }
     pub(crate) fn durable(&self) -> bool {
         self.path.is_some()
     }
@@ -52,12 +59,16 @@ impl Store {
         if path.is_none() {
             tracing::warn!("SIGILED_STATE_DIR not set — state is ephemeral");
         }
-        Store { path }
+        Store {
+            path,
+            ..Default::default()
+        }
     }
 
     pub fn at_dir(dir: &std::path::Path) -> Self {
         Store {
             path: Some(dir.join("state.json")),
+            ..Default::default()
         }
     }
 
@@ -80,6 +91,30 @@ impl Store {
     }
     pub fn try_save(&self, snap: &StateSnapshot) -> Result<(), String> {
         use std::io::Write;
+        #[cfg(test)]
+        if self
+            .fail_after
+            .as_ref()
+            .is_some_and(|n| n.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 0)
+        {
+            return Err("injected state persistence failure".into());
+        }
+        let entries: Vec<_> = snap
+            .ecosystem
+            .values()
+            .filter_map(|d| d.memory_enrollment.as_ref())
+            .collect();
+        if entries.len() > 10000
+            || entries
+                .iter()
+                .try_fold(0usize, |sum, e| {
+                    serde_json::to_vec(e).map(|v| sum.saturating_add(v.len()))
+                })
+                .map_err(|_| "enrollment serialization failed")?
+                > 32 * 1024 * 1024
+        {
+            return Err("enrollment state capacity reached".into());
+        }
         let Some(p) = &self.path else {
             return Ok(());
         };

@@ -40,6 +40,8 @@ pub struct JobDefinition {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Descriptor {
+    pub registration_pending: bool,
+    pub memory_enrollment: Option<crate::enrollment::Enrollment>,
     pub declaration: Declaration,
     pub app: Option<String>,
     pub jobs: Vec<JobDefinition>,
@@ -91,6 +93,9 @@ impl Registry {
             .clone()
             .or_else(|| d.declaration.memory.sharing.clone())
             .or_else(|| Some("private".into()));
+        d.memory_enrollment
+            .get_or_insert_with(Default::default)
+            .observe(revision, manifest.declaration.memory.enabled);
         d.declaration = manifest.declaration.clone();
         d.declaration.memory.sharing = sharing;
         d.app = manifest.app.as_ref().map(|a| a.name.clone());

@@ -322,6 +322,15 @@ pub(in crate::browser) async fn operations(
             }
         }
     }
+    for row in &mut rows {
+        if let Some(run) = row["run_id"].as_str() {
+            if let Some(receipt) =
+                crate::enrollment::research_receipt(&state, &p, run, &c.actor.driver)
+            {
+                row["handoff"] = receipt;
+            }
+        }
+    }
     Ok(Json(json!({"operations":rows})))
 }
 #[derive(Deserialize)]

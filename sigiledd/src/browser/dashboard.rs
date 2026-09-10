@@ -81,7 +81,15 @@ pub(super) async fn create(
             .into_response();
     }
     let name = body.name.clone();
-    let response = crate::project::create(c.actor, State(state.clone()), Json(body)).await;
+    let response = crate::project::create(c.actor.clone(), State(state.clone()), Json(body)).await;
+    if response.status() == StatusCode::CREATED {
+        crate::enrollment::schedule(
+            state.clone(),
+            name.clone(),
+            c.actor.driver.clone(),
+            c.access_token.clone(),
+        );
+    }
     match response.status() {
         StatusCode::CREATED=> (StatusCode::CREATED,Json(json!({"name":name,"state":"registered"}))).into_response(),
         StatusCode::CONFLICT if state.registry.contains(&name)=> {
@@ -182,6 +190,15 @@ pub(super) fn body_limit(method: &Method, path: &str) -> usize {
         return limit;
     }
     let parts: Vec<_> = path.split('/').collect();
+    if method == Method::POST
+        && parts.len() >= 6
+        && parts[1..4] == ["browser", "api", "projects"]
+        && crate::project::valid_name(parts[4])
+        && parts[5] == "memory-enrollment"
+        && (parts.len() == 6 || (parts.len() == 7 && parts[6] == "namespace"))
+    {
+        return 64;
+    }
     if method == Method::POST && path == "/browser/api/projects" {
         return 1024;
     }

@@ -64,9 +64,14 @@ pub(super) async fn ingests(
 ) -> Result<Json<Value>, Error> {
     index(&n)?;
     let v = recorded(&service(&s)?, &n, &c.access_token).await?;
+    let enrollment = s
+        .registry
+        .descriptor(&n)
+        .memory_enrollment
+        .map(|e| e.public());
     let sources:Vec<_>=v.sources.iter().map(|source|json!({"source_id":source.id(&n),"source":source.source,"ref":source.refid,"path":source.path,"last_run":source.last_run,"chunks":source.chunks,"head":source.head})).collect();
     public(
-        json!({"idx":n,"running":v.running,"runs":v.runs,"sources":sources,"last_ingest":v.last_ingest,"history_limitation":"Recent process history; recorded completed sources survive restart."}),
+        json!({"accepted_enrollment":enrollment,"accepted_retry":"Use project Retry Memory setup; accepted documents are not legacy reindex sources.","idx":n,"running":v.running,"runs":v.runs,"sources":sources,"last_ingest":v.last_ingest,"history_limitation":"Recent process history; recorded completed sources survive restart."}),
         &c.access_token,
     )
 }
@@ -94,6 +99,20 @@ pub(super) async fn reindex(
             StatusCode::CONFLICT,
             "memory_recorded_source_changed",
         ))?;
+    if source.source == "git"
+        && s.registry
+            .descriptors()
+            .values()
+            .filter_map(|d| d.memory_enrollment.as_ref()?.snapshot.as_ref())
+            .any(|snapshot| {
+                snapshot.repository == source.refid && (snapshot.project == n || snapshot.shared)
+            })
+    {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "accepted_repository_requires_memory_setup_retry",
+        ));
+    }
     if !matches!(source.source.as_str(), "git" | "file" | "sqlite") {
         return Err(Error(
             StatusCode::BAD_REQUEST,

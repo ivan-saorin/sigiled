@@ -46,6 +46,7 @@ const server = http.createServer(async (req, res) => {
                 assert.equal(req.headers['x-sigil-csrf'], 'csrf');
                 writes.push({ path: u.pathname, body: b });
             }
+            if (u.pathname === '/browser/api/projects/atlas/ide') return reply({ error: 'source_file_missing' }, 409);
             if (u.pathname === '/browser/api/memory')
                 return reply({ indexes: [{ name: 'atlas', rows: 3 }, { name: 'notes', rows: null }], readiness: ready ? 'ready' : 'update_or_auth_setup_required', observed_at: 1789041600, project_association: 'unavailable_pending_enrollment' });
             if (u.pathname.endsWith('/ingests'))
@@ -175,6 +176,21 @@ const server = http.createServer(async (req, res) => {
         await page.getByRole('heading', { name: 'Source document', exact: true }).waitFor();
         assert.equal(await page.getByRole('link', { name: 'Open source reference', exact: true }).getAttribute('href'), imported.ref);
         console.log('PASS M1: javascript/data and HTTP/HTTPS userinfo references render as inert provenance text; ordinary HTTPS retains its safe source link; no external requests');
+        imported.source_edit = { verified: true, project: 'atlas', path: 'docs/decision.md', indexed_commit: 'accepted-old', current_accepted_commit: 'accepted-current' };
+        await page.goto(base + '/ui/memory?index=atlas&memory=source1');
+        await page.getByRole('heading', { name: 'Source document', exact: true }).waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Edit source', exact: true }).isDisabled(), false);
+        await page.getByRole('button', { name: 'Edit source', exact: true }).click();
+        await page.getByText(/Source moved or missing, or the workspace could not open/).waitFor();
+        const sourceLaunch = writes.findLast(w => w.path === '/browser/api/projects/atlas/ide');
+        assert.deepEqual(sourceLaunch.body.target, { path: 'docs/decision.md' });
+        assert.match(sourceLaunch.body.idempotency_key, /^[0-9a-f-]{36}$/);
+        assert.match(await page.locator('.memory-detail').innerText(), /accepted-old.*accepted-current/);
+        delete imported.source_edit;
+        await page.goto(base + '/ui/memory?index=atlas&memory=source1');
+        await page.getByRole('heading', { name: 'Source document', exact: true }).waitFor();
+        console.log('PASS D3: verified source uses the actual C2 file launch and displays missing-source failure without losing the Memory screen');
+
         await page.getByLabel('Annotation', { exact: true }).fill('A correction that survives indexing');
         await page.getByRole('button', { name: 'Refresh', exact: true }).click();
         await page.waitForTimeout(100);

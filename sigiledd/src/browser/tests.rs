@@ -1499,7 +1499,15 @@ async fn dashboard_project_partial_retry_two_tabs_and_approval() {
     let partial: Value = r.json().await.unwrap();
     assert_eq!(partial["state"], "partial");
     assert_eq!(partial["retry_same_name"], true);
-    assert!(!f.state.registry.contains("demo"));
+    assert!(f.state.registry.contains("demo"));
+    assert!(f.state.registry.descriptor("demo").registration_pending);
+    let enrollment_owner = f
+        .state
+        .registry
+        .descriptor("demo")
+        .memory_enrollment
+        .unwrap()
+        .owner;
     let incumbent = std::fs::read(keys.join("demo/id_ed25519")).unwrap();
     let (a, b) = tokio::join!(send(), send());
     let mut statuses = vec![a.unwrap().status().as_u16(), b.unwrap().status().as_u16()];
@@ -1512,6 +1520,16 @@ async fn dashboard_project_partial_retry_two_tabs_and_approval() {
         std::fs::read(keys.join("demo/id_ed25519")).unwrap()
     );
     assert_eq!(f.state.events.for_project("demo").len(), 1);
+    assert!(!f.state.registry.descriptor("demo").registration_pending);
+    assert_eq!(
+        f.state
+            .registry
+            .descriptor("demo")
+            .memory_enrollment
+            .unwrap()
+            .owner,
+        enrollment_owner
+    );
     // Even a known project's retry must satisfy the actual new actor's policy.
     *f.fake.options.lock().unwrap() =
         json!({"access":{"sub":"unapproved-human","groups":["stack:drivers"]}});

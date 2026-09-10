@@ -134,7 +134,7 @@ impl Declaration {
             .memory
             .sharing
             .as_deref()
-            .is_some_and(|s| !["private", "project"].contains(&s))
+            .is_some_and(|s| !["private", "project", "mem0"].contains(&s))
         {
             return Err("unsupported memory sharing".into());
         }

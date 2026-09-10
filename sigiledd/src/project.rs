@@ -96,6 +96,13 @@ impl Registry {
     pub fn insert(&self, record: ProjectRecord) {
         let mut records = self.records.write().unwrap();
         if !records.iter().any(|r| r.name == record.name) {
+            self.descriptors
+                .write()
+                .unwrap()
+                .entry(record.name.clone())
+                .or_default()
+                .memory_enrollment
+                .get_or_insert_with(Default::default);
             records.push(record);
             self.reconcile.notify_one();
         }
@@ -263,7 +270,9 @@ pub async fn create(
     // machine callers cannot race key generation or registration.
     let lock = state.sessions.merge_lock(&body.name);
     let _project = lock.lock().await;
-    if state.registry.contains(&body.name) {
+    if state.registry.contains(&body.name)
+        && !state.registry.descriptor(&body.name).registration_pending
+    {
         return err(
             StatusCode::CONFLICT,
             format!("project '{}' already registered", body.name),
@@ -282,13 +291,6 @@ pub async fn create(
         Ok(r) => r,
         Err(e) => return err(StatusCode::BAD_GATEWAY, e),
     };
-    let pubkey = match gh.generate_deploy_key(&body.name) {
-        Ok(k) => k,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
-    };
-    if let Err(e) = gh.add_deploy_key(&http, &body.name, &pubkey).await {
-        return err(StatusCode::BAD_GATEWAY, e);
-    }
     // template_version stays null at birth, like every imported record: the
     // pin is read from sigiled.toml on master by the flows that fetch it.
     let record = ProjectRecord {
@@ -297,16 +299,56 @@ pub async fn create(
         template_behind: false,
         needs_merge: false,
     };
+    let first_registration = !state.registry.contains(&body.name);
     state.registry.insert(record.clone());
-    state.events.record(
-        &body.name,
-        crate::auth::now_epoch(),
-        crate::events::Event::ProjectCreated {
-            repo: repo_full.clone(),
-            adopted,
-        },
-    );
+    state
+        .registry
+        .descriptors
+        .write()
+        .unwrap()
+        .entry(body.name.clone())
+        .or_default()
+        .registration_pending = true;
+    if first_registration {
+        state.events.record(
+            &body.name,
+            crate::auth::now_epoch(),
+            crate::events::Event::ProjectCreated {
+                repo: repo_full.clone(),
+                adopted,
+            },
+        );
+    }
     if state.try_persist().is_err() {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "registration persistence uncertain; retry the same project name",
+        );
+    }
+    let pubkey = match gh.generate_deploy_key(&body.name) {
+        Ok(k) => k,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    if let Err(e) = gh.add_deploy_key(&http, &body.name, &pubkey).await {
+        return err(StatusCode::BAD_GATEWAY, e);
+    }
+    state
+        .registry
+        .descriptors
+        .write()
+        .unwrap()
+        .entry(body.name.clone())
+        .or_default()
+        .registration_pending = false;
+    if state.try_persist().is_err() {
+        state
+            .registry
+            .descriptors
+            .write()
+            .unwrap()
+            .entry(body.name.clone())
+            .or_default()
+            .registration_pending = true;
         return err(
             StatusCode::SERVICE_UNAVAILABLE,
             "registration persistence uncertain; retry the same project name",
@@ -675,6 +717,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enrollment_registration_retains_partial_project_after_repository_creation() {
+        let (base, captured) = mock_github(201, 404).await;
+        let blocker = tmp_keys("partial");
+        std::fs::write(&blocker, b"controlled directory blocker").unwrap();
+        let dir = tmp_keys("partial-state");
+        let state = crate::AppState {
+            store: crate::store::Store::at_dir(&dir),
+            ..state_with_github(&base, blocker.clone())
+        };
+        let response = create(
+            admin(),
+            State(state.clone()),
+            Json(NewProject {
+                name: "partial-project".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.registry.contains("partial-project"));
+        assert!(
+            state
+                .registry
+                .descriptor("partial-project")
+                .registration_pending
+        );
+        assert!(captured.lock().unwrap().is_empty());
+        let owner = state
+            .registry
+            .descriptor("partial-project")
+            .memory_enrollment
+            .unwrap()
+            .owner;
+        let restored = crate::AppState {
+            registry: Default::default(),
+            ..state.clone()
+        };
+        restored.hydrate_from_disk();
+        assert!(restored.registry.contains("partial-project"));
+        std::fs::remove_file(&blocker).unwrap();
+        let response = create(
+            admin(),
+            State(state.clone()),
+            Json(NewProject {
+                name: "partial-project".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(state.registry.snapshot().len(), 1);
+        assert!(
+            !state
+                .registry
+                .descriptor("partial-project")
+                .registration_pending
+        );
+        assert_eq!(
+            state
+                .registry
+                .descriptor("partial-project")
+                .memory_enrollment
+                .unwrap()
+                .owner,
+            owner
+        );
+        assert_eq!(state.events.for_project("partial-project").len(), 1);
+    }
+
+    #[tokio::test]
     async fn existing_repo_is_adopted_not_failed() {
         // generate 422 + probe 200 = the v1 §7.8 adoption path.
         let (base, captured) = mock_github(422, 200).await;
@@ -736,4 +846,38 @@ mod registry_regressions {
         assert_eq!(reg.snapshot().len(), 1);
         assert!(reg.snapshot()[0].needs_merge);
     }
+}
+
+#[cfg(test)]
+mod enrollment_registration_tests {
+    #[test]
+    fn registration_records_enrollment_before_remote_setup() {
+        let registry = super::Registry::default();
+        registry.insert(super::ProjectRecord::new(
+            "new-project",
+            &crate::manifest::Manifest::parse("").unwrap(),
+            None,
+        ));
+        let value = serde_json::to_value(registry.descriptor("new-project")).unwrap();
+        assert_eq!(
+            value["memory_enrollment"]["state"],
+            "awaiting_authorization"
+        );
+        assert_eq!(registry.snapshot().len(), 1);
+    }
+}
+
+pub async fn create_authenticated(
+    actor: crate::auth::Actor,
+    State(state): State<crate::AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<NewProject>,
+) -> Response {
+    let name = body.name.clone();
+    let driver = actor.driver.clone();
+    let response = create(actor, State(state.clone()), Json(body)).await;
+    if response.status() == StatusCode::CREATED {
+        crate::enrollment::schedule_headers(state, name, driver, &headers);
+    }
+    response
 }

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 mod dto;
 use dto::*;
 #[derive(Clone)]
-pub(super) struct Service {
+pub(crate) struct Service {
     client: reqwest::Client,
     base: String,
 }
@@ -129,7 +129,7 @@ fn ready(v: &Value) -> bool {
         && v["auth"]["oidc_verifier_configured"] == true
 }
 impl Service {
-    async fn call(
+    pub(crate) async fn call(
         &self,
         method: Method,
         path: &str,
@@ -146,6 +146,7 @@ impl Service {
                     && match *op {
                         "chunks" | "search" | "ingests" => method == Method::GET,
                         "manual" | "curation" | "forget" | "ingest" => method == Method::POST,
+                        "enrollment" => method == Method::GET || method == Method::POST,
                         _ => false,
                     }
             }
@@ -183,7 +184,18 @@ impl Service {
             .extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));
         let mut req = self.client.request(method, url).bearer_auth(token);
         if let Some(b) = body {
-            req = req.json(&b);
+            if path.ends_with("/enrollment") {
+                let bytes = serde_json::to_vec(&b).map_err(|_| invalid())?;
+                if bytes.len() > crate::enrollment_contract::MAX_BODY {
+                    return Err(Error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "encoded_enrollment_body_too_large",
+                    ));
+                }
+                req = req.header("content-type", "application/json").body(bytes);
+            } else {
+                req = req.json(&b);
+            }
         }
         let mut response = req.send().await.map_err(|_| unavailable())?;
         let status = response.status();
@@ -264,6 +276,14 @@ pub(super) fn body_limit(method: &Method, path: &str) -> Option<usize> {
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route("/browser/api/memory", get(overview))
+        .route(
+            "/browser/api/projects/{project}/memory-enrollment",
+            get(enrollment_status).post(enrollment_retry),
+        )
+        .route(
+            "/browser/api/projects/{project}/memory-enrollment/namespace",
+            post(enrollment_namespace),
+        )
         .route("/browser/api/memory/indexes/{index}/chunks", get(browse))
         .route(
             "/browser/api/memory/indexes/{index}/chunks/{id}",
@@ -445,7 +465,10 @@ async fn chunk(
         return Err(unavailable());
     }
     v.validate(&n)?;
-    public(v, &c.access_token)
+    let mut value = serde_json::to_value(v).map_err(|_| unavailable())?;
+    value["source_edit"] =
+        crate::enrollment::source_edit(&s, &svc, &n, &value, &c.access_token).await;
+    public(value, &c.access_token)
 }
 async fn manual(
     c: BrowserContext,
@@ -665,3 +688,79 @@ mod ingestion;
 use ingestion::{ingests, reindex};
 #[cfg(test)]
 mod tests;
+
+async fn enrollment_status(
+    _c: BrowserContext,
+    State(s): State<AppState>,
+    Path(project): Path<String>,
+) -> Result<Json<Value>, Error> {
+    if !s.registry.contains(&project) {
+        return Err(Error(StatusCode::NOT_FOUND, "unknown_project"));
+    }
+    Ok(Json(
+        s.registry
+            .descriptor(&project)
+            .memory_enrollment
+            .map(|e| e.public())
+            .unwrap_or(json!({"state":"awaiting_authorization"})),
+    ))
+}
+async fn enrollment_retry(
+    c: BrowserContext,
+    State(s): State<AppState>,
+    Path(project): Path<String>,
+) -> Result<Json<Value>, Error> {
+    if crate::auth::authorize(
+        &c.actor,
+        crate::auth::Action::OpenSession,
+        Some(&project),
+        &s.auth.approvals,
+        auth::now_epoch(),
+    )
+    .is_err()
+    {
+        return Err(Error::forbidden("project_authorization_required"));
+    }
+    let task = tokio::spawn(crate::enrollment::reconcile(
+        s,
+        project,
+        c.actor.driver,
+        Some(c.access_token),
+    ));
+    let v = task
+        .await
+        .map_err(|_| unavailable())?
+        .map_err(|code| Error(StatusCode::SERVICE_UNAVAILABLE, code))?;
+    Ok(Json(v))
+}
+async fn enrollment_namespace(
+    c: BrowserContext,
+    State(s): State<AppState>,
+    Path(project): Path<String>,
+) -> Result<Json<Value>, Error> {
+    if crate::auth::authorize(
+        &c.actor,
+        crate::auth::Action::OpenSession,
+        Some(&project),
+        &s.auth.approvals,
+        auth::now_epoch(),
+    )
+    .is_err()
+    {
+        return Err(Error::forbidden("project_authorization_required"));
+    }
+    crate::enrollment::separate_namespace(&s, &project)
+        .await
+        .map_err(|code| Error(StatusCode::CONFLICT, code))?;
+    enrollment_retry(c, State(s), Path(project)).await
+}
+
+#[cfg(test)]
+impl Service {
+    pub(crate) fn test_at(base: String) -> Self {
+        Self {
+            base,
+            ..Default::default()
+        }
+    }
+}

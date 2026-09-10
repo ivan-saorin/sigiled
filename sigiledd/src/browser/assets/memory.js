@@ -467,7 +467,9 @@ window.SigilMemory = (() => {
             const href = safe(data.ref);
             if (href)
                 holder.append(el('a', { href, target: '_blank', rel: 'noopener noreferrer' }, 'Open source reference'));
-            holder.append(p('Current checkout: not observed. Project association is not verified; source editing needs project enrollment.'), b('Edit source', () => { }, true));
+            const sourceEdit = data.source_edit, sourceFeedback = note('');
+            holder.append(p(sourceEdit?.verified ? 'Indexed accepted commit: ' + sourceEdit.indexed_commit + '. Current accepted commit: ' + sourceEdit.current_accepted_commit + '. The current workspace file is checked when opening; missing or moved files are reported.' : 'Current checkout: not observed. Project association is not verified; source editing needs project enrollment.'), b('Edit source', async () => { const result = await S.openIDE(sourceEdit.project, { path: sourceEdit.path }); sourceFeedback.textContent = result?.launch_url ? 'Opening the current workspace file.' : 'Source moved or missing, or the workspace could not open. ' + (result?.error || 'Inspect project workspace status and retry.'); }, sourceEdit?.verified !== true));
+            holder.append(sourceFeedback);
             curationControls(data.target, data.curation, holder, data.id);
             detail.replaceChildren(back, holder);
             view = { key, sha: data.sha, text: data.text };
