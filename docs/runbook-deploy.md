@@ -169,3 +169,16 @@ curl -s -X POST -H "Authorization: Bearer $TOK" -d '{"name":"smoke"}' \
 If `open` → `git log` → `commit` → `close` round-trips green, the instance
 is alive. Register the operator ritual you just performed in your own
 docs; from here on, the drivers do the work.
+
+### C1/C3 inherited IDE release gate
+
+See [ide-runtime.md](ide-runtime.md) before enabling the full-write provider.
+The platform build now includes the checksum-pinned provider and independent
+static companion. It layers the resolved project image without replacing its
+extended vm-base. Record actual GitHub active-policy/bypass evidence and verify
+the distinct host PAT User transport before setting `SIGILED_IDE_HOST_MERGE`.
+Do not mutate repository policy as an incidental deployment step. C2 origin/SSO,
+WebSocket revocation and live browser acceptance are still required. Back up
+session state plus separately retained operator profile volumes; never roll an
+IDE-used live generation back to a binary unaware of its checkpoint/activity
+binding. Source tests and local provider smoke are not a production deployment.

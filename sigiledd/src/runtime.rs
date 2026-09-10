@@ -253,6 +253,9 @@ impl Runtime {
 
     /// Push a ref with the project's deploy key (close, after the merge).
     pub fn push(&self, project: &str, refspec: &str) -> Result<String, String> {
+        if std::env::var("SIGILED_IDE_HOST_MERGE").as_deref() == Ok("github-pat") {
+            return crate::ide::host_merge_push(self, project, refspec);
+        }
         let path = self.repo_path(project);
         let out = Command::new("git")
             .arg("-C")
@@ -448,6 +451,28 @@ impl Runtime {
         image: &str,
         extra_env: &[(String, String)],
     ) -> Result<(), String> {
+        self.create_container_profile(
+            container,
+            project,
+            kind,
+            workload_id,
+            token,
+            image,
+            extra_env,
+            None,
+        )
+    }
+    pub fn create_container_profile(
+        &self,
+        container: &str,
+        project: &str,
+        kind: &str,
+        workload_id: &str,
+        token: &str,
+        image: &str,
+        extra_env: &[(String, String)],
+        profile: Option<&str>,
+    ) -> Result<(), String> {
         // Docker create owns the name atomically. Never pre-delete an incumbent.
         let key = self.key_path(project);
         if !key.exists() {
@@ -475,6 +500,19 @@ impl Runtime {
             "-e".into(),
             "GIT_SSH_KEY=/secrets/deploy_key".into(),
         ];
+        if let Some(profile) = profile {
+            if !profile.starts_with("sigil-ide-profile-")
+                || !profile
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                return Err("invalid profile volume".into());
+            }
+            args.extend([
+                "--mount".into(),
+                format!("type=volume,source={profile},target=/sigil-profile"),
+            ]);
+        }
         for (name, value) in extra_env {
             args.push("-e".into());
             args.push(format!("{name}={value}"));

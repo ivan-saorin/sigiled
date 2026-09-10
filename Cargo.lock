@@ -1087,6 +1087,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "sigil-ide-agent"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sigiledd"
 version = "2.0.0-alpha.1"
 dependencies = [
@@ -1531,6 +1547,7 @@ dependencies = [
  "base64",
  "serde",
  "serde_json",
+ "sigil-ide-agent",
  "subtle",
  "tokio",
  "tracing",

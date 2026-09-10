@@ -563,3 +563,18 @@ The host-bound browser shell is served at `/` and `/ui/*`, with self-hosted `/br
 Added browser-only adapters: POST `/browser/api/projects`; GET `/browser/api/projects/{project}/jobs/{job}/runs`; GET/POST `/browser/api/projects/{project}/work-items`; GET/PATCH `/browser/api/projects/{project}/work-items/{id}`. Mutations require actual B1 Origin/CSRF and identity. Project creation keeps the existing approval policy, serializes per-project work, and safely resumes partial provisioning without replacing incumbent keys. Explicit work items use durable UUID create deduplication and revision CAS with atomic audit history; they do not dismiss derived system attention.
 
 IDE controls, research/model actions and memory curation remain pending their reviewed adapters. Browser disconnect never closes/merges workspaces. See the dashboard contract for explicit origin selection, limits, uncertain-save recovery and release prerequisites.
+
+## Inherited editor runtime (C1/C3 source contract)
+
+`GET /sessions/{id}/ide` is an owner/admin-authorized safe capability/status
+projection. `POST /sessions/{id}/ide` accepts an exact `generation` and `action`
+`start`, `stop`, `checkpoint` or `finish`, under the existing project approval
+policy. Full-write start requires the verified master-update restriction and
+distinct host User merge transport described in [ide-runtime.md](ide-runtime.md).
+Desired IDE defaults do not imply readiness. Unsupported/missing layers and
+policy uncertainty do not disable ordinary agent workspaces. Checkpoint means
+saved files committed and pushed to the session ref; finish invokes normal close
+only after checkpoint success. Browser disconnect does not merge. Settings and
+extensions use operator volumes with separate session/generation live profiles;
+unsaved browser buffers are outside the durability promise. C2/browser and live
+edge deployment remain separate release prerequisites.

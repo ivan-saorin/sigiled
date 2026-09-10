@@ -693,3 +693,19 @@ _aggiornato: 2026-08-09, sessione b83823e4 (DEC-26 editto lingua + lettera alla 
 Implemented the embedded host-bound Sigil shell, dynamic A2 project views, project creation adapter and durable explicit work items. Browser creation uses the verified human actor and existing approval policy; per-project locking, incumbent-key reuse and exact GitHub key verification protect retries/two tabs. Work-item transactions persist CAS and audit together before acknowledging. Narrow JSON body allowlists preserve B1 bodyless routes. Corrected the B1 callback documentation placeholders.
 
 Fixture verification covers B1-authorized real handlers, CAS/restart/write failure, partial project provisioning/concurrent retries, and Edge desktop/mobile navigation, inventory search, conflict recovery and expiry-preserved drafts. The dashboard's pending IDE/research/model/memory controls are explicitly incomplete. No production mutations, session lifecycle operations or deployment were performed. See `browser-dashboard.md` for interfaces and live release prerequisites.
+
+## 2026-09-10 — C1/C3 inherited IDE and protected work source
+
+Added a checksum-pinned code-server 4.136.2 platform layer over the actual project
+image, a separate static companion, generation-bound machine operations and
+internal authenticated HTTP/upgrade relay for C2. Existing vm-base extensions,
+project user and bootstrap remain intact. Operator/UID preferences and distinct
+session/generation live profiles persist separately from branches. Actual Git
+fixtures cover checkpoint and terminal commit push, branch/remote conflicts,
+rejected/divergent pushes and retry; process/auth/activity fixtures cover helper
+ownership and background-idle isolation. Full-write starts stay gated on the
+conservative trusted GitHub policy proof plus distinct host PAT User authority.
+No repository policy, production runtime, edge, live session lifecycle or
+deployment was changed. Pinned checksum, version and non-root provider health/
+owned-stop smoke passed inside the sealed development workspace. C2 and actual
+release acceptance remain required; see `ide-runtime.md` for precise limits.

@@ -1,10 +1,24 @@
+FROM debian:13.6-slim AS provider
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN set -eu; arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) sum=83cf05cf4013da071bffade5fe207865c80966231e4f3cf5946aff3e15a966ec;; \
+      arm64) sum=9feeaf0d49d01ff1baafb0cb6374437a4e7c103cff2c636548283049e60b81e7;; \
+      *) echo 'unsupported provider architecture' >&2; exit 1;; \
+    esac; \
+    curl --fail --location --proto '=https' --tlsv1.2 --max-time 180 \
+      "https://github.com/coder/code-server/releases/download/v4.136.2/code-server-4.136.2-linux-${arch}.tar.gz" -o /tmp/provider.tgz; \
+    printf '%s  /tmp/provider.tgz\n' "$sum" | sha256sum -c -; \
+    mkdir /provider && tar -xzf /tmp/provider.tgz --strip-components=1 -C /provider && rm /tmp/provider.tgz
 # Dockerfile.sigiledd — l'immagine del control plane v2 (canary e oltre).
 # Il Dockerfile di root resta quello dei workspace v1/vm-base (dual role);
 # questo è ciò che il supervisor builda al restart (docker-compose.yml).
 FROM rust:1.97.1-slim AS build
 WORKDIR /src
 COPY . .
+RUN apt-get update && apt-get install -y --no-install-recommends musl-tools && rm -rf /var/lib/apt/lists/*
 RUN cargo build --release --locked -p sigiledd
+RUN set -eu; case "$(uname -m)" in x86_64) target=x86_64-unknown-linux-musl;; aarch64) target=aarch64-unknown-linux-musl;; *) exit 1;; esac; rustup target add "$target"; cargo build --release --locked -p sigil-ide-agent --target "$target"; cp "target/$target/release/sigil-ide-agent" /tmp/sigil-ide-agent
 
 FROM debian:13.6-slim
 # git: il motore di merge del close lavora sui mirror di SIGILED_REPOS_DIR.
@@ -20,6 +34,9 @@ RUN apt-get update \
     # sul canary: il volume nasceva root, il processo gira 1000).
     && mkdir -p /data && chown 1000:1000 /data
 COPY --from=build /src/target/release/sigiledd /usr/local/bin/sigiledd
+COPY --from=provider /provider /usr/local/share/sigil-ide/code-server
+COPY --from=build /tmp/sigil-ide-agent /usr/local/share/sigil-ide/sigil-ide-agent
+COPY ide-agent/activity /usr/local/share/sigil-ide/activity
 USER 1000:1000
 EXPOSE 8080
 CMD ["sigiledd"]

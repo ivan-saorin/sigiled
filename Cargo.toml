@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["sigiledd", "vm-base"]
+members = ["sigiledd", "vm-base", "ide-agent"]
 
 # Profiles live at workspace root; member profiles are ignored by cargo.
 [profile.release]

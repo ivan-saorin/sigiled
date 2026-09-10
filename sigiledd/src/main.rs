@@ -15,6 +15,8 @@ mod declaration;
 mod ecosystem;
 mod events;
 mod github;
+mod ide;
+mod ide_policy;
 mod import;
 mod jobs;
 mod manifest;
@@ -128,6 +130,10 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/sessions", get(sessions::list))
         .route("/sessions/{session_id}", get(sessions::detail))
         .route("/sessions/{session_id}/close", post(sessions::close))
+        .route(
+            "/sessions/{session_id}/ide",
+            get(ide::status).post(ide::operation),
+        )
         .route("/sessions/{session_id}/recycle", post(sessions::recycle))
         .route("/auth/elevate", post(auth::elevate))
         // GET *and* POST: Caddy's forward_auth issues a GET (it rewrites the

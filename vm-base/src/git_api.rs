@@ -108,9 +108,20 @@ pub async fn commit(
     State(st): State<Arc<AppState>>,
     Json(r): Json<CommitReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    tokio::spawn(commit_owned(st, r))
+        .await
+        .map_err(|_| ApiError::internal("commit interrupted; inspect repository before retry"))?
+}
+async fn commit_owned(
+    st: Arc<AppState>,
+    r: CommitReq,
+) -> Result<Json<serde_json::Value>, ApiError> {
     if r.message.trim().is_empty() {
         return Err(ApiError::bad_request("commit message must not be empty"));
     }
+    let _platform_lock = sigil_ide_agent::durable::lock(&st.workspace).map_err(|_| {
+        ApiError::bad_request("repository busy; retry after the current Git operation")
+    })?;
     git(&st, &["add", "-A"]).await?;
     let staged = git(&st, &["status", "--porcelain"]).await?;
     if staged.trim().is_empty() {
@@ -181,6 +192,13 @@ pub struct Branch {
 
 /// Branch list — local + remote, first-class (§5).
 pub async fn branches(State(st): State<Arc<AppState>>) -> Result<Json<Vec<Branch>>, ApiError> {
+    tokio::spawn(branches_owned(st))
+        .await
+        .map_err(|_| ApiError::internal("branch refresh interrupted"))?
+}
+async fn branches_owned(st: Arc<AppState>) -> Result<Json<Vec<Branch>>, ApiError> {
+    let _platform_lock = sigil_ide_agent::durable::lock(&st.workspace)
+        .map_err(|_| ApiError::bad_request("repository busy"))?;
     git(&st, &["fetch", "--prune", "origin"]).await?;
     let raw = git(
         &st,

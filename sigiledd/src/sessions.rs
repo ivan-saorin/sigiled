@@ -15,6 +15,10 @@ use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceBinding {
+    #[serde(default)]
+    pub ide_error: Option<String>,
+    #[serde(default)]
+    pub ide: Option<crate::ide::Binding>,
     pub container: String,
     pub endpoint: String,
     #[serde(default)]
@@ -98,7 +102,7 @@ impl SessionRecord {
             "actor":self.actor,"state":self.lifecycle,"generation":self.generation,
             "endpoint":self.binding.as_ref().map(|b|b.endpoint.clone()).or_else(||rt.map(|r|r.endpoint(&self.project))),
             "runtime": if self.token.is_some() { Some(self.container()) } else { None },
-            "image":self.image,"error":self.error})
+            "image":self.image,"error":self.error,"ide":self.binding.as_ref().and_then(|b|b.ide.as_ref()).map(crate::ide::Binding::view)})
     }
 }
 type Locks = Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
@@ -223,7 +227,7 @@ impl SessionState {
     pub(crate) fn session_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
         Self::lock(&self.session_locks, id)
     }
-    fn put(&self, record: SessionRecord) {
+    pub(crate) fn put(&self, record: SessionRecord) {
         self.records
             .write()
             .unwrap()
@@ -267,7 +271,7 @@ pub(crate) fn failure(state: &crate::AppState, id: &str, code: Failure) -> Respo
 fn now_epoch() -> u64 {
     crate::auth::now_epoch()
 }
-fn authorized(
+pub(crate) fn authorized(
     actor: &Actor,
     record: &SessionRecord,
     state: &crate::AppState,
@@ -366,7 +370,7 @@ pub async fn open(
     }
     let id = SessionState::session_id();
     let session_lock = state.sessions.session_lock(&id);
-    let _session = session_lock.lock().await;
+    let _session = session_lock.lock_owned().await;
     let lock = state.sessions.merge_lock(&project);
     let _guard = lock.lock_owned().await;
     let rt = state.sessions.runtime.as_ref();
@@ -379,6 +383,8 @@ pub async fn open(
         actor: actor.clone(),
         token: rt.map(|_| mint_token()),
         binding: rt.map(|r| WorkspaceBinding {
+            ide_error: Some("provider_image_pending".into()),
+            ide: None,
             container: crate::runtime::Runtime::session_container(&project, &id, 1),
             endpoint: r.session_endpoint(&project, &id, 1),
             generation: 1,
@@ -423,17 +429,53 @@ pub async fn open(
     if state.try_persist().is_err() {
         return failure(&state, &id, Failure::PersistFailed);
     }
+    let mut ide_guard = Some(_session);
     let mut image = None;
     if let Some(rt) = rt {
         let (choice, _guard) = match rt.session_image_locked(&project, &repo, _guard).await {
             Ok(c) => c,
             Err(_) => return failure(&state, &id, Failure::BootFailed),
         };
+        drop(_guard);
+        let mut choice = choice;
+        let enabled = state
+            .registry
+            .descriptor(&record.project)
+            .declaration
+            .ide
+            .enabled;
+        ide_guard = Some(
+            crate::ide::prepare_layer(
+                rt,
+                &mut record,
+                &mut choice,
+                enabled,
+                ide_guard.take().unwrap(),
+            )
+            .await,
+        );
         record.image = Some(choice.used.clone());
+        state.sessions.put(record.clone());
+        if state.try_persist().is_err() {
+            return failure(&state, &id, Failure::PersistFailed);
+        }
         let vm = record.container();
         let token = record.token.as_deref().unwrap();
         if rt
-            .create_container(&vm, &project, "session", &id, token, &choice.used, &[])
+            .create_container_profile(
+                &vm,
+                &project,
+                "session",
+                &id,
+                token,
+                &choice.used,
+                &[],
+                record
+                    .binding
+                    .as_ref()
+                    .and_then(|b| b.ide.as_ref())
+                    .map(|b| b.profile_volume.as_str()),
+            )
             .is_err()
         {
             return failure(&state, &id, Failure::CreateFailed);
@@ -474,6 +516,7 @@ pub async fn open(
             Err(_) => return failure(&state, &id, Failure::BootFailed),
         };
     }
+    let _session = ide_guard.take().expect("session generation guard retained");
     record.lifecycle = Lifecycle::Active;
     state.sessions.put(record.clone());
     state.events.record(
@@ -495,11 +538,22 @@ pub async fn close(
     State(state): State<crate::AppState>,
     AxPath(id): AxPath<String>,
 ) -> Response {
+    close_expected(actor, state, id, None).await
+}
+pub(crate) async fn close_expected(
+    actor: Actor,
+    state: crate::AppState,
+    id: String,
+    expected: Option<u64>,
+) -> Response {
     let lock = state.sessions.session_lock(&id);
-    let _session = lock.lock().await;
+    let _session = lock.lock_owned().await;
     let Some(record) = state.sessions.record(&id) else {
         return err(StatusCode::NOT_FOUND, "unknown session");
     };
+    if expected.is_some_and(|generation| generation != record.generation) {
+        return err(StatusCode::CONFLICT, "session generation changed");
+    }
     if let Err(e) = authorized(&actor, &record, &state, Action::CloseSession) {
         return err(StatusCode::FORBIDDEN, e);
     }
@@ -516,16 +570,8 @@ pub async fn close(
     if state.try_persist().is_err() {
         return failure(&state, &id, Failure::PersistFailed);
     }
-    if let (Some(rt), Some(tok)) = (&state.sessions.runtime, &record.token) {
-        if !rt
-            .flush(
-                &state.sessions.http,
-                &record.container(),
-                tok,
-                "session close",
-            )
-            .await
-        {
+    if let (Some(_rt), Some(_tok)) = (&state.sessions.runtime, &record.token) {
+        if !crate::ide::flush_record(&state, &record, "session close").await {
             return failure(&state, &id, Failure::FlushFailed);
         }
     }
@@ -606,7 +652,7 @@ pub async fn recycle(
     AxPath(id): AxPath<String>,
 ) -> Response {
     let lock = state.sessions.session_lock(&id);
-    let _session = lock.lock().await;
+    let _session = lock.lock_owned().await;
     let Some(mut record) = state.sessions.record(&id) else {
         return err(StatusCode::NOT_FOUND, "unknown session");
     };
@@ -629,16 +675,8 @@ pub async fn recycle(
     if state.try_persist().is_err() {
         return failure(&state, &id, Failure::PersistFailed);
     }
-    if let (Some(rt), Some(tok)) = (&state.sessions.runtime, &record.token) {
-        if !rt
-            .flush(
-                &state.sessions.http,
-                &record.container(),
-                tok,
-                "session recycle",
-            )
-            .await
-        {
+    if let (Some(_rt), Some(_tok)) = (&state.sessions.runtime, &record.token) {
+        if !crate::ide::flush_record(&state, &record, "session recycle").await {
             return failure(&state, &id, Failure::FlushFailed);
         }
     }
@@ -668,6 +706,7 @@ pub async fn recycle(
         Ok(h) => h,
         Err(_) => return failure(&state, &id, Failure::FetchFailed),
     };
+    let mut ide_guard = Some(_session);
     let mut image = None;
     record.generation = next_generation;
     if let Some(rt) = &state.sessions.runtime {
@@ -684,6 +723,8 @@ pub async fn recycle(
         // The former container's branch is confirmed on origin. Persist the
         // next binding and token before allocation; never reuse legacy aliases.
         record.binding = Some(WorkspaceBinding {
+            ide_error: Some("provider_image_pending".into()),
+            ide: None,
             container: crate::runtime::Runtime::session_container(
                 &record.project,
                 &id,
@@ -693,6 +734,29 @@ pub async fn recycle(
             generation: record.generation,
         });
         record.token = Some(mint_token());
+        record.runtime_owned = false;
+        state.sessions.put(record.clone());
+        if state.try_persist().is_err() {
+            return failure(&state, &id, Failure::PersistFailed);
+        }
+        drop(_mirror);
+        let mut choice = choice;
+        let enabled = state
+            .registry
+            .descriptor(&record.project)
+            .declaration
+            .ide
+            .enabled;
+        ide_guard = Some(
+            crate::ide::prepare_layer(
+                rt,
+                &mut record,
+                &mut choice,
+                enabled,
+                ide_guard.take().unwrap(),
+            )
+            .await,
+        );
         record.image = Some(choice.used.clone());
         record.runtime_owned = false;
         record.lifecycle = Lifecycle::Recycling;
@@ -703,7 +767,20 @@ pub async fn recycle(
         let vm = record.container();
         let tok = record.token.as_deref().unwrap();
         if rt
-            .create_container(&vm, &record.project, "session", &id, tok, &choice.used, &[])
+            .create_container_profile(
+                &vm,
+                &record.project,
+                "session",
+                &id,
+                tok,
+                &choice.used,
+                &[],
+                record
+                    .binding
+                    .as_ref()
+                    .and_then(|b| b.ide.as_ref())
+                    .map(|b| b.profile_volume.as_str()),
+            )
             .is_err()
         {
             return failure(&state, &id, Failure::CreateFailed);
@@ -736,6 +813,7 @@ pub async fn recycle(
         };
         image = Some(choice);
     }
+    let _session = ide_guard.take().expect("session generation guard retained");
     record.lifecycle = Lifecycle::Active;
     record.error = None;
     state.sessions.put(record.clone());

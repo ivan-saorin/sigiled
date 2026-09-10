@@ -38,13 +38,20 @@ pub async fn reap_pass(state: &crate::AppState, idle_max: u64) -> usize {
     for rec in state.sessions.live_records() {
         let Some(tok) = &rec.token else { continue };
         let vm = rec.container();
-        match rt.idle_secs(state.sessions.http(), &vm, tok).await {
+        let idle = match rt.idle_secs(state.sessions.http(), &vm, tok).await {
+            Ok(idle) => crate::ide::idle_record(state, &rec, idle)
+                .await
+                .map_err(str::to_string),
+            Err(e) => Err(e),
+        };
+        match idle {
             Ok(idle) if idle >= idle_max => {
-                if reap_generation(
+                if reap_generation_min(
                     state,
                     &rec.session_id,
                     &format!("idle {idle}s"),
                     Some(rec.generation),
+                    idle_max,
                 )
                 .await
                 {
@@ -69,11 +76,21 @@ pub async fn reap_pass(state: &crate::AppState, idle_max: u64) -> usize {
 pub async fn reap(state: &crate::AppState, session_id: &str, reason: &str) -> bool {
     reap_generation(state, session_id, reason, None).await
 }
+#[cfg(test)]
 pub(crate) async fn reap_generation(
     state: &crate::AppState,
     session_id: &str,
     reason: &str,
     expected: Option<u64>,
+) -> bool {
+    reap_generation_min(state, session_id, reason, expected, 1).await
+}
+async fn reap_generation_min(
+    state: &crate::AppState,
+    session_id: &str,
+    reason: &str,
+    expected: Option<u64>,
+    minimum_idle: u64,
 ) -> bool {
     use crate::sessions::{Failure, Lifecycle};
     let lock = state.sessions.session_lock(session_id);
@@ -96,25 +113,24 @@ pub(crate) async fn reap_generation(
         crate::sessions::failure(state, session_id, Failure::RuntimeNotOwned);
         return false;
     }
+    if expected.is_some()
+        && crate::ide::idle_record(state, &record, u64::MAX)
+            .await
+            .map_or(true, |idle| idle < minimum_idle)
+    {
+        return false;
+    }
     state.sessions.mark(session_id, Lifecycle::Closing, None);
     if state.try_persist().is_err() {
         crate::sessions::failure(state, session_id, Failure::PersistFailed);
         return false;
     }
     if let Some(rt) = &state.sessions.runtime {
-        let Some(tok) = &record.token else {
+        let Some(_tok) = &record.token else {
             crate::sessions::failure(state, session_id, Failure::FlushFailed);
             return false;
         };
-        if !rt
-            .flush(
-                state.sessions.http(),
-                &record.container(),
-                tok,
-                "session reap",
-            )
-            .await
-        {
+        if !crate::ide::flush_record(state, &record, "session reap").await {
             crate::sessions::failure(state, session_id, Failure::FlushFailed);
             return false;
         }

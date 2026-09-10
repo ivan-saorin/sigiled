@@ -55,6 +55,7 @@ pub struct FakeRuntime {
     pub origin: PathBuf,
     pub live: Mutex<HashMap<String, String>>,
     pub calls: Mutex<Vec<String>>,
+    pub creates: Mutex<Vec<Vec<String>>>,
     pub fail_flush: AtomicBool,
     pub fail_boot: AtomicBool,
     pub fail_start: AtomicBool,
@@ -68,6 +69,10 @@ impl FakeRuntime {
         let mut live = self.live.lock().unwrap();
         match args[0] {
             "create" => {
+                self.creates
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(|s| s.to_string()).collect());
                 let name = args[args.iter().position(|a| *a == "--name").unwrap() + 1];
                 let hostname = args[args.iter().position(|a| *a == "--hostname").unwrap() + 1];
                 if name.len() > 63 || hostname.len() > 63 {
@@ -188,6 +193,7 @@ fn setup_project(project: &str) -> (AppState, Arc<FakeRuntime>) {
         origin,
         live: Mutex::default(),
         calls: Mutex::default(),
+        creates: Mutex::default(),
         fail_flush: AtomicBool::new(false),
         fail_boot: AtomicBool::new(false),
         fail_start: AtomicBool::new(false),
@@ -768,4 +774,112 @@ async fn cancelled_job_image_helper_keeps_owned_lock_and_returns_it_after_build(
     );
     drop(returned_guard);
     assert!(lock.try_lock().is_ok());
+}
+#[tokio::test]
+async fn ide_operations_enforce_owner_generation_policy_and_redact_binding() {
+    let (state, fake) = setup();
+    let opened = open(&state).await;
+    let id = opened["session_id"].as_str().unwrap();
+    let mut record = state.sessions.record(id).unwrap();
+    record.binding.as_mut().unwrap().ide = Some(crate::ide::Binding {
+        provider: crate::ide::PROVIDER.into(),
+        helper: "fixture".into(),
+        base_digest: format!("sha256:{}", "a".repeat(64)),
+        image: "fixture-layer".into(),
+        generation: record.generation,
+        profile_volume: "sigil-ide-profile-fixture".into(),
+        started: false,
+        state: "stopped".into(),
+        error: None,
+        token: "private-helper-token".into(),
+        activity_token: "private-activity-token".into(),
+    });
+    state.sessions.put(record.clone());
+    let (_, projection) =
+        body(crate::ide::status(actor("owner"), State(state.clone()), Path(id.into())).await).await;
+    assert!(!projection.to_string().contains("private-"));
+    assert_eq!(projection["provider"]["state"], "stopped");
+    for (who, generation, code) in [
+        ("intruder", record.generation, StatusCode::FORBIDDEN),
+        ("owner", record.generation + 1, StatusCode::CONFLICT),
+        ("owner", record.generation, StatusCode::CONFLICT),
+    ] {
+        let mut caller = actor(who);
+        if who == "intruder" {
+            caller.role = Role::Driver;
+        }
+        let (status, _) = body(
+            crate::ide::operation(
+                caller,
+                State(state.clone()),
+                Path(id.into()),
+                axum::Json(crate::ide::Operation {
+                    generation,
+                    action: "start".into(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, code);
+    }
+    assert!(fake.live.lock().unwrap().contains_key(&record.container()));
+    assert_eq!(
+        state.sessions.record(id).unwrap().generation,
+        record.generation
+    );
+    let (status, _) =
+        body(sessions::close(actor("owner"), State(state.clone()), Path(id.into())).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(state.sessions.record(id).is_none());
+}
+#[tokio::test]
+async fn ide_named_profile_never_publishes_ports_or_overrides_project_user() {
+    let (state, fake) = setup();
+    let rt = state.sessions.runtime.as_ref().unwrap();
+    rt.create_container_profile(
+        "fixture-owned",
+        "proj",
+        "session",
+        "fixture",
+        "long-secret-token",
+        "project-extended-image",
+        &[],
+        Some("sigil-ide-profile-operator"),
+    )
+    .unwrap();
+    let creates = fake.creates.lock().unwrap();
+    let args = creates.last().unwrap();
+    assert_eq!(args.last().unwrap(), "project-extended-image");
+    assert!(args
+        .iter()
+        .any(|a| a == "type=volume,source=sigil-ide-profile-operator,target=/sigil-profile"));
+    for forbidden in [
+        "--publish",
+        "-p",
+        "-P",
+        "--publish-all",
+        "--entrypoint",
+        "--user",
+        "--privileged",
+    ] {
+        assert!(!args.iter().any(|a| a == forbidden));
+    }
+}
+#[tokio::test]
+async fn resolved_ide_setup_is_persisted_before_container_allocation() {
+    let (state, fake) = setup();
+    fake.fail_start.store(true, Ordering::SeqCst);
+    let (status, value) =
+        body(sessions::open(actor("owner"), State(state.clone()), Path("proj".into())).await).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let record = state
+        .sessions
+        .record(value["session_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(record.image.as_deref(), Some("fake-base"));
+    assert_eq!(
+        record.binding.unwrap().ide_error.as_deref(),
+        Some("provider_bundle_required")
+    );
 }
