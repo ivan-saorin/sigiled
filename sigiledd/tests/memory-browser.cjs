@@ -26,7 +26,7 @@ const legacy = chunk('legacy1', 'Legacy manual provenance');
 legacy.source = 'manual';
 legacy.ref = 'memory:' + id;
 legacy.target = { kind: 'document', source: 'manual', ref: legacy.ref, path: '' };
-let searchCalls = [], sourceDetailFailure = 0;
+let searchCalls = [], sourceDetailFailure = 0, deferredSourceDetail = null;
 let auth = true, who = 'human:fixture', ready = true, writes = [], created = new Map(), delay = null, definite = false, uncertain = false, detailDelay = 0, previewStale = false, forgetUnknown = false, echo = false;
 const session = () => ({ identity: { display_name: 'Controlled Memory fixture' }, actor: { driver: who }, csrf_token: 'csrf', features: { memory_adapter: true } });
 const server = http.createServer(async (req, res) => {
@@ -63,6 +63,12 @@ const server = http.createServer(async (req, res) => {
                 return reply({ items: u.searchParams.has('cursor') ? [legacy] : [imported, { ...chunk(id, manual.text), target: { kind: 'manual', id }, source: 'manual', ref: 'memory:' + id, path: '' }], next_cursor: u.searchParams.has('cursor') ? null : 'fixture-page-2', scanned: 2, consistency: 'live_keyset' });
             }
             if (u.pathname.includes('/chunks/')) {
+                if (deferredSourceDetail && u.pathname.endsWith('source1')) {
+                    const pending = deferredSourceDetail; deferredSourceDetail = null;
+                    const captured = structuredClone(imported);
+                    pending.entered(); await pending.release;
+                    return reply(captured);
+                }
                 if (detailDelay)
                     await new Promise(r => setTimeout(r, detailDelay));
                 if (sourceDetailFailure && u.pathname.endsWith('source1')) return reply({error:'memory_record_unavailable'},sourceDetailFailure);
@@ -188,6 +194,26 @@ const server = http.createServer(async (req, res) => {
         assert.match(sourceLaunch.body.idempotency_key, /^[0-9a-f-]{36}$/);
         assert.match(await page.locator('.memory-detail').innerText(), /accepted-old.*accepted-current/);
         const launches = () => writes.filter(w => w.path === '/browser/api/projects/atlas/ide').length;
+        const beforeOverlap=launches();
+        await page.getByLabel('Annotation',{exact:true}).fill('Draft survives refresh before stale validation');
+        let entered, releaseSourceValidation;
+        const started=new Promise(r=>{entered=r;});
+        deferredSourceDetail={entered,release:new Promise(r=>{releaseSourceValidation=r;})};
+        await page.getByRole('button',{name:'Edit source',exact:true}).click();
+        await started;
+        imported.source_edit={...imported.source_edit,owner:'current-owner',path:'docs/refreshed.md'};
+        const refreshed=page.waitForResponse(r=>r.url().includes('/chunks/source1')&&r.status()===200);
+        await page.getByRole('button',{name:'Refresh',exact:true}).click();
+        await refreshed; await page.waitForTimeout(100);
+        releaseSourceValidation(); await page.waitForTimeout(150);
+        assert.equal(launches(),beforeOverlap,'stale validation must not launch C2 after newer refresh');
+        assert.equal(await page.getByLabel('Annotation',{exact:true}).inputValue(),'Draft survives refresh before stale validation');
+        assert.equal(await page.getByRole('button',{name:'Edit source',exact:true}).isDisabled(),false,'same live refreshed view must reconcile old busy state');
+        await page.getByRole('button',{name:'Edit source',exact:true}).click();
+        await page.waitForTimeout(150);
+        assert.deepEqual(writes.findLast(w=>w.path==='/browser/api/projects/atlas/ide').body.target,{path:'docs/refreshed.md'},'next click uses only new verified target');
+        console.log('PASS D3 N1: newer same-selection refresh wins, stale click is discarded, draft survives and current source action is usable');
+
         const priorLaunches = launches();
         await page.getByLabel('Annotation', { exact: true }).fill('Retained draft while authority changes');
         imported.source_edit = { verified: false };

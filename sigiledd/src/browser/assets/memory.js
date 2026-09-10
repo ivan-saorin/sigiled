@@ -495,7 +495,9 @@ window.SigilMemory = (() => {
                     }
                 } finally {
                     launching = false;
-                    if (alive(t) && view?.key === key) edit.disabled = !sourceEdit?.verified;
+                    // Reconcile this live view's busy flag even if Refresh advanced its epoch.
+                    // The stale request above still cannot apply authority or launch C2.
+                    if (edit.isConnected && view?.refreshSource === refreshSource) edit.disabled = !sourceEdit?.verified;
                 }
             }, true);
             function refreshSource(association) {

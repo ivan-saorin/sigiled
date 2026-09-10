@@ -1,3 +1,9 @@
+## 2026-09-10 — D3 review fix 2: reconcile same-view edit busy state
+
+N1: an obsolete click validation now clears/reconciles its busy flag for the same still-live view even if a newer Refresh changed the request epoch. Epoch checks still discard stale authority and prevent stale C2 launches. The deferred actual-assets regression lets Refresh finish first, then releases the old response; it verifies no stale C2 call, preserved annotation draft, usable control and the next click's new verified file target.
+
+Verification: behavioral RED exit 1 reproduced the disabled control; settled actual Memory-assets suite exit 0 includes N1 and prior I1/D2 guards. No backend/unchanged full/provider suite was rerun. Memory companion N2 reserves seven projection-state bytes; logical-versus-physical accounting is clarified in docs/memory-enrollment.md. Full actual logs, numeric exits/read receipts and final integrity results are retained in work/d3-fix2-evidence and the appended orchestration report. No live data, inference, deployment or lifecycle action; sessions remain open for parent re-review.
+
 ## 2026-09-10 — D3 review fix 1: fresh source authority and precise namespace joins
 
 Addressed review I1/M1 and the missing receipt-limit evidence. Source-edit association refresh/revocation is independent of source text and annotation drafts. Every deliberate launch re-fetches the exact selected index/document and rejects changed owner/project/path or missing/unavailable proof before C2 receives a target. Ingestion status and legacy guard resolve persisted effective namespaces and restrict shared handling to mem0. Added a bounded seeded 256-handoff real normal-close capacity/recovery test; the earlier aggregate Store test did not cover this boundary.
