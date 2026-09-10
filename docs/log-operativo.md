@@ -13,6 +13,12 @@ No uncontrolled cleanup, deployment, inference, credentials or memory changes.
 Detailed exact receipts and prior failures remain in controller report/evidence;
 leave this session committed/pushed/clean/open for scoped independent fix review.
 
+## 2026-09-10 — Research accepted; Memory curation in progress
+
+Independent B3b review is complete through 0d88aa2809452bd38c187173286057e664ea01b1: all four original findings and both controller/helper and SDE transport verification joins are addressed, with no new findings. The correction preserves process deadlines and conservative ownership while resolving the measured scan bottleneck. Real import/remote commit/replay, exact stage revision, fresh-token resume, browser recovery and covering cancellation/deadline/quarantine checks pass. Historical full-suite failures remain recorded; source is not deployed.
+
+The next stage runs in the separate memory session 149fa31d at baseline 882ecb0a2613b0846f7e3200ea6e49a403bb6a64. Durable curation/browse implementation is undergoing tests and self-review; it has not yet been accepted. Sigil source remains available for the following memory-browser and enrollment joins. A pushed research session receipt is still distinct from accepted master and indexed memory. Preserve pending handoff markers and private operation mappings across rollout; no live memory or deployment action is part of this handoff.
+
 ## 2026-09-10 — B3b pre-review filesystem coverage and custody clarification
 
 Follow-up to a740015c: extracted the unchanged index rename/disarm operation into
