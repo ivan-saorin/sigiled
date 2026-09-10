@@ -947,14 +947,17 @@ function renderItemEditor() {
     const submittedVersion = draft._editVersion || 0;
     const fields = Object.fromEntries(itemFields.map(name=>[name,draft[name]]));
     const expectedRevision = draft.revision;
+    // This editor may have been reopened before an earlier create completed.
+    // Mutation identity belongs to the shared draft, not the rendered URL.
+    const mutationId = expectedRevision ? draft.id : null;
     draft._saving = true;
     draft._error = null;
     syncEditor(draft);
     try {
       if(!session)throw new ApiError(401,{error:'login_required'});
       await checkSession();
-      const saved = await request(`/browser/api/projects/${encodeURIComponent(project)}/work-items${id?'/'+encodeURIComponent(id):''}`,{
-        method:id?'PATCH':'POST',body:JSON.stringify(id?{expected_revision:expectedRevision,fields}:{id:draft.id,fields})
+      const saved = await request(`/browser/api/projects/${encodeURIComponent(project)}/work-items${mutationId?'/'+encodeURIComponent(mutationId):''}`,{
+        method:mutationId?'PATCH':'POST',body:JSON.stringify(mutationId?{expected_revision:expectedRevision,fields}:{id:draft.id,fields})
       });
       const changed = (draft._editVersion || 0) !== submittedVersion;
       for(const [name,value] of Object.entries(saved))if(!itemFields.includes(name) || !changed)draft[name] = value;
