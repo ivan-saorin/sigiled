@@ -1,7 +1,7 @@
 # SIGIL OS — implementation blueprint
 
 Date: 2026-09-10  
-Status: revised draft after inspecting Sigil, memory, ADHD, Genie, and SDE; not committed to a project and no runtime changes deployed  
+Status: approved for unattended implementation; design and plan committed to the Sigil implementation branch; no runtime changes deployed  
 Confirmed requirement: a full browser IDE with terminal and Git tools
 
 ## The product
@@ -227,7 +227,7 @@ Stage browser routes and canary capabilities behind feature flags. Back up contr
 
 Rollback disables the new UI/IDE entry points while preserving branches, memory data, and provisioning records. A binary rollback is allowed only while its state reader is compatible; otherwise retain the newer schema reader with the new features disabled. Restore backups only as an explicit recovery operation, not as an automatic way to erase changes made since deployment.
 
-## Decisions proposed for approval
+## Approved decisions
 
 1. Evolve the existing Sigil orchestrator with a modular browser shell and live registry.
 2. Use full code-server workspaces with separate human/agent sessions and session-specific origins.
