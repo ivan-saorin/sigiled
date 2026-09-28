@@ -94,3 +94,5 @@ names may be Italian (e.g. `spina`).
 
 [sigiled-supervisor]: https://github.com/ivan-saorin/sigiled-supervisor
 [sigiled.dev]: https://sigiled.dev
+
+Native reusable template creation, browser selection and driver recipes: [project templates](docs/project-templates.md).

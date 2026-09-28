@@ -666,6 +666,11 @@ pub fn router(state: AppState) -> Router {
             post(research::recover),
         )
         .route("/browser/api/projects", post(dashboard::create))
+        .route("/browser/api/templates", get(dashboard::templates))
+        .route(
+            "/browser/api/templates/{name}",
+            axum::routing::put(dashboard::designate_template),
+        )
         .route(
             "/browser/api/projects/{project}/ide",
             post(ide_gateway::launch),

@@ -1,3 +1,11 @@
+## 2026-09-29 - Native reusable project templates: tested source, supervised release pending
+
+Starting from deployed-source base 8566354, implemented native GitHub template designation/discovery, browser picker and shared driver/API creation with optional template/template_ref. Exact resolved source SHA is imported into an independent private root with durable provenance, fresh identity, operation-owned recovery, immutable-provider checks, declared TOML adaptation and normal workspace build validation. Default vm-tmpl and pre-upgrade partial registrations remain supported. No Opticon changes.
+
+Validation: final Linux workspace run passed 33 companion-library, 10 companion-binary and 275 control-plane tests; six control-plane and one provider test remain ignored. Format and Clippy pass with the existing too_many_arguments allowance. Actual browser template/UI suites and 11 race regressions pass. Details and limits: docs/project-templates.md and docs/test-results/NATIVE-TEMPLATES.md.
+
+Current state: implementation, served contract 2.6.0 and driver guidance are ready for normal source publication. Production still serves 2.5.0. Host activation must prepare the next pinned candidate/launcher and use the external supervisor; current driver OAuth does not authorize that separate API. No fixture repositories have been created live. Next: supervised release, then recorded default/two-template/pinned-source creation and full generated-project session lifecycle acceptance. Do not report deployed completion before that gate.
+
 ## 2026-09-10 - Final whole-branch correction: request budgets and repeated research
 
 I1 removes the redundant 16 KiB JSON-extractor limit behind the exact browser boundary. Research creation derives its 394,631-byte encoded ceiling from both accepted text fields, bounded identity/options, JSON escaping and field names. I2 renders accepted feedback and New research from retained operation state in the current form, including acceptance while detached and a return before the original request completes. Explicit New research preserves later drafts and renews the identity; uncertain Retry keeps its frozen request and key. Existing authentication, caller JWT forwarding, bodyless route denial and unrelated limits remain intact.

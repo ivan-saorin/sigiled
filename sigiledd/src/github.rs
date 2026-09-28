@@ -36,7 +36,7 @@ impl GitHub {
         })
     }
 
-    fn req(
+    pub(crate) fn req(
         &self,
         http: &reqwest::Client,
         method: reqwest::Method,

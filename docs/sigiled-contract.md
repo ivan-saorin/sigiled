@@ -4,7 +4,7 @@
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.5.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.5.0 adds live project descriptors, declared service discovery and read-only overview projections (§12). 2.4.0 adds independent session runtime bindings, recoverable lifecycle failures and redacted session inspection. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract. 2.3.0 adds the change-notification step to `open`: the `changed` service (catalog) leaves one memory chunk per detected change in the project's index — surface them before writing.
+**Contract version:** 2.6.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.6.0 adds native reusable template discovery, designation and revision-pinned creation (§8). 2.5.0 adds live project descriptors, declared service discovery and read-only overview projections (§12). 2.4.0 adds independent session runtime bindings, recoverable lifecycle failures and redacted session inspection. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract. 2.3.0 adds the change-notification step to `open`: the `changed` service (catalog) leaves one memory chunk per detected change in the project's index — surface them before writing.
 **Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8); the established v2 verbs were live-verified; the 2.4.0 session foundation and 2.5.0 registry/overview are implemented and hermetically tested on their isolated branch, not deployed. SIGILED is the only orchestrator of the stack.
 
 This is the complete operating contract for SIGILED (v2 of SIGILED). It is
@@ -94,7 +94,9 @@ covered here falls through to the full API (§4, §6).
 |---|---|
 | `status` | `GET /sigiled/healthz` + `GET /sigiled/projects`. Report version and, per project, `merge_debt` queue, `template_behind`, `needs_merge`; **any merge debt is shouted first**. |
 | `projects` | `GET /sigiled/projects` — full records (incl. `template_version`, `template_behind`). |
-| `new <name>` | Requires approval for `stack:drivers`. `POST /sigiled/projects` `{name}` (lowercase alnum+dash, 2–39 chars, letter first). Warn first: there is no delete verb — projects are permanent. |
+| `templates` | `GET /sigiled/templates` — eligible repositories under the configured owner. |
+| `template <name> enable` / `disable` | `PUT /sigiled/templates/{name}` `{"enabled":true}` / `false`. Same approval as creation; enabling validates the source. |
+| `new <name> [from <template>] [at <ref>]` | Requires approval for `stack:drivers`. `POST /sigiled/projects` `{name, template?, template_ref?}`. Omitted template uses `vm-tmpl`; omitted ref uses its current default branch. Names: lowercase alnum+dash, 2–39 chars, letter first. Projects are permanent. These are HTTPS driver recipes, not shell commands. |
 | `open <project>` | `POST /sigiled/projects/{p}/sessions`. Store `session_id`, `token`, `endpoint`. **If the response carries `merge_debt`, resolving it is your first and only job (§5).** Then rule 1: `GET /git/log?limit=15` and summarize the handoff before any write. Then what changed upstream since the last close: `GET https://memory.016180.xyz/search?q=changed&idx={p},mem0&tags=changed&since=<last close>` (the `changed` service, catalog entry). `404 index {p} not found` = nothing is watched for this project yet — retry with `idx=mem0` alone: the ownerless `chg0` watches (Anthropic release notes, this contract, Arctic Shift) apply to everyone. Surface the hits; each carries a `report: <branch>:<path>` pointer readable with `git show` in a session on `changed`. |
 | `close` | Commit pending work, then `POST /sigiled/sessions/{id}/close`. Report the merge outcome (`ff` / `merged` / `debt`) and `log_operativo_touched`. |
 | `recycle` | `POST /sigiled/sessions/{id}/recycle`. Replace the stored token **and endpoint** after success (the old token is dead), confirm with `GET {endpoint}/health`. |
@@ -172,7 +174,9 @@ need a live approval for `projects new`, app verbs, and any session on
 | `GET /services` | the stack service catalog — `catalog.json` at the repo root, embedded at build, boot-validated; `{catalog_version, services[]}`, optional `?status=` filter (`live`, `building`, `planned`); public like the contract |
 | `POST /auth/elevate` | `{verification_uri, user_code, expires}` — device flow via the stack IdP |
 | `GET /auth/approvals` | live approvals `{human, driver, expires}` |
-| `POST /projects` `{name}` | 201 project record · 409 already registered · 422 bad name |
+| `GET /templates` | `{templates:[{name,repository,default_ref,default}],default,scope}`; authenticated shared-owner discovery |
+| `PUT /templates/{name}` `{enabled}` | 200 verified eligibility; approval required; source admin permission required |
+| `POST /projects` `{name,template?,template_ref?}` | 201 project + provenance; 200 exact completed retry; 409 selection/incumbent conflict; 422 invalid source/name; 502/503 uncertain provisioning: retry same selection |
 | `GET /projects` | all project records: `template_version`, `template_behind`, `merge_debt` queue, `needs_merge` |
 | `GET /projects/{p}/log` | machine history: sessions (with `actor`), merge outcomes, job runs — JSON; `?format=md` renders markdown |
 | `GET /projects/{p}/branches` | `[{name, sha}]` — job-recap entry point |
@@ -363,7 +367,37 @@ same-sha = config refresh); `start` never recreates. A 202
 
 ## 8. Template versioning — the recepimento
 
-Project repos are born from **vm-tmpl v2** and pinned to it:
+A new project starts from a **designated reusable template**, defaulting to
+`vm-tmpl`. `template_ref` accepts a branch, tag or full commit SHA. SIGILED
+resolves it once and copies that exact Git tree into a new independent private
+repository. It records `provenance.source_repository`, `source_repository_id`,
+`requested_ref`, `source_commit` and the destination identity in durable state.
+Provenance is visible in creation responses, project list/overview, the browser,
+and `.sigil/project.json`. Repeat with a different destination name and that
+source SHA. Unrelated incumbent repositories are never adopted by new creation.
+
+Only GitHub repositories explicitly marked as templates under the configured
+owner are eligible. `PUT /templates/{name}` manages that native flag; normal
+projects do not automatically qualify. Both browser and machine calls use the
+existing project-creation authorization. All authenticated actors currently
+share the configured-owner read policy. Selected sources must remain accessible
+and eligible during retries. Exact completed retries are idempotent.
+
+The source must be a prepared workspace template: valid `sigiled.toml` (legacy
+`mgr.toml` accepted), declared Dockerfile present, no source app/job/service,
+compose/volume/secret bindings or submodules. When the session runtime is enabled,
+creation builds/resolves the declared workspace image before success; a failed
+build is not accepted as an image fallback. New keys, session/registry state and
+approval namespace are independent. Copied media approval files are data, never
+SIGILED authorization; application approval checks must bind the new project
+ID and actual content. Optional `sigiled-template.toml` declares TOML identity
+fields; no global replacement or packaging exclusions are applied.
+
+See [project-templates.md](https://github.com/ivan-saorin/sigiled/blob/master/docs/project-templates.md)
+for preparation, identity schema, browser steps, supported limits and recovery.
+
+The **application source** and **vm-tmpl foundation** are distinct. The source's
+foundation pin is retained; existing synchronization semantics remain:
 
 - `sigiled.toml` on master carries `template = "vm-tmpl@x.y.z"`; the project
   record exposes `template_version` and `template_behind`.

@@ -81,14 +81,20 @@ pub(super) async fn create(
             .into_response();
     }
     let name = body.name.clone();
+    let selected = body.template.is_some()
+        || !state.registry.contains(&name)
+        || state.registry.creations.read().unwrap().contains_key(&name);
     let response = crate::project::create(c.actor.clone(), State(state.clone()), Json(body)).await;
-    if response.status() == StatusCode::CREATED {
+    if matches!(response.status(), StatusCode::CREATED | StatusCode::OK) {
         crate::enrollment::schedule(
             state.clone(),
             name.clone(),
             c.actor.driver.clone(),
             c.access_token.clone(),
         );
+    }
+    if selected || state.registry.creations.read().unwrap().contains_key(&name) {
+        return response;
     }
     match response.status() {
         StatusCode::CREATED=> (StatusCode::CREATED,Json(json!({"name":name,"state":"registered"}))).into_response(),
@@ -100,6 +106,17 @@ pub(super) async fn create(
         StatusCode::UNPROCESSABLE_ENTITY=>(StatusCode::UNPROCESSABLE_ENTITY,Json(json!({"error":"invalid_project_name"}))).into_response(),
         status=>(status,Json(json!({"name":name,"error":if state.github.is_none(){"project_creation_not_configured"}else{"provisioning_incomplete"},"state":"partial","retry_same_name":true,"message":"A repository or deploy key may already exist. Retry this name to resume; no rollback was performed."}))).into_response(),
     }
+}
+pub(super) async fn templates(c: BrowserContext, state: State<AppState>) -> Response {
+    crate::templates::list(c.actor, state).await
+}
+pub(super) async fn designate_template(
+    c: BrowserContext,
+    state: State<AppState>,
+    path: Path<String>,
+    body: Json<crate::templates::Eligibility>,
+) -> Response {
+    crate::templates::designate(c.actor, state, path, body).await
 }
 fn registered(s: &AppState, p: &str) -> Result<(), work_items::Error> {
     if !s.registry.contains(p) {
@@ -190,6 +207,13 @@ pub(super) fn body_limit(method: &Method, path: &str) -> usize {
         return limit;
     }
     let parts: Vec<_> = path.split('/').collect();
+    if method == Method::PUT
+        && parts.len() == 5
+        && parts[1..4] == ["browser", "api", "templates"]
+        && crate::project::valid_name(parts[4])
+    {
+        return 64;
+    }
     if method == Method::POST
         && parts.len() >= 6
         && parts[1..4] == ["browser", "api", "projects"]

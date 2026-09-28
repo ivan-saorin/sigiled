@@ -1,6 +1,6 @@
 ---
 name: sigil
-description: SIGIL — driver skill for {{driver}} on the SIGILED workload orchestrator at {{api_base}}. Use whenever the user mentions sigiled, sessions, jobs, apps, merge debt, elevate/approvals, project repos, or issues a command (status, projects, new, open, close, recycle, jobs, run, recap, apps, log, elevate — bare or /sigil-prefixed), or asks to read or write code in any registered project.
+description: SIGIL — driver skill for {{driver}} on the SIGILED workload orchestrator at {{api_base}}. Use whenever the user mentions sigiled, sessions, jobs, apps, merge debt, elevate/approvals, project repos, or issues a command (status, projects, templates, template, new, open, close, recycle, jobs, run, recap, apps, log, elevate — bare or /sigil-prefixed), or asks to read or write code in any registered project.
 ---
 
 # SIGIL — driver skill for {{driver}}
@@ -66,3 +66,18 @@ work/commit loop (intent-carrying messages; every commit pushes) →
 log-operativo entry → `close`. Never leave a session dangling — the reaper
 saves your work, not your token. The full rules, verbs, error table and
 workload classes: `GET {{api_base}}/sigiled/contract`.
+
+## 5. Reusable project creation
+
+Read the live contract before using these HTTPS recipes. `templates` maps to
+`GET {{api_base}}/sigiled/templates`. `template <name> enable|disable` maps to
+`PUT /sigiled/templates/{name}` with `{"enabled":true|false}`. Both designation
+and creation require the normal project-creation approval.
+
+`new <name> from <template> at <ref>` maps to `POST /sigiled/projects` with
+`{"name":"...","template":"...","template_ref":"..."}`. Omit `template_ref`
+for the current default branch; omit `template` for the default vm-tmpl.
+Report the returned exact source commit and repository. To repeat, use that
+SHA with a new destination name. On an uncertain outcome retry the same name
+and selection; do not create a generic project and copy files afterward.
+Copied media receipts are source data, not approval for a new project's output.

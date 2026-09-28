@@ -1426,7 +1426,7 @@ async fn dashboard_work_items_auth_cas_audit_restart_and_failed_save() {
     );
 }
 #[tokio::test]
-async fn dashboard_project_partial_retry_two_tabs_and_approval() {
+async fn dashboard_legacy_project_partial_retry_two_tabs_and_approval() {
     let generated = Arc::new(AtomicUsize::new(0));
     let installed = Arc::new(Mutex::new(String::new()));
     let key_attempts = Arc::new(AtomicUsize::new(0));
@@ -1497,6 +1497,28 @@ async fn dashboard_project_partial_retry_two_tabs_and_approval() {
         keys_dir: keys.clone(),
     }))
     .await;
+    // Preserve recovery for a registration started by the pre-template API.
+    f.state.registry.insert(crate::project::ProjectRecord::new(
+        "demo",
+        &crate::manifest::Manifest::parse("").unwrap(),
+        None,
+    ));
+    f.state
+        .registry
+        .descriptors
+        .write()
+        .unwrap()
+        .entry("demo".into())
+        .or_default()
+        .registration_pending = true;
+    f.state.events.record(
+        "demo",
+        crate::auth::now_epoch(),
+        crate::events::Event::ProjectCreated {
+            repo: "fixture/demo".into(),
+            adopted: false,
+        },
+    );
     *f.fake.options.lock().unwrap() = json!({"access":{"groups":["stack:admins"]}});
     let (cookie, session) = f.signed_in().await;
     let send = || {
@@ -1562,6 +1584,107 @@ async fn dashboard_project_partial_retry_two_tabs_and_approval() {
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     assert_eq!(generated.load(Ordering::SeqCst), 2);
     task.abort();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn dashboard_templates_share_creation_policy_and_pinned_provenance() {
+    let provider = crate::template_tests::Fixture::new().await;
+    let f = Fixture::with_github(provider.state.github.clone()).await;
+    *f.fake.options.lock().unwrap() = json!({"access":{"groups":["stack:admins"]}});
+    let (cookie, session) = f.signed_in().await;
+    let list = f
+        .request(reqwest::Method::GET, "/browser/api/templates")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let choices: Value = list.json().await.unwrap();
+    assert_eq!(choices["templates"].as_array().unwrap().len(), 3);
+    // Cookie alone does not authorize either mutation surface.
+    for (path, value) in [
+        ("/browser/api/templates/ordinary", json!({"enabled":true})),
+        (
+            "/browser/api/projects",
+            json!({"name":"browser-template","template":"template-a"}),
+        ),
+    ] {
+        let method = if path.contains("/templates/") {
+            reqwest::Method::PUT
+        } else {
+            reqwest::Method::POST
+        };
+        assert_eq!(
+            f.request(method, path)
+                .header("cookie", &cookie)
+                .json(&value)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    let request = |method, path| {
+        f.request(method, path)
+            .header("cookie", &cookie)
+            .header("origin", "https://sigil.test")
+            .header("x-sigil-csrf", session["csrf_token"].as_str().unwrap())
+    };
+    let r = request(reqwest::Method::PUT, "/browser/api/templates/ordinary")
+        .json(&json!({"enabled":true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let selection =
+        json!({"name":"browser-template","template":"ordinary","template_ref":"master"});
+    let r = request(reqwest::Method::POST, "/browser/api/projects")
+        .json(&selection)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let created: Value = r.json().await.unwrap();
+    assert_eq!(
+        created["provenance"]["source_repository"],
+        "fixture/ordinary"
+    );
+    let r = request(reqwest::Method::POST, "/browser/api/projects")
+        .json(&selection)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let retried: Value = r.json().await.unwrap();
+    assert_eq!(created["provenance"], retried["provenance"]);
+    // A browser driver without approval cannot mutate even an existing name.
+    *f.fake.options.lock().unwrap() =
+        json!({"access":{"sub":"unapproved-human","groups":["stack:drivers"]}});
+    let (other, other_session) = f.signed_in().await;
+    for (method, path, value) in [
+        (
+            reqwest::Method::PUT,
+            "/browser/api/templates/ordinary",
+            json!({"enabled":false}),
+        ),
+        (reqwest::Method::POST, "/browser/api/projects", selection),
+    ] {
+        let r = f
+            .request(method, path)
+            .header("cookie", &other)
+            .header("origin", "https://sigil.test")
+            .header(
+                "x-sigil-csrf",
+                other_session["csrf_token"].as_str().unwrap(),
+            )
+            .json(&value)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
 }
 
 #[tokio::test]

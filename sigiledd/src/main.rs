@@ -30,6 +30,10 @@ mod runtime;
 mod sessions;
 mod skill;
 mod store;
+mod template_snapshot;
+#[cfg(all(test, target_os = "linux"))]
+mod template_tests;
+mod templates;
 mod work_items;
 
 use axum::{
@@ -68,6 +72,7 @@ impl AppState {
         static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _save = SAVE.lock().unwrap();
         self.store.try_save(&store::StateSnapshot {
+            creations: self.registry.creations.read().unwrap().clone(),
             browser_allocations: self.sessions.browser_allocations.lock().unwrap().clone(),
             projects: self.registry.snapshot(),
             ecosystem: self.registry.descriptors(),
@@ -83,6 +88,7 @@ impl AppState {
     /// Boot-time inverse of persist().
     pub fn hydrate_from_disk(&self) {
         if let Some(snap) = self.store.load() {
+            *self.registry.creations.write().unwrap() = snap.creations;
             *self.sessions.browser_allocations.lock().unwrap() = snap.browser_allocations;
             self.registry.replace_all(snap.projects);
             self.registry.hydrate_descriptors(snap.ecosystem);
@@ -133,6 +139,11 @@ fn sigiled_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/contract", get(contract::serve))
         .route("/services", get(catalog::serve))
+        .route("/templates", get(templates::list))
+        .route(
+            "/templates/{name}",
+            axum::routing::put(templates::designate),
+        )
         .route("/overview", get(overview::root))
         .route("/projects/{project}", get(overview::detail))
         .route(

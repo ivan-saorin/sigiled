@@ -15,6 +15,8 @@ use std::path::PathBuf;
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct StateSnapshot {
     #[serde(default)]
+    pub creations: std::collections::BTreeMap<String, crate::templates::Intent>,
+    #[serde(default)]
     pub browser_allocations: HashMap<String, String>,
     #[serde(default)]
     pub ecosystem: std::collections::BTreeMap<String, crate::ecosystem::Descriptor>,

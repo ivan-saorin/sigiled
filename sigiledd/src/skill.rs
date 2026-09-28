@@ -141,11 +141,7 @@ mod tests {
         // Skill loaders require YAML frontmatter: the rendered file must
         // open with it, name stable across drivers.
         assert!(
-            out.starts_with(
-                "---
-name: sigil
-"
-            ),
+            out.lines().take(2).eq(["---", "name: sigil"]),
             "missing frontmatter:
 {out}"
         );

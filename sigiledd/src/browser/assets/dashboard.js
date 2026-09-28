@@ -554,7 +554,9 @@ function renderProject(p) {
   }
   );
   switch(route.tab) {
-    case'overview':panel.append(el('h2', {
+    case'overview':
+    if(p.provenance)panel.append(el('h2',{},'Template provenance'),facts([['Template repository',p.provenance.source_repository],['Source commit',p.provenance.source_commit],['Project identity',p.provenance.operation],['Workspace Dockerfile',p.provenance.snapshot?.workspace||'Global workspace image'],['Foundation',p.provenance.snapshot?.foundation||'No vm-tmpl synchronization pin']]));
+    panel.append(el('h2', {
     }
     ,'Project overview'),facts([['Project information',badge(p.setup?.state === 'ready'?'current':p.setup?.state || 'unknown')],['Observed',date(p.setup?.observed_at)],['Repository revision',el('span', {
       class:'mono'
@@ -757,6 +759,14 @@ async function refresh() {
 }
 function errorText(e) {
   const known = {
+    invalid_project_or_template_selection:'Check the project name, template name and revision.',
+    repository_not_an_eligible_template:'This repository is not an eligible reusable template. Refresh the choices or designate a prepared source.',
+    template_access_or_eligibility_changed:'Template access or eligibility changed. Restore access before retrying the original request.',
+    template_unavailable:'The template or revision is unavailable. Check the name, ref and repository access.',
+    destination_exists_or_changed:'That destination already exists or changed. It was preserved. Choose a different project name.',
+    project_creation_selection_conflict:'This name belongs to a different creation request. Retry its original template and revision, or choose a new name.',
+    project_already_registered:'This project is already registered. Open it or choose a new name.',
+    template_workspace_build_failed:'The template workspace could not be built. Check its Dockerfile and runtime connectivity before retrying.',
     project_creation_approval_required:'Project creation requires a current approval for your signed-in identity.',project_creation_not_configured:'Project creation is not configured on this server.',invalid_project_name:'Use 2–39 lowercase letters, digits or dashes, starting with a letter.',work_item_revision_conflict:'Someone changed this item. Your draft is preserved. Load the latest revision before saving again.',work_item_save_uncertain:'The save could not be confirmed. Your draft remains here. Check the latest saved item before retrying.',invalid_work_item_fields:'Check the title, field lengths and source link. Use an HTTPS URL or /ui/ app path.',work_item_storage_not_configured:'Persistent work-item storage is not configured.',login_required:'Sign in again, then choose Save when ready.',connection_unavailable:'Could not connect to Sigil. Your draft remains here.',provisioning_incomplete:'Provisioning is incomplete. A repository or deploy key may already exist. Retry the same project name to resume; no rollback was performed.',inventory_changed:'The project inventory changed during refresh. The previous list is retained. Refresh to load a consistent inventory.',project_limit_reached:'This view exceeds its bounded project limit. No partial list was substituted.'
   }
   ;
@@ -781,70 +791,68 @@ function inputField(form,name,title,value,options = {
   return field;
 }
 function renderNewProject() {
-  heading('New project','Register a project through Sigil’s authenticated creation policy');
-  const key = 'new-project',draft = drafts.get(key) || {
-    name:''
-  }
-  ;
+  heading('New project','Create an independent project from a reusable template');
+  const key='new-project', draft=drafts.get(key)||{name:'',template:'',template_ref:'',candidate:''};
   drafts.set(key,draft);
-  const form = el('form', {
-    class:'panel form'
-  }
-  );
-  inputField(form,'name','Project name',draft.name, {
-    max:39,attrs: {
-      required:true,pattern:'[a-z][a-z0-9\\-]{1,38}',autocomplete:'off'
-    }
-  }
-  );
-  form.append(el('p', {
-    class:'form-note'
-  }
-  ,'Use 2–39 lowercase letters, digits or dashes, starting with a letter. Existing repositories can be adopted. Creation may require approval for your signed-in identity.'),el('p', {
-    class:'form-note'
-  }
-  ,'If a response is lost, retry the same name. Existing keys and registration are reused.'),el('button', {
-    type:'submit',class:'primary'
-  }
-  ,'Create project'),el('div', {
-    class:'form-status',role:'status'
-  }
-  ));
-  form.oninput = () => draft.name = form.elements.name.value;
-  form.onsubmit = async e => {
-    e.preventDefault();
-    if(!form.reportValidity())return;
-    const submit = form.querySelector('button'),status = form.querySelector('.form-status');
-    submit.disabled = true;
-    status.textContent = 'Creating or resuming project…';
+  const form=el('form',{class:'panel form'});
+  inputField(form,'name','Project name',draft.name,{max:39,attrs:{required:true,pattern:'[a-z][a-z0-9\\-]{1,38}',autocomplete:'off'}});
+  const picker=el('select',{name:'template',id:'project-template'});
+  picker.append(el('option',{value:''},'Default vm-tmpl'));
+  form.append(el('label',{for:'project-template'},'Template'),picker);
+  inputField(form,'template_ref','Template revision (optional)',draft.template_ref||'',{max:200,attrs:{autocomplete:'off',placeholder:'Branch, tag or full commit SHA'}});
+  const discovery=el('p',{class:'form-note',role:'status'},'Loading available templates…');
+  const status=el('div',{class:'form-status',role:'status'});
+  const submit=el('button',{type:'submit',class:'primary'},'Create project');
+  form.append(discovery,el('p',{class:'form-note'},'A selected template is copied at one exact commit. The new repository is private and independent. Review template source before use.'),submit,status);
+  const setFrozen=()=>{for(const name of ['name','template','template_ref'])form.elements[name].disabled=!!draft.pending;};
+  draft.refresh=()=>{
+    setFrozen();submit.disabled=!!draft.busy;
+    if(draft.result){status.className='form-status';status.replaceChildren(document.createTextNode('Project registered. '),link('Open project',projectUrl(draft.result.name)));if(draft.result.provenance)status.append(el('p',{},'Template commit: '+draft.result.provenance.source_commit));}
+    else if(draft.error){status.className='form-status error';status.textContent=draft.error;}
+    else if(draft.busy)status.textContent='Creating or resuming project…';
+  };
+  const read=()=>{draft.name=form.elements.name.value;draft.template=picker.value;draft.template_ref=form.elements.template_ref.value;};
+  form.oninput=read;
+  async function choices() {
     try {
-      if(!session)throw new ApiError(401, {
-        error:'login_required'
-      }
-      );
-      await checkSession();
-      const result = await request('/browser/api/projects', {
-        method:'POST',body:JSON.stringify({
-          name:draft.name
-        }
-        )
-      }
-      );
-      status.className = 'form-status';
-      status.replaceChildren(document.createTextNode(result.existing?'Existing project registration recovered. ':'Project registered. '),link('Open project',projectUrl(result.name)));
-    }
-    catch(error) {
-      if(error.status === 401)showAuth();
-      status.className = 'form-status error';
-      status.textContent = errorText(error);
-    }
-    finally {
-      submit.disabled = false;
-    }
+      const data=await request('/browser/api/templates');
+      if(!form.isConnected)return;
+      picker.replaceChildren(el('option',{value:''},'Default '+(data.default||'vm-tmpl')));
+      for(const template of data.templates)picker.append(el('option',{value:template.name},template.repository));
+      if(draft.template&&!data.templates.some(t=>t.name===draft.template))picker.append(el('option',{value:draft.template},draft.template+' (unavailable)'));
+      picker.value=draft.template||'';
+      discovery.textContent='Every new project records the exact source commit. An empty revision uses the template’s current default branch.';
+    } catch(e) {discovery.textContent='Template discovery unavailable. '+errorText(e);}
   }
-  ;
-  $('content').append(form);
-  $('connection').textContent = 'Project creation uses your signed-in identity.';
+  form.onsubmit=async e=>{
+    e.preventDefault(); if(draft.busy||!form.reportValidity())return;
+    if(!draft.pending)read();
+    const payload=draft.pending||{name:draft.name,...(draft.template?{template:draft.template}:{}),...(draft.template_ref?{template_ref:draft.template_ref}:{})};
+    draft.busy=true;draft.result=null;draft.error=null;draft.pending=payload;draft.refresh();
+    try {
+      await checkSession();
+      const result=await request('/browser/api/projects',{method:'POST',body:JSON.stringify(payload)});
+      draft.pending=null;draft.result=result;
+    } catch(e) {
+      if([400,401,403,409,422].includes(e.status))draft.pending=null;
+      if(e.status===401)showAuth();
+      draft.error=errorText(e)+(draft.pending?' Retry keeps the same name, template and revision.':'');
+    } finally {draft.busy=false;draft.refresh();}
+  };
+  const manage=el('details',{class:'panel'}),management=el('div',{class:'form'});
+  manage.append(el('summary',{},'Manage reusable templates'),management);
+  inputField(management,'candidate','Template repository name',draft.candidate||'',{max:39,attrs:{autocomplete:'off'}});
+  const feedback=el('p',{role:'status'});
+  management.append(el('p',{},'Only repositories owned by the configured GitHub account are eligible. Designation validates the source and requires project-creation approval.'));
+  for(const [label,enabled] of [['Designate as template',true],['Remove template designation',false]])management.append(button(label,async()=>{
+    const candidate=management.querySelector('input').value;draft.candidate=candidate;
+    if(!/^[a-z][a-z0-9-]{1,38}$/.test(candidate)){feedback.textContent='Enter a valid repository name.';return;}
+    try {await checkSession();feedback.textContent='Updating template eligibility…';await request('/browser/api/templates/'+encodeURIComponent(candidate),{method:'PUT',body:JSON.stringify({enabled})});feedback.textContent=enabled?'Template is available for selection.':'Template designation removed.';await choices();}
+    catch(e){feedback.textContent=errorText(e);}
+  }));
+  management.append(feedback);
+  $('content').append(form,manage);draft.refresh();choices();
+  $('connection').textContent='Project creation uses your signed-in identity.';
 }
 async function loadItems(signal,g) {
   const project = route.project,offset = Number(route.query.get('items_offset')) || 0;

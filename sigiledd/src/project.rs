@@ -72,6 +72,7 @@ pub fn valid_name(name: &str) -> bool {
 
 #[derive(Default, Clone)]
 pub struct Registry {
+    pub(crate) creations: Arc<RwLock<std::collections::BTreeMap<String, crate::templates::Intent>>>,
     records: Arc<RwLock<Vec<ProjectRecord>>>,
     pub(crate) descriptors:
         Arc<RwLock<std::collections::BTreeMap<String, crate::ecosystem::Descriptor>>>,
@@ -156,6 +157,9 @@ pub async fn list(
         .map(|r| {
             let mut v = serde_json::to_value(&r).unwrap();
             v["merge_debt"] = serde_json::to_value(state.sessions.debts_for(&r.name)).unwrap();
+            v["provenance"] =
+                serde_json::to_value(state.registry.creations.read().unwrap().get(&r.name))
+                    .unwrap();
             v
         })
         .collect();
@@ -234,16 +238,42 @@ pub async fn branches(
     Json(serde_json::Value::Array(list)).into_response()
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct NewProject {
     pub name: String,
+    pub template: Option<String>,
+    pub template_ref: Option<String>,
 }
 
-/// POST /sigiled/projects — create from the vm-tmpl template, or adopt an
-/// existing repo of that name (key + register, nothing written). Drivers
+/// POST /sigiled/projects — create from a selected immutable template revision
+/// (vm-tmpl by default), or resume a pre-upgrade registration. Drivers
 /// need a live approval (Action::ProjectsNew); there is no delete verb —
 /// projects are permanent.
 pub async fn create(
+    actor: crate::auth::Actor,
+    State(state): State<crate::AppState>,
+    Json(body): Json<NewProject>,
+) -> Response {
+    // Resume pre-upgrade registrations through their original transaction.
+    // New requests, including an omitted selection, resolve a pinned source.
+    let legacy = body.template.is_none()
+        && body.template_ref.is_none()
+        && state.registry.contains(&body.name)
+        && !state
+            .registry
+            .creations
+            .read()
+            .unwrap()
+            .contains_key(&body.name);
+    if legacy {
+        create_legacy(actor, State(state), Json(body)).await
+    } else {
+        crate::templates::create(actor, state, body).await
+    }
+}
+
+async fn create_legacy(
     actor: crate::auth::Actor,
     State(state): State<crate::AppState>,
     Json(body): Json<NewProject>,
@@ -601,11 +631,12 @@ mod tests {
     async fn create_invalid_name_is_422() {
         let state = crate::AppState::default();
         let (status, body) = body_json(
-            create(
+            create_legacy(
                 admin(),
                 State(state),
                 Json(NewProject {
                     name: "Bad_Name".into(),
+                    ..Default::default()
                 }),
             )
             .await,
@@ -625,11 +656,12 @@ mod tests {
             needs_merge: false,
         });
         let (status, body) = body_json(
-            create(
+            create_legacy(
                 admin(),
                 State(state),
                 Json(NewProject {
                     name: "torchio".into(),
+                    ..Default::default()
                 }),
             )
             .await,
@@ -644,11 +676,12 @@ mod tests {
         // github: None (no GITHUB_PAT in the environment of this state).
         let state = crate::AppState::default();
         let (status, body) = body_json(
-            create(
+            create_legacy(
                 admin(),
                 State(state),
                 Json(NewProject {
                     name: "fresh-proj".into(),
+                    ..Default::default()
                 }),
             )
             .await,
@@ -662,11 +695,12 @@ mod tests {
     async fn driver_without_approval_cannot_create() {
         let state = crate::AppState::default();
         let (status, body) = body_json(
-            create(
+            create_legacy(
                 driver(),
                 State(state),
                 Json(NewProject {
                     name: "fresh-proj".into(),
+                    ..Default::default()
                 }),
             )
             .await,
@@ -682,11 +716,12 @@ mod tests {
         let keys_dir = tmp_keys("create");
         let state = state_with_github(&base, keys_dir.clone());
         let (status, body) = body_json(
-            create(
+            create_legacy(
                 admin(),
                 State(state.clone()),
                 Json(NewProject {
                     name: "smoke-new".into(),
+                    ..Default::default()
                 }),
             )
             .await,
@@ -726,11 +761,12 @@ mod tests {
             store: crate::store::Store::at_dir(&dir),
             ..state_with_github(&base, blocker.clone())
         };
-        let response = create(
+        let response = create_legacy(
             admin(),
             State(state.clone()),
             Json(NewProject {
                 name: "partial-project".into(),
+                ..Default::default()
             }),
         )
         .await;
@@ -756,11 +792,12 @@ mod tests {
         restored.hydrate_from_disk();
         assert!(restored.registry.contains("partial-project"));
         std::fs::remove_file(&blocker).unwrap();
-        let response = create(
+        let response = create_legacy(
             admin(),
             State(state.clone()),
             Json(NewProject {
                 name: "partial-project".into(),
+                ..Default::default()
             }),
         )
         .await;
@@ -790,11 +827,12 @@ mod tests {
         let (base, captured) = mock_github(422, 200).await;
         let state = state_with_github(&base, tmp_keys("adopt"));
         let (status, body) = body_json(
-            create(
+            create_legacy(
                 admin(),
                 State(state.clone()),
                 Json(NewProject {
                     name: "legacy-repo".into(),
+                    ..Default::default()
                 }),
             )
             .await,
@@ -814,11 +852,12 @@ mod tests {
         let (base, _) = mock_github(422, 404).await;
         let state = state_with_github(&base, tmp_keys("phantom"));
         let (status, body) = body_json(
-            create(
+            create_legacy(
                 admin(),
                 State(state.clone()),
                 Json(NewProject {
                     name: "phantom-proj".into(),
+                    ..Default::default()
                 }),
             )
             .await,
@@ -876,7 +915,7 @@ pub async fn create_authenticated(
     let name = body.name.clone();
     let driver = actor.driver.clone();
     let response = create(actor, State(state.clone()), Json(body)).await;
-    if response.status() == StatusCode::CREATED {
+    if matches!(response.status(), StatusCode::CREATED | StatusCode::OK) {
         crate::enrollment::schedule_headers(state, name, driver, &headers);
     }
     response

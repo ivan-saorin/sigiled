@@ -13,6 +13,7 @@ const server=http.createServer(async(req,res)=>{try{
   if(!fixture.auth)return reply({error:'login_required'},401);if(fixture.error)return reply({error:'fixture_unavailable'},503);
   if(req.method!=='GET'){fixture.mutations++;assert.equal(req.headers['x-sigil-csrf'],'synthetic-csrf');}
   if(u.pathname==='/browser/api/overview'){const data={observed_at:1789012800,inventory_revision:fixture.churn&&Number(u.searchParams.get('offset'))>0?'changed-membership':JSON.stringify(fixture.projects.map(p=>p.name)),projects:{items:fixture.projects.slice(Number(u.searchParams.get('offset')||0),Number(u.searchParams.get('offset')||0)+100),total:fixture.projects.length,next_offset:Number(u.searchParams.get('offset')||0)+100<fixture.projects.length?Number(u.searchParams.get('offset')||0)+100:null},attention:{items:[{project:'atlas',severity:'warning',reason:'repository_pending',source:'project:atlas/setup'}],total:1},counts:{projects:3,sessions:1,attention:1}};return reply(data);}
+  if(u.pathname==='/browser/api/templates')return reply({default:'vm-tmpl',templates:[]});
   if(u.pathname==='/browser/api/projects')return reply({name:JSON.parse(body).name,state:'registered'},201);
   if(u.pathname.includes('/work-items')){
    const id=u.pathname.split('/')[6];const b=body?JSON.parse(body):null;

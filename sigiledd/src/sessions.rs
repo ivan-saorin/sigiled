@@ -259,7 +259,7 @@ impl SessionState {
             r.session_id != record.session_id && r.token.is_some() && r.container() == target
         })
     }
-    fn session_id() -> String {
+    pub(crate) fn session_id() -> String {
         random_hex(16)
     }
 }
@@ -378,6 +378,19 @@ async fn open_inner(
         now_epoch(),
     ) {
         return err(StatusCode::FORBIDDEN, d.0);
+    }
+    if state
+        .registry
+        .creations
+        .read()
+        .unwrap()
+        .get(&project)
+        .is_some_and(|i| !i.complete)
+    {
+        return err(
+            StatusCode::CONFLICT,
+            "project provisioning incomplete; retry creation with the original selection",
+        );
     }
     // Existing project slugs are shell/DNS-safe. Reject paths or shell fragments
     // before Git and runtime names are constructed, including unknown projects.

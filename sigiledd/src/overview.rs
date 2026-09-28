@@ -269,6 +269,7 @@ fn summary(
 ) -> Value {
     let d = state.registry.descriptor(&p.name);
     json!({"name":p.name,"display_name":d.declaration.project.display_name.as_deref().unwrap_or(&p.name),
+        "provenance":state.registry.creations.read().unwrap().get(&p.name),
         "description":d.declaration.project.description,"template_version":p.template_version,"template_behind":p.template_behind,
         "repository_revision":d.desired_revision,"observed_revision":d.observed_revision,"needs_merge":p.needs_merge,
         "capabilities":capabilities(state,&d),
