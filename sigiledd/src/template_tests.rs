@@ -103,6 +103,7 @@ struct Provider {
     lose_create: bool,
     fail_key: bool,
     move_source: bool,
+    resolve_status: Option<StatusCode>,
 }
 #[derive(Clone)]
 struct ProviderState(Arc<Mutex<Provider>>);
@@ -147,6 +148,9 @@ async fn resolve(
     Path((_owner, name, reference)): Path<(String, String, String)>,
 ) -> Response {
     let mut p = p.0.lock().unwrap();
+    if let Some(status) = p.resolve_status {
+        return status.into_response();
+    }
     let root = p.root.join(&name);
     let Ok(sha) = crate::merge::git(
         &root,
@@ -234,6 +238,7 @@ impl Fixture {
             lose_create: false,
             fail_key: false,
             move_source: false,
+            resolve_status: None,
         })));
         let router = Router::new()
             .route("/repos/{owner}/{name}", get(repo).patch(designate))
@@ -530,6 +535,35 @@ async fn disabled_templates_unknown_fields_and_runtime_bindings_cannot_bypass_ch
 }
 
 #[tokio::test]
+async fn unavailable_revisions_are_actionable_before_any_provisioning() {
+    let f = Fixture::new().await;
+    for code in [404, 409, 422] {
+        f.provider.0.lock().unwrap().resolve_status = Some(StatusCode::from_u16(code).unwrap());
+        let (status, value) = f
+            .create("missing-revision", Some("template-a"), Some("missing"))
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{code}: {value}");
+        assert_eq!(value["error"], "template_revision_unavailable");
+        assert!(value["detail"]
+            .as_str()
+            .unwrap()
+            .contains("branch, tag or full commit SHA"));
+        assert_eq!(f.provider.0.lock().unwrap().creates, 0);
+        assert!(f.state.registry.creations.read().unwrap().is_empty());
+        assert!(!f.state.registry.contains("missing-revision"));
+    }
+    for code in [403, 429, 503] {
+        f.provider.0.lock().unwrap().resolve_status = Some(StatusCode::from_u16(code).unwrap());
+        let (status, value) = f
+            .create("missing-revision", Some("template-a"), Some("missing"))
+            .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{code}: {value}");
+        assert_ne!(value["error"], "template_revision_unavailable");
+        assert_eq!(f.provider.0.lock().unwrap().creates, 0);
+    }
+}
+
+#[tokio::test]
 async fn designation_discovery_authorization_and_incompatible_sources_fail_closed() {
     let f = Fixture::new().await;
     let (_, v) = body(templates::list(admin(), State(f.state.clone())).await).await;
@@ -601,7 +635,7 @@ async fn designation_discovery_authorization_and_incompatible_sources_fail_close
         f.create("missing-ref", Some("template-b"), Some("absent"))
             .await
             .0,
-        StatusCode::BAD_GATEWAY
+        StatusCode::UNPROCESSABLE_ENTITY
     );
 }
 

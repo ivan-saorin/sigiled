@@ -1,3 +1,11 @@
+## 2026-09-29 — Live native-template acceptance and revision-error correction
+
+Published aef78f0 through normal close; operator rebuilt via restart.sh. Live default, distinct Rust/Python template creation, real compiler/interpreter use, commit/push/close/reopen, new identity, exact copied-file hashes, concurrent same-name requests, retry/conflict behavior and pinned-SHA replay after a source edit passed. Six clearly named fixtures retained; fixture sessions closed, two source designations temporarily retained for browser acceptance. Opticon untouched.
+
+Live GitHub missing-ref lookup returned 422, previously misclassified as a provider/destination conflict. Classify revision-lookup 404/409/422 before provisioning and return an actionable 422. The regression covers each provider status and preserves denial/rate-limit/transient failures; all 11 template tests, fmt and Clippy pass. Contract 2.6.1 documents the correction. The older missing-ref expectation was updated; no unchanged full suite repeated.
+
+Browser acceptance remains blocked by the operator's plain Compose restart omitting the existing browser environment override. Host diagnostics confirm the override is intact and hash-matched. Next: publish this correction, restore that override persistently in the operator's normal restart configuration, rebuild once, verify 2.6.1 and the live invalid-ref response, then complete browser acceptance and remove fixture designations. See docs/test-results/NATIVE-TEMPLATES.md. Do not report complete yet.
+
 ## 2026-09-29 - Native reusable project templates: tested source, supervised release pending
 
 Starting from deployed-source base 8566354, implemented native GitHub template designation/discovery, browser picker and shared driver/API creation with optional template/template_ref. Exact resolved source SHA is imported into an independent private root with durable provenance, fresh identity, operation-owned recovery, immutable-provider checks, declared TOML adaptation and normal workspace build validation. Default vm-tmpl and pre-upgrade partial registrations remain supported. No Opticon changes.

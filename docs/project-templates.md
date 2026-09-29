@@ -142,6 +142,7 @@ including for default creation. No repository deletion/rollback is attempted.
 | Error | Recovery |
 |---|---|
 | `template_unavailable` / `repository_not_an_eligible_template` | Check source access, designation and ref; ordinary repositories are rejected. |
+| `template_revision_unavailable` (422) | Choose an existing branch, tag or full commit SHA. GitHub 404/409/422 during revision lookup is rejected before provisioning; no destination needs recovery. |
 | `template_manifest_*` / `template_workspace_missing` / `template_runtime_binding` | Prepare a compatible source before a new request. |
 | `destination_exists_or_changed` / `destination_changed` | Preserve incumbent; use a new name. Never force push. |
 | `project_creation_selection_conflict` | Retry the original selection or choose a new name. |

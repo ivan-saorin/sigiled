@@ -71,6 +71,9 @@ impl GitHub {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value, String> {
+        let resolving_revision = method == reqwest::Method::GET
+            && path.starts_with("/repos/")
+            && path.split('/').nth(4) == Some("commits");
         let mut request = self.req(http, method, path);
         if let Some(body) = body {
             request = request.json(&body);
@@ -81,6 +84,11 @@ impl GitHub {
             .map_err(|_| "template_provider_unavailable")?;
         if !response.status().is_success() {
             return Err(match response.status().as_u16() {
+                // GitHub uses 422 for an unknown ref and 409 for an empty
+                // repository. No destination exists at this resolution stage.
+                404 | 409 | 422 if resolving_revision => {
+                    "template_revision_unavailable: choose an existing branch, tag or full commit SHA"
+                }
                 401 | 403 | 404 => {
                     "template_unavailable: repository, revision or provider permission unavailable"
                 }
@@ -426,7 +434,13 @@ async fn create_inner(actor: Actor, state: AppState, body: NewProject) -> Result
         let commit = gh
             .resolve(&http, &source, body.template_ref.as_deref())
             .await
-            .map_err(failed)?;
+            .map_err(|e| {
+                if e.starts_with("template_revision_") {
+                    (StatusCode::UNPROCESSABLE_ENTITY, e)
+                } else {
+                    failed(e)
+                }
+            })?;
         new_intent(
             &actor,
             &gh,

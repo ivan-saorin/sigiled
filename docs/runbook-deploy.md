@@ -201,9 +201,19 @@ Close the code session normally to publish master. Use the existing external
 supervisor/operator restart path with the exact reviewed commit. No provider,
 repository-policy or unrelated-service change is needed.
 
-After restart verify the served contract is 2.6.0, authenticated `GET /templates`
+After restart verify the served contract is 2.6.1, authenticated `GET /templates`
 works, and the browser picker loads. On the intended instance create a default
 fixture and destinations from two explicitly designated, prepared templates.
 Verify source SHA/content/workspace, then open → useful build → commit/push →
 close → reopen. Keep fixture names and final states in the release evidence.
 Never substitute source-only tests for this live acceptance gate.
+
+For an operator script that invokes plain `docker compose up`, retain approved
+runtime overrides in its persistent Compose configuration, for example an
+explicit `COMPOSE_FILE` in the project `.env`. Include the base file and the
+verified browser environment override. A one-off `-f` invocation does not repair
+future plain-script restarts. Verify the selected configuration privately with
+`docker compose config --quiet`; never print rendered secrets. Preserve the
+existing data volume and keys, and do not include an old release's pinned image
+override when building the new source. `browser_disabled` means that browser
+configuration is absent or explicitly disabled, even if machine health is green.
