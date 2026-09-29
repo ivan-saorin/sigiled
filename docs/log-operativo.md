@@ -1,3 +1,11 @@
+## 2026-09-29 — Native templates accepted on the running deployment
+
+Operator rebuilt c5cfe97 and restored the existing browser environment override persistently in Compose. Served contract exactly matches 2.6.1 and live missing-ref validation now returns actionable 422 without provisioning. All six existing fixture provenance/identity records survived the real restart; exact retry retained identity.
+
+Normal human browser login completed. Browser designation removal/re-enabling updated discovery, and the operator UI created sigil-tpl-browser-0929 from the Python fixture at its exact recorded SHA. Visible success and project overview show immutable provenance. Its normal workspace ran Python 3.13.5 and completed independent edit, commit/push, close, reopen, file/provenance verification and clean close. Both source designations removed through UI, verified absent via API; revoked-source creation rejected. Seven clearly named repositories retained, no open fixture sessions or merge debt. No Opticon changes.
+
+Required native template workflow is accepted. Final evidence, screenshot, usage recipes, fixture disposition and full Opticon handoff are in docs/test-results/NATIVE-TEMPLATES.md. Browser Open IDE remains disabled by separate deployment readiness configuration; driver workspace lifecycle passed. This final update is documentation-only and requires no additional runtime rebuild. Next: return to Opticon, verify its current head, prepare the production authoring SKILL and clean reusable template, validate new-project approval binding, then agree the M3 target.
+
 ## 2026-09-29 — Live native-template acceptance and revision-error correction
 
 Published aef78f0 through normal close; operator rebuilt via restart.sh. Live default, distinct Rust/Python template creation, real compiler/interpreter use, commit/push/close/reopen, new identity, exact copied-file hashes, concurrent same-name requests, retry/conflict behavior and pinned-SHA replay after a source edit passed. Six clearly named fixtures retained; fixture sessions closed, two source designations temporarily retained for browser acceptance. Opticon untouched.

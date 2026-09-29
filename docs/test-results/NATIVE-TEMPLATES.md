@@ -1,8 +1,13 @@
-# Native project templates — source acceptance, 2026-09-29
+# Native project templates — live acceptance, 2026-09-29
 
-Implementation base: `8566354bd327973715e6b12d9ee9bcdf2afcbe1e` from the actual
-`ivan-saorin/sigiled` repository. This report accompanies the implementation
-commit; it is **not a deployed acceptance claim**.
+**Required native creation workflow accepted on the intended running deployment.**
+Implementation: `aef78f0d69cb7a21001bedd3dc728816fb618655`, followed by the
+live-discovered revision-error correction
+`c5cfe97c15d2ba5b287de87f27e28b492ab59d9e`. Operator reported rebuilding the
+latter on automa; the running contract exactly matches that source's 2.6.1
+document and the corrected behavior was verified live. Health is green but has
+no build-SHA attestation endpoint. This final acceptance commit changes only
+documentation and its screenshot; it does not require another service rebuild.
 
 ## Verified locally
 
@@ -41,48 +46,104 @@ the runtime fixture did not emulate image inspection; and an existing skill
 frontmatter test assumed LF despite Windows checkout CRLF. No production deadline,
 supervision or authorization limits were weakened.
 
-## Live acceptance progress — 2026-09-29
+## Verified on the running deployment
 
-Implementation `aef78f0d69cb7a21001bedd3dc728816fb618655` was published through
-normal commit/push/close (fast-forward, operational log touched). After the
-operator rebuilt with `/opt/sigiled/restart.sh`, the running contract became
-2.6.0 and matched the implementation source. `/healthz` is healthy but does not
-attest a build SHA. These are live results on api.016180.xyz:
+Machine API: `https://api.016180.xyz/sigiled`.
+Browser: `https://sigil.016180.xyz`, normal human-authenticated operator session.
 
-| Check | Evidence |
+| Check | Live evidence |
 | --- | --- |
-| Default creation | `sigil-tpl-default-0929`, source vm-tmpl `cf57bb5dc336c598d61845a19b46984eb210ebed`; normal open/command/commit/close/reopen passed; files and provenance persisted. |
-| Rust template | `sigil-tpl-rust-0929` designated and discovered at `a41ef2aa6d8197807d2cdade4f4367a06731b057`; `sigil-tpl-film-a-0929` copied exact declared source files and used its required Rust/Cargo 1.85.1 environment to compile/run the scene. |
-| Python template | `sigil-tpl-python-0929` designated and discovered at `feb67868d657f171266d7d88559090dddf5a57ca`; `sigil-tpl-film-b-0929` copied distinct Python files/Dockerfile and ran its scene with Python. |
-| Normal lifecycle | Both selected destinations committed/pushed independent edits, closed with fast-forward and operational log receipts, reopened with unchanged metadata/files, reran their scene and closed cleanly. |
-| Identity and authority | Declared film name/repository/project ID adapted; new independent IDs and approval namespaces verified. Synthetic approval file preserved as source data with a different source ID. This does not validate Opticon receipt migration. |
-| Concurrency and retries | Two simultaneous Python creation requests returned 201 and 200 with identical provenance/provider ID. Exact completed retries returned 200; changing selected source returned 409. |
-| Independence and replay | Rust source was unchanged by destination edits, then deliberately advanced to `49cb12daa7600bcad328c90b8c0e97f72978597c`. `sigil-tpl-repeat-0929` used the original full SHA and reproduced v1; the existing Rust destination still had v1 and its own edit. |
+| Default creation | No template field selected vm-tmpl at `cf57bb5dc336c598d61845a19b46984eb210ebed`; workspace command, commit/push, close and reopen passed with files and provenance intact. |
+| Eligibility and discovery | Controlled Rust/Python sources explicitly designated and discovered by driver. Browser removal hid Python from its picker; browser designation made it available again. Ordinary repositories were rejected. |
+| Distinct environments | Rust source `a41ef2aa6d8197807d2cdade4f4367a06731b057` supplied Rust/Cargo 1.85.1 and compiled/ran its scene. Python source `feb67868d657f171266d7d88559090dddf5a57ca` supplied Python 3.13.5 and ran its distinct scene. |
+| Contents and identity | SHA-256 checks matched source Dockerfile, engine, scene, asset, skill, identity declaration and synthetic receipt. Declared TOML identities adapted. Destinations had distinct provider IDs/project IDs/approval namespaces. Source approval data had a different ID and conferred no SIGIL authority. |
+| Normal lifecycle | Both driver-created selected destinations and the browser-created destination completed open → useful compiler/interpreter command → independent edit → commit/push → close → reopen → verify/rerun → close. Writes closed with fast-forward and operational-log receipts. |
+| Browser creation | Operator selected Python plus its full SHA; `sigil-tpl-browser-0929` registered, showed the exact SHA, and displayed source repository, SHA, new project ID and workspace Dockerfile in project overview. |
+| Concurrency/retry | Simultaneous identical Python requests returned 201 and 200 with identical provenance/provider ID; exact completed retries returned 200; changed template selection returned 409. |
+| Independence and repeat | Source stayed unchanged by destination edits. Rust source then advanced to `49cb12daa7600bcad328c90b8c0e97f72978597c`; original destination retained v1 and its own edit. A new project pinned to the earlier full SHA reproduced v1 with a new identity. Branch movement during resolution/fetch is separately covered by real-Git automated tests. |
+| Real restart persistence | All six pre-browser fixture provenance/identity records survived the operator's actual service restart; exact retry still returned the original identity. |
+| Rejections | Unauthenticated discovery/designation/creation returned 401. Ordinary source, missing ref and cross-owner selection returned 422. No invalid destination registered. After final designation removal, a new creation from the revoked source returned 422 and registered nothing. |
+| Final state | Seven fixture repositories retained; zero open fixture sessions, zero fixture merge debt, both source designations removed through UI and absence confirmed by API. |
 
-Live missing-ref validation exposed GitHub returning 422 where the fixture had
-used 404. It was reported as a 502 provider conflict; no destination or creation
-record was created. The correction in this source revision classifies commit
-lookup 404/409/422 as `template_revision_unavailable` (HTTP 422), with advice to
-select an existing branch/tag/SHA. Provider denial, rate limits and transient
-failures remain separate. All 11 template/provider tests, formatting and Clippy
-passed after updating the older error expectation; two contract-filtered
-regressions also passed. The unchanged full source suite results above remain
-the baseline. Contract is now 2.6.1; live correction verification awaits rebuild.
+![Live browser project creation and pinned source revision](native-templates-created.png)
 
-The operator's restart used only `/opt/sigiled/docker-compose.yml`; live browser
-routes returned 404 `browser_disabled`. Operator diagnostics confirmed no
-`SIGILED_BROWSER_*` settings in the container. The saved browser Compose override
-exists, matches its recorded hash, and adds only environment settings for the
-sigiled service. Restore it persistently in the normal Compose invocation;
-do not select the historical pinned image override for the old source revision.
-Browser designation/picker/create acceptance remains pending until that repair.
+## Live correction and deployment configuration
 
-All six listed fixture repositories are retained; none were deleted. At this
-checkpoint their test sessions are closed. The two source fixtures remain
-designated for the pending browser test; remove their designation at completion.
-No Opticon source, designation, approvals or videos were modified. The feature
-is **not yet fully accepted**: deploy this error correction, restore the existing
-browser configuration, complete live browser acceptance and final disposition.
+Initial live GitHub missing-ref lookup returned 422 where the provider fixture
+had returned 404; the old implementation reported a 502 destination conflict.
+No destination was provisioned. The correction maps commit-lookup 404/409/422
+to `template_revision_unavailable` (HTTP 422), advising an existing branch,
+tag or full SHA. It keeps provider denial, rate limits and transient failures
+separate. All 11 template/provider tests, formatting and Clippy passed; the older
+missing-ref expectation was updated and two contract-filtered regressions passed.
+The live 422 response was confirmed after the operator rebuilt c5cfe97.
+
+The initial plain `restart.sh` invocation omitted the saved browser Compose
+environment override, so the dashboard returned `browser_disabled`. Operator
+diagnostics verified the override was unchanged and environment-only. The
+project `.env` now selects the base file plus that override through COMPOSE_FILE,
+retaining it for subsequent normal restarts; no old pinned image override was
+selected. After rebuild, browser routes required normal sign-in and the full
+designation/picker/create flow passed. No unrelated services were changed.
+
+The operator completed browser sign-in after the previously selected account
+was denied by Authentik. Driver device approval does not replace browser login;
+no authentication policy was weakened. Browser automation used keyboard controls
+after pointer actions failed to activate controls; the application UI and native
+browser endpoints performed all designation and creation mutations.
+
+## Retained test projects
+
+All repositories are under `ivan-saorin`. None were deleted. All test sessions
+are closed and have no merge debt. Source fixtures are no longer selectable.
+
+| Project | Purpose / final state |
+| --- | --- |
+| `sigil-tpl-default-0929` | Default compatibility and persisted lifecycle marker. |
+| `sigil-tpl-rust-0929` | Controlled Rust source, deliberately advanced to v2; designation removed. |
+| `sigil-tpl-python-0929` | Controlled Python source; designation removed. |
+| `sigil-tpl-film-a-0929` | Rust destination retains v1 and its independent edit. |
+| `sigil-tpl-film-b-0929` | Python destination and concurrent-create identity check. |
+| `sigil-tpl-repeat-0929` | Original Rust SHA reproduced after source advancement. |
+| `sigil-tpl-browser-0929` | Browser-selected Python/full-SHA destination; full lifecycle passed. |
+
+Names `sigil-tpl-invalid-0929` and `sigil-tpl-revoked-0929` were rejected and did
+not register projects. No Opticon source, designation, approval or video changed.
+
+## Supported use and remaining boundaries
+
+UI: **New project → Manage reusable templates → Template repository name →
+Designate as template**. Then enter a new project name, choose **Template**,
+optionally enter **Template revision**, and choose **Create project**.
+**Remove template designation** prevents future creation without changing projects.
+
+Driver recipes (authenticated HTTPS under `/sigiled`, approval as documented):
+
+```text
+templates
+template <repository-name> enable
+new <new-project> from <repository-name> at <branch-tag-or-full-SHA>
+```
+
+These map to `GET /templates`, `PUT /templates/{name} {"enabled":true}` and
+`POST /projects {"name":"...","template":"...","template_ref":"..."}`.
+Omit template to retain vm-tmpl; omit ref to resolve the current default branch.
+The immutable resolved revision appears in creation responses, project records,
+browser overview and `.sigil/project.json`. Repeat that full SHA with a new
+project name. Existing explicit foundation sync/drift behavior is unchanged;
+application source provenance is separate from an optional vm-tmpl pin.
+
+The browser **Open IDE** control currently reports that deployment setup is
+needed. Browser template management and creation work; compiler/interpreter
+workspace use and lifecycle were verified through the driver API. Full browser
+IDE readiness is a separate deployment capability, not claimed by these tests.
+
+Template sources must be prepared SIGIL workspace repositories under the
+configured owner. Submodules, Git LFS and live application/job/service/secret
+bindings are not supported. Opticon must validate its own approval receipt
+portability and bind new approvals to destination identity and actual content;
+SIGIL does not turn copied receipts into authorization. See
+[project-templates.md](../project-templates.md) for the complete supported contract.
 
 ## Return to Opticon
 
