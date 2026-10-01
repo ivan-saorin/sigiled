@@ -55,6 +55,8 @@ pub struct Item {
     pub creator: String,
     pub editor: String,
     pub audit: Vec<Edit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<crate::requests::Question>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -153,7 +155,7 @@ impl Store {
         limit: usize,
     ) -> Result<serde_json::Value, Error> {
         self.transaction(false,|data| {
-            let mut rows:Vec<_>=data.values().filter(|i|i.project==project).collect();
+            let mut rows:Vec<_>=data.values().filter(|i|i.project==project && i.request.is_none()).collect();
             rows.sort_by(|a,b|b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
             let total=rows.len();
             // Audit is a detail-only projection, bounded independently of list pages.
@@ -214,6 +216,7 @@ impl Store {
                     actor: actor.into(),
                     fields: body.fields,
                 }],
+                request: None,
             };
             data.insert(item.id.clone(), item.clone());
             Ok(item)
@@ -229,6 +232,9 @@ impl Store {
         validate(&body.fields)?;
         self.transaction(true, |data| {
             let mut item = Self::find(data, project, id)?.clone();
+            if item.request.is_some() {
+                return Err(Error(StatusCode::CONFLICT, "request_requires_answer_route"));
+            }
             if item.revision != body.expected_revision {
                 return Err(Error(StatusCode::CONFLICT, "work_item_revision_conflict"));
             }
@@ -250,6 +256,166 @@ impl Store {
         })
     }
 }
+impl Store {
+    fn request_store(&self) -> Self {
+        Self {
+            path: self
+                .path
+                .as_ref()
+                .map(|p| p.with_file_name("agent-requests.json")),
+            lock: self.lock.clone(),
+        }
+    }
+    pub fn get_request(&self, project: &str, id: &str) -> Result<Item, Error> {
+        self.request_store().get(project, id)
+    }
+    pub fn list_requests(
+        &self,
+        project: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<serde_json::Value, Error> {
+        self.request_store().transaction(false, |data| {
+            let mut rows: Vec<_> = data.values().filter(|i| i.project == project && i.request.is_some()).collect();
+            rows.sort_by(|a,b| a.request.as_ref().unwrap().answer.is_some().cmp(&b.request.as_ref().unwrap().answer.is_some()).then(b.updated_at.cmp(&a.updated_at)).then(a.id.cmp(&b.id)));
+            let total = rows.len();
+            let waiting = rows.iter().filter(|i| i.request.as_ref().unwrap().answer.is_none()).count();
+            let items: Vec<_> = rows.into_iter().skip(offset).take(limit).map(|i| {
+                let mut v = serde_json::to_value(i).unwrap();
+                v.as_object_mut().unwrap().remove("audit");
+                v
+            }).collect();
+            Ok(json!({"items":items,"total":total,"waiting":waiting,"offset":offset,"limit":limit,"next_offset":if offset+limit<total {Some(offset+limit)}else{None}}))
+        })
+    }
+
+    pub fn create_request(
+        &self,
+        project: &str,
+        actor: &str,
+        body: crate::requests::Create,
+    ) -> Result<Item, Error> {
+        let fields = Fields {
+            title: body.title,
+            description: body.context.clone(),
+            state: State::Blocked,
+            owner: actor.into(),
+            source_link: body.source_link,
+        };
+        validate(&fields)?;
+        if body.question.trim().is_empty()
+            || body.question.len() > 8000
+            || body.id.len() != 36
+            || !body.id.bytes().enumerate().all(|(i, c)| {
+                if [8, 13, 18, 23].contains(&i) {
+                    c == b'-'
+                } else {
+                    c.is_ascii_hexdigit()
+                }
+            })
+        {
+            return Err(Error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
+        }
+        self.request_store().transaction(true, |data| {
+            if let Some(old) = data.get(&body.id) {
+                if old.project == project
+                    && old.creator == actor
+                    && old.fields.title == fields.title
+                    && old.fields.source_link == fields.source_link
+                    && old
+                        .request
+                        .as_ref()
+                        .is_some_and(|q| q.question == body.question && q.context == body.context)
+                {
+                    return Ok(old.clone());
+                }
+                return Err(Error(StatusCode::CONFLICT, "request_id_conflict"));
+            }
+            if data.values().filter(|i| i.project == project).count() >= 10000 {
+                return Err(Error(StatusCode::CONFLICT, "work_item_capacity"));
+            }
+            let now = crate::auth::now_epoch();
+            let item = Item {
+                id: body.id,
+                project: project.into(),
+                fields: fields.clone(),
+                created_at: now,
+                updated_at: now,
+                revision: 1,
+                creator: actor.into(),
+                editor: actor.into(),
+                audit: vec![Edit {
+                    revision: 1,
+                    at: now,
+                    actor: actor.into(),
+                    fields,
+                }],
+                request: Some(crate::requests::Question {
+                    question: body.question,
+                    context: body.context,
+                    answer: None,
+                }),
+            };
+            data.insert(item.id.clone(), item.clone());
+            Ok(item)
+        })
+    }
+
+    pub fn answer_request(
+        &self,
+        project: &str,
+        id: &str,
+        actor: &str,
+        body: crate::requests::Answer,
+    ) -> Result<Item, Error> {
+        if body.text.trim().is_empty() || body.text.len() > 8000 {
+            return Err(Error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_request_answer",
+            ));
+        }
+        self.request_store().transaction(true, |data| {
+            let mut item = Self::find(data, project, id)?.clone();
+            let question = item
+                .request
+                .as_mut()
+                .ok_or(Error(StatusCode::NOT_FOUND, "request_not_found"))?;
+            if let Some(reply) = &question.answer {
+                // Exact retry recovers an answer whose response or durability receipt was lost.
+                if body.expected_revision == 1
+                    && item.revision == 2
+                    && reply.actor == actor
+                    && reply.text == body.text
+                {
+                    return Ok(item);
+                }
+                return Err(Error(StatusCode::CONFLICT, "request_already_answered"));
+            }
+            if item.revision != body.expected_revision {
+                return Err(Error(StatusCode::CONFLICT, "request_revision_conflict"));
+            }
+            let now = crate::auth::now_epoch();
+            question.answer = Some(crate::requests::Reply {
+                text: body.text,
+                actor: actor.into(),
+                at: now,
+            });
+            item.revision += 1;
+            item.updated_at = now;
+            item.editor = actor.into();
+            item.fields.state = State::Done;
+            item.audit.push(Edit {
+                revision: item.revision,
+                at: now,
+                actor: actor.into(),
+                fields: item.fields.clone(),
+            });
+            data.insert(id.into(), item.clone());
+            Ok(item)
+        })
+    }
+}
+
 fn validate(f: &Fields) -> Result<(), Error> {
     if f.title.trim().is_empty()
         || f.title.len() > 200

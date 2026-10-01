@@ -67,3 +67,6 @@ A form reopened while its original create is still pending resolves the method a
 ## C2 workspace integration
 
 Workspace actions are now supplied by [ide-gateway.md](ide-gateway.md) when explicitly configured and backed by durable state. Open IDE preserves this page and shared drafts, exposes a usable popup-blocked launch link, and retains its allocation key across explicit authentication recovery. `window.Sigil.openIDE(project, target?)` accepts the narrow server-validated file target. Workspace checkpoint/finish use actual human authority and generation strings. Live readiness remains separately gated.
+
+
+Project catch-up, shared external-agent questions and deployment diagnosis are documented in [project-journeys.md](project-journeys.md). These add the project `requests` tab and fixed browser request read/answer adapters; existing authorization and lifecycle remain unchanged.

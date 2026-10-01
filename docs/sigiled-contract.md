@@ -4,7 +4,7 @@
 
 ## The driving contract for the automa stack — v2
 
-**Contract version:** 2.6.1 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.6.1 returns actionable 422 errors for unavailable template revisions before provisioning. 2.6.0 adds native reusable template discovery, designation and revision-pinned creation (§8). 2.5.0 adds live project descriptors, declared service discovery and read-only overview projections (§12). 2.4.0 adds independent session runtime bindings, recoverable lifecycle failures and redacted session inspection. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract. 2.3.0 adds the change-notification step to `open`: the `changed` service (catalog) leaves one memory chunk per detected change in the project's index — surface them before writing.
+**Contract version:** 2.7.0 · **Source:** `docs/sigiled-contract.md` in `ivan-saorin/sigiled`, served by `GET /sigiled/contract` at the deployed sha. 2.7.0 adds durable external-agent questions and human answers shared by the browser and driver API (see the collaboration section below). 2.6.1 returns actionable 422 errors for unavailable template revisions before provisioning. 2.6.0 adds native reusable template discovery, designation and revision-pinned creation (§8). 2.5.0 adds live project descriptors, declared service discovery and read-only overview projections (§12). 2.4.0 adds independent session runtime bindings, recoverable lifecycle failures and redacted session inspection. 2.1.0 adds per-project session images (DEC-25): the `image` field in open/recycle responses, `[workspace] dockerfile` in the manifest (§8). 2.2.0 adds the stack service catalog (DEC-27): `GET /services` and the `services` command, public and embedded like this contract. 2.3.0 adds the change-notification step to `open`: the `changed` service (catalog) leaves one memory chunk per detected change in the project's index — surface them before writing.
 **Status:** ratified — DEC-01…10 ratified by the operator on 2026-08-03 (see `docs/sigiled-v2.md` §8). This is the source contract; runtime configuration and end-to-end acceptance must be verified on the intended deployment. SIGILED is the only orchestrator of the stack.
 
 This is the complete operating contract for SIGILED (v2 of SIGILED). It is
@@ -620,3 +620,22 @@ IDE-used close, recycle and reap require internal companion POST /finish: owned 
 ## C2 browser IDE access
 
 [ide-gateway.md](ide-gateway.md) defines the implemented human launch, safe status, checkpoint/finish and isolated preview adapters. Browser generation fields are canonical decimal strings; machine contracts stay numeric. Durable actor/project allocation intents survive lost responses and never adopt agent sessions. Runtime tokens remain server-side. Feature readiness defaults off pending actual deployment validation.
+
+
+## Shared project questions and collaboration journeys (2.7.0)
+
+Authenticated external drivers can create durable questions with `POST /projects/{project}/requests`
+(`id`, `title`, `question`, optional `context` and `source_link`) and read their answers through
+`GET /projects/{project}/requests` or `GET /projects/{project}/requests/{id}`. Only registered projects
+are accepted; the requester comes from the authenticated actor. Reuse the exact UUID/body after an
+uncertain create. List pagination uses the existing offset/limit contract and includes a waiting count.
+
+The human browser answers through its exact-origin/CSRF-protected project Needs you page. A reply is
+an immutable, revision-checked record; it does not grant access, start an agent, close a session or
+approve a deployment. Drivers read `request.answer` in their next turn. There is no machine answer
+endpoint. Questions are separate from ordinary work items and stored in `agent-requests.json`.
+
+The project overview adds a browser-local, actor-scoped catch-up marker and bounded recent activity.
+The Deployment view distinguishes source, completed build, deployment and runtime observations and
+provides a diagnostic handoff. Runtime health is never inferred from a build or deployed revision.
+See [project-journeys.md](project-journeys.md) for request limits, persistence, retries and release checks.

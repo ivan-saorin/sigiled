@@ -26,6 +26,7 @@ mod merge;
 mod overview;
 mod project;
 mod reaper;
+mod requests;
 mod runtime;
 mod sessions;
 mod skill;
@@ -146,6 +147,13 @@ fn sigiled_router(state: AppState) -> Router {
         )
         .route("/overview", get(overview::root))
         .route("/projects/{project}", get(overview::detail))
+        .route(
+            "/projects/{project}/requests",
+            get(requests::list)
+                .post(requests::create)
+                .layer(axum::extract::DefaultBodyLimit::max(131072)),
+        )
+        .route("/projects/{project}/requests/{id}", get(requests::get))
         .route(
             "/projects",
             get(project::list).post(project::create_authenticated),

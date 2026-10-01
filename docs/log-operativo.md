@@ -1,3 +1,11 @@
+## 2026-10-01 — Three project collaboration journeys on a dedicated branch
+
+Starting from 44d367f, implemented a project catch-up brief with a personal review marker, durable external-agent questions and human answers, and deployment diagnosis separating source, completed build, recorded deployment and observed runtime health. The new requests API and browser use the same atomic records in a separate agent-requests.json file; answers are immutable, revision-checked and recoverable after an uncertain receipt. They never grant access, resume agents or deploy. Contract source is 2.7.0; the deployed contract remains unchanged.
+
+Validation: 36 browser/backend tests, format and Clippy pass with the existing too_many_arguments allowance. Actual-assets journey and existing dashboard suites pass, including all 11 existing race regressions. New coverage includes uncertain-save recovery, delayed pre-answer reads, keyboard focus, identity changes, competing answers, restart persistence and failed storage writes. Desktop/mobile fixture screenshots were inspected. Details and remaining live acceptance are in docs/test-results/PROJECT-JOURNEYS.md.
+
+Publication is intentionally limited to feat/project-collaboration-journeys. The allocated session branch remains at its opening revision so normal session cleanup does not merge this feature to master. Next: review the three journeys and separately authorize a release with matching backend/assets; verify real browser/driver interaction and state persistence on that release. No host rebuild, live question fixture or deployment was performed. An initial open attempt for the unregistered literal project sigil left failed record 13ca7b8c18a8206b038932c7badd7a35 (mirror_failed); normal close returned runtime_not_owned. No workspace or code belongs to that record; operator recovery remains separate.
+
 ## 2026-09-29 — Native templates accepted on the running deployment
 
 Operator rebuilt c5cfe97 and restored the existing browser environment override persistently in Compose. Served contract exactly matches 2.6.1 and live missing-ref validation now returns actionable 422 without provisioning. All six existing fixture provenance/identity records survived the real restart; exact retry retained identity.

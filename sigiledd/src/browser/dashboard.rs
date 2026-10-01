@@ -33,6 +33,11 @@ pub(super) async fn asset(
             include_str!("assets/dashboard.js"),
         )
             .into_response()),
+        "journeys.js" => Ok((
+            [("content-type", "text/javascript; charset=utf-8")],
+            include_str!("assets/journeys.js"),
+        )
+            .into_response()),
         "memory.js" => Ok((
             [("content-type", "text/javascript; charset=utf-8")],
             include_str!("assets/memory.js"),
@@ -142,6 +147,32 @@ pub(super) async fn list_items(
         Err(e) => e.into_response(),
     }
 }
+pub(super) async fn list_requests(
+    c: BrowserContext,
+    s: State<AppState>,
+    p: Path<String>,
+    q: Query<crate::overview::Page>,
+) -> Response {
+    crate::requests::list(c.actor, s, p, q).await
+}
+pub(super) async fn get_request(
+    c: BrowserContext,
+    s: State<AppState>,
+    p: Path<(String, String)>,
+) -> Response {
+    crate::requests::get(c.actor, s, p).await
+}
+pub(super) async fn answer_request(
+    c: BrowserContext,
+    State(s): State<AppState>,
+    Path((p, id)): Path<(String, String)>,
+    Json(body): Json<crate::requests::Answer>,
+) -> Response {
+    match crate::requests::answer(&s, &p, &id, &c.actor.driver, body) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
 pub(super) async fn get_item(
     _c: BrowserContext,
     State(s): State<AppState>,
@@ -207,6 +238,15 @@ pub(super) fn body_limit(method: &Method, path: &str) -> usize {
         return limit;
     }
     let parts: Vec<_> = path.split('/').collect();
+    if method == Method::POST
+        && parts.len() == 8
+        && parts[1..4] == ["browser", "api", "projects"]
+        && crate::project::valid_name(parts[4])
+        && parts[5] == "requests"
+        && parts[7] == "answer"
+    {
+        return 65536;
+    }
     if method == Method::PUT
         && parts.len() == 5
         && parts[1..4] == ["browser", "api", "templates"]

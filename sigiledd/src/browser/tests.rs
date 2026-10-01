@@ -1425,6 +1425,238 @@ async fn dashboard_work_items_auth_cas_audit_restart_and_failed_save() {
         StatusCode::PAYLOAD_TOO_LARGE
     );
 }
+
+#[tokio::test]
+async fn project_requests_share_machine_and_browser_records_without_granting_execution() {
+    let f = Fixture::new().await;
+    f.state.registry.insert(crate::project::ProjectRecord::new(
+        "demo",
+        &crate::manifest::Manifest::parse("").unwrap(),
+        None,
+    ));
+    let (cookie, session) = f.signed_in().await;
+    let id = "f0000000-0000-4000-8000-000000000099";
+    let machine = "/sigiled/projects/demo/requests";
+    let browser = "/browser/api/projects/demo/requests";
+    let create = json!({"id":id,"title":"Choose a release scope","question":"Include the new export?","context":"The remaining work depends on this choice.","source_link":"/ui/projects/demo/activity"});
+    assert_eq!(
+        f.request(reqwest::Method::POST, machine)
+            .header("cookie", &cookie)
+            .json(&create)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let created = f
+        .request(reqwest::Method::POST, machine)
+        .bearer_auth("synthetic-bootstrap")
+        .json(&create)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let first: Value = created.json().await.unwrap();
+    assert_eq!(first["creator"], "bootstrap");
+    let retry: Value = f
+        .request(reqwest::Method::POST, machine)
+        .bearer_auth("synthetic-bootstrap")
+        .json(&create)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(retry, first);
+    let mut collision = create.clone();
+    collision["question"] = json!("Different question");
+    assert_eq!(
+        f.request(reqwest::Method::POST, machine)
+            .bearer_auth("synthetic-bootstrap")
+            .json(&collision)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let list: Value = f
+        .request(reqwest::Method::GET, browser)
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["waiting"], 1);
+    assert_eq!(list["items"][0]["id"], id);
+    assert_eq!(f.state.work_items.list("demo", 0, 20).unwrap()["total"], 0);
+    let url = format!("{browser}/{id}/answer");
+    let answer = json!({"expected_revision":1,"text":"Keep this release focused; defer export."});
+    assert_eq!(
+        f.request(reqwest::Method::POST, &url)
+            .bearer_auth("synthetic-bootstrap")
+            .json(&answer)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        f.request(reqwest::Method::POST, &url)
+            .header("cookie", &cookie)
+            .json(&answer)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.request(reqwest::Method::POST, &format!("{machine}/{id}/answer"))
+            .bearer_auth("synthetic-bootstrap")
+            .json(&answer)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let send = |value: &Value| {
+        f.request(reqwest::Method::POST, &url)
+            .header("cookie", &cookie)
+            .header("origin", "https://sigil.test")
+            .header("x-sigil-csrf", session["csrf_token"].as_str().unwrap())
+            .json(value)
+    };
+    let competing = json!({"expected_revision":1,"text":"Include export now."});
+    let (a, b) = tokio::join!(send(&answer).send(), send(&competing).send());
+    let mut statuses = vec![a.unwrap().status().as_u16(), b.unwrap().status().as_u16()];
+    statuses.sort();
+    assert_eq!(statuses, [200, 409]);
+    let read: Value = f
+        .request(reqwest::Method::GET, &format!("{machine}/{id}"))
+        .bearer_auth("synthetic-bootstrap")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(read["revision"], 2);
+    assert_eq!(
+        read["request"]["answer"]["actor"],
+        session["actor"]["driver"]
+    );
+    let same = json!({"expected_revision":1,"text":read["request"]["answer"]["text"]});
+    let recovered: Value = send(&same).send().await.unwrap().json().await.unwrap();
+    assert_eq!(recovered, read);
+    let restarted = crate::work_items::Store::at_dir(f.state.sessions.repos_dir.as_ref().unwrap());
+    assert_eq!(restarted.get_request("demo", id).unwrap().revision, 2);
+    assert!(restarted.get_request("another-project", id).is_err());
+    assert_eq!(
+        restarted.list_requests("demo", 0, 20).unwrap()["waiting"],
+        0
+    );
+    let fields = first.as_object().unwrap();
+    let update=crate::work_items::Update {expected_revision:2,fields:serde_json::from_value(json!({"title":fields["title"],"description":"","state":"open","owner":"","source_link":""})).unwrap()};
+    assert_eq!(
+        f.state
+            .work_items
+            .update("demo", id, "bootstrap", update)
+            .err()
+            .unwrap()
+            .1,
+        "work_item_not_found"
+    );
+    assert!(f.state.sessions.dump_records().is_empty());
+    assert!(f.state.auth.approvals.snapshot().is_empty());
+}
+
+#[tokio::test]
+async fn project_requests_bounds_safe_links_and_failed_answer_preserve_the_question() {
+    let f = Fixture::new().await;
+    f.state.registry.insert(crate::project::ProjectRecord::new(
+        "demo",
+        &crate::manifest::Manifest::parse("").unwrap(),
+        None,
+    ));
+    let create = |id: &str, source: &str| crate::requests::Create {
+        id: id.into(),
+        title: "Question".into(),
+        question: "Which artifact?".into(),
+        context: "Review the evidence.".into(),
+        source_link: source.into(),
+    };
+    let id = "f0000000-0000-4000-8000-000000000098";
+    for source in [
+        "javascript:alert(1)",
+        "https://user:pass@example.test",
+        "//example.test",
+        "/ui/../browser/logout",
+    ] {
+        assert!(f
+            .state
+            .work_items
+            .create_request("demo", "driver", create(id, source))
+            .is_err());
+    }
+    f.state
+        .work_items
+        .create_request("demo", "driver", create(id, "https://example.test/context"))
+        .unwrap();
+    let dir = f.state.sessions.repos_dir.as_ref().unwrap();
+    std::fs::create_dir(dir.join("agent-requests.json.tmp")).unwrap();
+    let result = f.state.work_items.answer_request(
+        "demo",
+        id,
+        "human",
+        crate::requests::Answer {
+            expected_revision: 1,
+            text: "Use the reviewed result".into(),
+        },
+    );
+    assert_eq!(result.err().unwrap().1, "work_item_save_uncertain");
+    assert!(f
+        .state
+        .work_items
+        .get_request("demo", id)
+        .unwrap()
+        .request
+        .unwrap()
+        .answer
+        .is_none());
+    assert_eq!(
+        f.state.work_items.list_requests("demo", 0, 1).unwrap()["waiting"],
+        1
+    );
+    assert_eq!(
+        f.request(
+            reqwest::Method::GET,
+            "/sigiled/projects/demo/requests?limit=0"
+        )
+        .bearer_auth("synthetic-bootstrap")
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        f.request(reqwest::Method::POST, "/sigiled/projects/missing/requests")
+            .bearer_auth("synthetic-bootstrap")
+            .json(&json!({"id":id,"title":"Q","question":"?"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
 #[tokio::test]
 async fn dashboard_legacy_project_partial_retry_two_tabs_and_approval() {
     let generated = Arc::new(AtomicUsize::new(0));

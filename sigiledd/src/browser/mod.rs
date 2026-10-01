@@ -535,7 +535,7 @@ async fn inspect(c: BrowserContext, State(state): State<AppState>) -> Json<serde
     // A deliberate use of credential only as internal state: no serialized token or generic proxy.
     debug_assert!(!c.access_token.is_empty());
     Json(
-        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"project_creation":true,"work_items":state.work_items.available(),"workspace_actions":ide_gateway::readiness(&state).is_ok(),"memory_adapter":true},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
+        serde_json::json!({"actor":c.actor,"identity":{"issuer":c.issuer,"subject":c.subject,"principal_kind":"human","display_name":c.display_name},"csrf_token":c.csrf,"absolute_expires_at":c.absolute,"idle_expires_at":c.idle_expires,"features":{"overview":true,"project_creation":true,"work_items":state.work_items.available(),"agent_requests":state.work_items.available(),"workspace_actions":ide_gateway::readiness(&state).is_ok(),"memory_adapter":true},"capabilities":{"role":c.actor.role,"driver_approval_gates":true}}),
     )
 }
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Error> {
@@ -666,6 +666,18 @@ pub fn router(state: AppState) -> Router {
             post(research::recover),
         )
         .route("/browser/api/projects", post(dashboard::create))
+        .route(
+            "/browser/api/projects/{project}/requests",
+            get(dashboard::list_requests),
+        )
+        .route(
+            "/browser/api/projects/{project}/requests/{id}",
+            get(dashboard::get_request),
+        )
+        .route(
+            "/browser/api/projects/{project}/requests/{id}/answer",
+            post(dashboard::answer_request),
+        )
         .route("/browser/api/templates", get(dashboard::templates))
         .route(
             "/browser/api/templates/{name}",

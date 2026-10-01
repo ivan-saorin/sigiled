@@ -435,11 +435,11 @@ function attentionList(items) {
 }
 function renderProjectShell() {
   heading(route.project,'Loading project observations…');
-  const tabs = ['overview','workspace','research','jobs','app','memory','activity','pending'];
+  const tabs = ['overview','requests','workspace','research','jobs','app','memory','activity','pending'];
   $('content').append(el('nav', {
     class:'tabs','aria-label':'Project'
   }
-  ,tabs.map(t => link(label(t),projectUrl(route.project,t), {
+  ,tabs.map(t => link(t==='requests'?'Needs you':t==='app'?'Deployment':label(t),projectUrl(route.project,t), {
     'aria-current':route.tab === t?'page':null
   }
   ))),el('div', {
@@ -545,6 +545,10 @@ function workspaceControls(record) {
   }
   node.append(status);return node;
 }
+function journeyContext() {
+  const actor=session?.actor?.driver;
+  return {el,link,button,date,label,facts,badge,projectUrl,request,errorText,pager,updateQuery,query:route.query,actor,requestsEnabled:session?.features?.agent_requests===true,checkIdentity:async()=>{await checkSession();if(session?.actor?.driver!==actor)throw new ApiError(409,{error:'identity_changed'});}};
+}
 function renderProject(p) {
   heading(p.display_name || p.name,p.description || p.name,workspaceLaunch(p.name));
   const target = $('project-data');
@@ -555,6 +559,7 @@ function renderProject(p) {
   );
   switch(route.tab) {
     case'overview':
+    panel.append(window.SigilJourneys.overview(p,journeyContext()));
     if(p.provenance)panel.append(el('h2',{},'Template provenance'),facts([['Template repository',p.provenance.source_repository],['Source commit',p.provenance.source_commit],['Project identity',p.provenance.operation],['Workspace Dockerfile',p.provenance.snapshot?.workspace||'Global workspace image'],['Foundation',p.provenance.snapshot?.foundation||'No vm-tmpl synchronization pin']]));
     panel.append(el('h2', {
     }
@@ -567,7 +572,7 @@ function renderProject(p) {
     ,p.app?.deployed_revision || 'Not deployed')],['Workspaces',String(p.sessions?.total ?? p.session_count ?? 'Unknown')],['App',badge(p.app?.state || 'unknown')]]),p.setup?.stale?el('p', {
       class:'notice'
     }
-    ,'Registry information is stale. Check the last observation and refresh status.'):null,diagnostics({
+    ,'Registry information is stale. Check the last observation and refresh status.'):document.createTextNode(''),diagnostics({
       setup:p.setup,capabilities:p.capabilities
     }
     ));
@@ -597,22 +602,15 @@ function renderProject(p) {
     }
     ,label(s.error || s.readiness?.reason || 'readiness_not_observed')),workspaceControls(s),diagnostics(s))])):empty('No workspace sessions recorded for this project.'));
     break;
-    case'app':panel.append(el('h2', {
-    }
-    ,'App'),facts([['Deployment',badge(p.app?.state || 'unknown')],['Runtime',badge(p.app?.runtime?.state || 'unknown')],['Runtime observed',date(p.app?.runtime?.observed_at)],['Repository revision',el('span', {
-      class:'mono'
-    }
-    ,p.repository_revision || 'Not observed')],['Deployed revision',el('span', {
-      class:'mono'
-    }
-    ,p.app?.deployed_revision || 'Not deployed')],['Latest build',p.app?.latest_build?badge(p.app.latest_build.ok?'succeeded':'failed'):'No build record']]),p.app?.revision_drift === true?el('p', {
-      class:'notice'
-    }
-    ,'Source has changed since the deployed revision.'):null,el('p', {
-      class:'muted'
-    }
-    ,'Deployment and runtime are separate observations.'),diagnostics(p.app));
+    case'app':panel.append(window.SigilJourneys.deployment(p,journeyContext()),diagnostics(p.app));
     break;
+    case'requests': {
+      if(session?.features?.agent_requests!==true) {panel.append(empty('Agent questions need the shared requests service enabled. No answer has been sent.'));break;}
+      let old=target.querySelector('.requests-journey');
+      if(old?.dataset.actor!==session?.actor?.driver)old=null;
+      panel.append(old || window.SigilJourneys.requests(p,journeyContext()));
+      break;
+    }
     case'jobs':panel.append(el('h2', {
     }
     ,'Jobs'));
@@ -692,6 +690,8 @@ async function refresh() {
       current = p;
       renderProject(p);
       if(route.tab === 'pending')await loadItems(signal,g);
+      if(route.tab === 'requests')await $('project-data').querySelector('.requests-journey')?.load();
+      if(route.tab === 'overview')await $('project-data').querySelector('.journey-home')?.load();
       if(route.tab==="research")await $("research-root")?.load();
     }
     else {
